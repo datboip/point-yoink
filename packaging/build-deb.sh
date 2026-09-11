@@ -31,6 +31,7 @@ cp "$ROOT/fuse.py"       "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/range.py"      "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/wifi.py"       "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/shade.py"      "$PKG/usr/lib/pointyoink/"
+cp "$ROOT/meshview.py"   "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/icon.png"      "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/icon.png"      "$PKG/usr/share/icons/hicolor/512x512/apps/pointyoink.png"
 cp "$ROOT/LICENSE" "$ROOT/README.md" "$ROOT/CHANGELOG.md" "$PKG/usr/share/doc/pointyoink/" 2>/dev/null || true

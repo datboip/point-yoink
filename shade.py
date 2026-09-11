@@ -38,8 +38,9 @@ def load_oriented(path, max_faces=MAX_FACES):
     v[:, 2] -= v[:, 2].min()
     return v.astype(np.float32), f
 
-def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0):
-    """Draw the mesh with flat shading (painter's algorithm) on a grid floor. Returns a PIL image."""
+def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0, zoom=1.0, pan=(0.0, 0.0), grid=True):
+    """Draw the mesh with flat shading (painter's algorithm) on a grid floor. Returns a PIL image.
+    zoom scales the view, pan shifts it in screen fractions; both are what the live viewer drives."""
     from PIL import Image, ImageDraw
     W, H = size
     az, el = np.radians(azim), np.radians(elev)
@@ -47,10 +48,10 @@ def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0):
     Rx = np.array([[1, 0, 0], [0, np.cos(el), -np.sin(el)], [0, np.sin(el), np.cos(el)]])
     def proj(p):
         q = (p @ Rz.T) @ Rx.T; d = 3.2 + q[:, 1]
-        x = q[:, 0] / d * 2.6; y = q[:, 2] / d * 2.6
-        return np.stack([W / 2 + x * W * 0.42, H * 0.62 - y * H * 0.42], 1), q[:, 1]
+        x = q[:, 0] / d * 2.6 * zoom; y = q[:, 2] / d * 2.6 * zoom
+        return np.stack([W / 2 + (x + pan[0]) * W * 0.42, H * 0.62 - (y + pan[1]) * H * 0.42], 1), q[:, 1]
     img = Image.new("RGB", size, BG); dr = ImageDraw.Draw(img)
-    for x in np.linspace(-1.5, 1.5, 13):
+    for x in (np.linspace(-1.5, 1.5, 13) if grid else []):
         p, _ = proj(np.array([[x, -1.5, 0], [x, 1.5, 0]])); dr.line([tuple(p[0]), tuple(p[1])], fill=GRID, width=1)
         p, _ = proj(np.array([[-1.5, x, 0], [1.5, x, 0]])); dr.line([tuple(p[0]), tuple(p[1])], fill=GRID, width=1)
     P, depth = proj(v)
