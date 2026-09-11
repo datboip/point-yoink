@@ -71,7 +71,7 @@ class MeshView(tk.Label):
     def _rotate(self, e):
         if not self._drag: return
         dx, dy = e.x - self._drag[0], e.y - self._drag[1]; self._drag = (e.x, e.y)
-        self.azim -= dx * 0.5; self.elev = max(-89, min(89, self.elev + dy * 0.5)); self._live()
+        self.azim += dx * 0.5; self.elev = max(-89, min(89, self.elev + dy * 0.5)); self._live()   # drag right = spin right
     def _pan(self, e):
         if not self._drag: return
         w, h = max(64, self.winfo_width()), max(64, self.winfo_height())

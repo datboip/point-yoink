@@ -38,7 +38,7 @@ def load_oriented(path, max_faces=MAX_FACES):
     v[:, 2] -= v[:, 2].min()
     return v.astype(np.float32), f
 
-def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0, zoom=1.0, pan=(0.0, 0.0), grid=True):
+def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0, zoom=1.0, pan=(0.0, 0.0), grid=True, gizmo=True):
     """Draw the mesh with flat shading (painter's algorithm) on a grid floor. Returns a PIL image.
     zoom scales the view, pan shifts it in screen fractions; both are what the live viewer drives."""
     from PIL import Image, ImageDraw
@@ -65,6 +65,14 @@ def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0, zoom=1.0, p
         t = [tuple(x) for x in pts[i]]
         if wire: dr.polygon(t, fill=WIRE_FILL, outline=WIRE)
         else: dr.polygon(t, fill=tuple(cols[i]))
+    if gizmo:   # X red, Y green, Z blue: the mesh's own axes, turning with the view, bottom-left
+        L = min(W, H) * 0.075; ox, oy = 18 + L, H - 18 - L
+        axes = (np.array([[1, 0, 0]]), np.array([[0, 1, 0]]), np.array([[0, 0, 1]]))
+        for a3, col, lab in zip(axes, ((255, 93, 108), (62, 207, 142), (90, 176, 255)), ("X", "Y", "Z")):
+            q = (a3 @ Rz.T) @ Rx.T; dx, dy = float(q[0, 0]), float(q[0, 2])
+            ex, ey = ox + dx * L, oy - dy * L
+            dr.line([(ox, oy), (ex, ey)], fill=col, width=2)
+            dr.text((ex + (4 if dx >= 0 else -10), ey - 6), lab, fill=col)
     return img
 
 def preview_path(cache_dir, key, wire=False):
