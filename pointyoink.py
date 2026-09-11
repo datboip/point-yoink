@@ -1042,7 +1042,7 @@ class App(ctk.CTk):
         ctl=ctk.CTkFrame(self.tabs.bar, fg_color="transparent"); ctl.pack(side="right", pady=(0,4))
         self.view_btn=ctk.CTkButton(ctl, text="⟳  View in 3D", width=98, height=30, corner_radius=8, fg_color="transparent", border_width=1,
                                     border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=12), command=self.on_view_3d)
-        self.view_btn.pack(side="right", padx=(8,0)); self._tip(self.view_btn, "Open this scan in the interactive viewer: drag to rotate, scroll to zoom.")
+        self._tip(self.view_btn, "Open this scan in the interactive viewer: drag to rotate, scroll to zoom.")
         self.shade_sw=ctk.CTkSegmentedButton(ctl, values=["Solid","Wireframe"], command=self._shade_mode_changed, height=30, corner_radius=8,
                                              fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE,
                                              text_color=TX, font=ctk.CTkFont(size=11))
@@ -1268,7 +1268,7 @@ class App(ctk.CTk):
         self._opt(op, "check", "GLB", None, self.exp_glb, tip="For the web and editing")
         ctk.CTkLabel(op, text="Original PLY files are kept", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6, pady=(4,0))
         self._hr(op)
-        self._opt(op, "check", "Clean up the 3D model", "Remove floating bits, fill small holes, smooth", self.cleanup,
+        self._opt(op, "check", "Clean up on import", "Drops floating bits, fills small holes", self.cleanup,
                   tip="Tidy the 3D model on your PC during import: keep the main object (remove floating bits), fill small holes, and lightly smooth. Off = raw mesh, untouched.")
         self._hr(op)
         self._title(op, "Destination")
