@@ -1799,11 +1799,15 @@ class App(ctk.CTk):
             else: badges.append(("on the scanner", MUT, CARD2))
             if p.get("combined"): badges.append(("⧉ combined", OK, "#173a2a"))
             if p.get("prepared"): badges.append(("✦ prepared", OK, "#173a2a"))
-            for badge in badges:
-                ctk.CTkLabel(ml, text=badge[0], text_color=badge[1], fg_color=badge[2], corner_radius=6, width=1, height=18,
-                             font=ctk.CTkFont(size=10)).pack(side="left", padx=(0,6), ipadx=6)
+            b0=badges[0]
+            ctk.CTkLabel(ml, text=b0[0], text_color=b0[1], fg_color=b0[2], corner_radius=6, width=1, height=18, font=ctk.CTkFont(size=10)).pack(side="left", padx=(0,6), ipadx=6)
             if parts: ctk.CTkLabel(ml, text=" · ".join(parts), text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left")
-            for w in [card, tbox, txt, ml] + tbox.winfo_children() + txt.winfo_children() + ml.winfo_children():
+            ml2=None
+            if len(badges)>1:               # what has been made from it, on its own row so nothing clips
+                ml2=ctk.CTkFrame(txt, fg_color="transparent"); ml2.pack(anchor="w", fill="x", pady=(3,0))
+                for badge in badges[1:]:
+                    ctk.CTkLabel(ml2, text=badge[0], text_color=badge[1], fg_color=badge[2], corner_radius=6, width=1, height=18, font=ctk.CTkFont(size=10)).pack(side="left", padx=(0,6), ipadx=6)
+            for w in [card, tbox, txt, ml] + ([ml2]+ml2.winfo_children() if ml2 else []) + tbox.winfo_children() + txt.winfo_children() + ml.winfo_children():
                 w.bind("<Button-1>", lambda e,n=name: self.select_project(n))
             tk.Frame(self.llist, bg=STROKE, height=1, bd=0, highlightthickness=0).grid(row=2*shown+1, column=0, sticky="ew", padx=14, pady=(2,0))
             shown+=1
