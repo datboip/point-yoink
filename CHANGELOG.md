@@ -4,6 +4,18 @@ All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
 ## 0.9.9 (local)
+- **Prepare page** (was Process): the clean-up button is four named actions
+  in one dialog: Remove floating pieces, Smooth surface, Fill small holes,
+  Reduce triangle count, each with the scanner's default. It runs on a copy,
+  shows before and after, and you Keep or Discard. Every scan card has one
+  obvious next step (Build model, Prepare, or Export).
+- **Export dialog**: version, format (STL, OBJ, GLB, PLY), folder and file
+  name together, with the model's size in mm, triangle count, pieces, open
+  edges and whether the surface is closed.
+- **Combine scans**: scanned each side separately? Line each scan up to a base
+  scan by clicking three to five matching spots on both (or Auto when they
+  overlap a lot), check the orange overlay, keep it (saved with the project),
+  then build one model from all the scans' raw frames in one go.
 - **Build models with the scanner's own registration.** Process on PC now
   reads the globally registered poses the scanner stores with each scan
   (cache/global_register_pose.pose) instead of the per-frame odometry. After
