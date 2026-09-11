@@ -149,7 +149,9 @@ class Receiver:
             self._hist.append((now, self.bytes)); self._hist = [x for x in self._hist if now - x[0] <= 1.0]
             span = now - self._hist[0][0]
             rate = (self.bytes - self._hist[0][1]) / span if span >= 0.25 else avg    # last-second rate
-        self._emit("progress", bytes=self.bytes, total=self.total, files=len(self.files), rate=rate, avg=avg)
+            due = now - getattr(self, "_last_emit", 0.0) >= 0.1                        # thousands of parts arrive; report 10x/s
+            if due: self._last_emit = now
+        if due: self._emit("progress", bytes=self.bytes, total=self.total, files=len(self.files), rate=rate, avg=avg)
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

@@ -2624,10 +2624,7 @@ class App(ctk.CTk):
         x=4+min(1.0, frac)*(W-8)
         cv.create_rectangle(x, 0, W, H, fill="#0d0f14", outline="")       # the unfilled remainder
         cv.create_line(x, 0, x, H, fill=AC, width=1)
-        peak=max(r for _,r in sm)
-        cv.create_text(W-8, 8, text="peak %.0f MB/s" % (peak/1048576), fill=MUT, anchor="ne", font=("TkDefaultFont", 9))
-        cv.create_text(W-8, 22, text="now %.0f MB/s" % (rate/1048576), fill=AC, anchor="ne", font=("TkDefaultFont", 9, "bold"))
-        cv.create_text(8, 10, text="%.0f%%" % (100*frac), fill=TX, anchor="nw", font=("TkDefaultFont", 10, "bold"))
+        self._wifi_peak=max(r for _,r in sm)          # shown in the stats row, not over the curve
     def _wifi_set_code(self, code):
         for tl,ch in zip(self.wifi_tiles, code): tl.configure(text=ch)
     def _wifi_new_code(self):
@@ -2678,12 +2675,15 @@ class App(ctk.CTk):
                 self.wifi_top.geometry("520x560")     # room for the thumbnail, progress and stats rows
             except Exception: pass
         elif kind=="progress":
+            now=time.time()
+            if now-getattr(self, "_wifi_last_draw", 0.0) < 0.08: return      # never let redraws pile up on the UI thread
+            self._wifi_last_draw=now
             tot=info["total"]; frac=(info["bytes"]/tot) if tot else 0; rate=info["rate"]; avg=info.get("avg") or rate
             self._wifi_graph_add(frac, rate)
             left=(tot-info["bytes"])/avg if (tot and avg>0) else None
-            self.wifi_stats["got"].configure(text="%.0f / %.0f MB" % (info["bytes"]/1048576, tot/1048576) if tot else "%.0f MB" % (info["bytes"]/1048576))
+            self.wifi_stats["got"].configure(text=("%.0f%%  ·  %.0f / %.0f MB" % (100*frac, info["bytes"]/1048576, tot/1048576)) if tot else "%.0f MB" % (info["bytes"]/1048576))
             self.wifi_stats["files"].configure(text=str(info["files"]))
-            self.wifi_stats["rate"].configure(text="%.0f MB/s" % (rate/1048576))
+            self.wifi_stats["rate"].configure(text="%.0f MB/s  ·  peak %.0f" % (rate/1048576, getattr(self, "_wifi_peak", rate)/1048576))
             self.wifi_stats["eta"].configure(text=("%d s" % left if left<90 else "%d min" % (left/60)) if left is not None else "-")
             self.set_status("WiFi: %.0f%%" % (100*frac))
             if not self.wifi_proj.cget("text"):     # name + thumbnail as soon as they exist in staging
