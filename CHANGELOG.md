@@ -3,7 +3,17 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
-## 0.9.1 (local, unreleased)
+## 0.9.2 (local, unreleased)
+- WiFi card redesigned: the code as four tiles, a pulsing status, the incoming
+  project's name and thumbnail, a live speed graph that fills with progress
+  (peak and current shown; the rate is now measured per second, not averaged),
+  received / files / speed / time-left stats, and a New code button.
+- A WiFi transfer that was received but never imported (app closed, picker lost)
+  is offered again at the next start instead of sitting in a hidden folder.
+- Preview panel: the render strip and tools row no longer get pushed off the
+  bottom by a large preview image; project cards stop clipping the badge.
+
+## 0.9.1 (local)
 - Projects already on this PC (from USB or WiFi) show in the list with an
   "on this PC" badge even with no scanner attached, so preview, View in 3D,
   Remove base, Process on PC and Export ZIP work without the cable.

@@ -70,7 +70,8 @@ class _Handler(BaseHTTPRequestHandler):
 class Receiver:
     """Answers discovery and receives one or more projects into <dest>/.wifi-incoming/.
     on_event(kind, info) is called from worker threads with kinds:
-      searching {ip}  badcode {ip,locked}  connected {}  progress {bytes,total,files,rate}  done {projects:[names]}
+      searching {ip}  badcode {ip,locked}  connected {}  progress {bytes,total,files,rate,avg}  done {projects:[names]}
+    rate = bytes/s over the last second (what a graph wants), avg = since the start (what an ETA wants).
     Only requests carrying the code are served, from the first client that passes /connect;
     after MAX_BAD_CODES wrong codes the session is locked (start a new one for a new code)."""
     def __init__(self, dest, code=None, on_event=None, name=None):
@@ -79,6 +80,7 @@ class Receiver:
         self.httpd = None; self.udp = None; self._on = False
         self.files = {}; self.bytes = 0; self.total = 0; self.t0 = None; self.seen = set(); self._lock = threading.Lock()
         self.peer = None; self.bad = 0; self.locked = False
+        self._hist = []                    # (time, bytes) for the instantaneous rate
     def _emit(self, kind, **info):
         try: self.on_event(kind, info)
         except Exception: pass
@@ -142,8 +144,11 @@ class Receiver:
                 f.seek((idx - 1) * PART); f.write(body)
             self.files.setdefault(rel, set()).add(idx); self.bytes += len(body)
             self.total = int(h.get("totalsize") or self.total or 0)
-            rate = self.bytes / max(0.1, time.time() - (self.t0 or time.time()))
-        self._emit("progress", bytes=self.bytes, total=self.total, files=len(self.files), rate=rate)
+            now = time.time(); avg = self.bytes / max(0.1, now - (self.t0 or now))
+            self._hist.append((now, self.bytes)); self._hist = [x for x in self._hist if now - x[0] <= 1.0]
+            span = now - self._hist[0][0]
+            rate = (self.bytes - self._hist[0][1]) / span if span >= 0.25 else avg    # last-second rate
+        self._emit("progress", bytes=self.bytes, total=self.total, files=len(self.files), rate=rate, avg=avg)
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

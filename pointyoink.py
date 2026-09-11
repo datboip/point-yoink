@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.1"
+APP = "PointYoink"; VERSION = "0.9.2"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -254,7 +254,7 @@ def list_projects():
             try:
                 for node in sorted(os.listdir(os.path.join(pdir,"data"))):
                     prev=os.path.join(pdir,"data",node,"preview.png")
-                    if os.path.exists(prev): shutil.copyfile(prev, tp); break
+                    if os.path.exists(prev): os.makedirs(THUMBS, exist_ok=True); shutil.copyfile(prev, tp); break
             except Exception: pass
         if os.path.exists(tp): info["thumb"]=tp
         out.append(info)
@@ -474,6 +474,7 @@ class App(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.refresh_loop(); self.drain_loop(); self._pulse()
         self.after(9000, self._close_splash)   # safety fallback; the setup checks normally close it
+        self.after(2500, self._wifi_recover)   # offer a stranded WiFi transfer, if any
 
     # ---- splash + animation ----
     def _pointer_monitor(self):
@@ -687,7 +688,9 @@ class App(ctk.CTk):
         self.tabs.grid(row=0,column=0, sticky="nsew")
         pv=self.tabs.add("Preview"); fl=self.tabs.add("Files")
         pv.grid_columnconfigure(0, weight=1); pv.grid_rowconfigure(0, weight=1, minsize=240)
-        self.big=ctk.CTkLabel(pv, text="Select a project to preview its scans", fg_color="#0a0c10",
+        bigwrap=ctk.CTkFrame(pv, fg_color="transparent"); bigwrap.grid(row=0,column=0, sticky="nsew"); bigwrap.grid_propagate(False)
+        bigwrap.grid_columnconfigure(0, weight=1); bigwrap.grid_rowconfigure(0, weight=1)
+        self.big=ctk.CTkLabel(bigwrap, text="Select a project to preview its scans", fg_color="#0a0c10",
                               corner_radius=12, text_color=MUT); self.big.grid(row=0,column=0, sticky="nsew", padx=10, pady=10)
         self.big.bind("<Configure>", self._on_big_resize)
         self.detail=ctk.CTkLabel(pv, text="", text_color=TX, anchor="w", justify="left", font=ctk.CTkFont(size=12))
@@ -1250,11 +1253,11 @@ class App(ctk.CTk):
             parts=[]
             if p.get("nodes"): parts.append("%d scans"%p["nodes"])
             if p.get("meshes"): parts.append("%d mesh%s"%(p["meshes"], "es" if p["meshes"]!=1 else ""))
-            if p.get("clouds"): parts.append("%d cloud%s"%(p["clouds"], "s" if p["clouds"]!=1 else ""))
+            if p.get("clouds") and p.get("clouds")!=p.get("meshes"): parts.append("%d cloud%s"%(p["clouds"], "s" if p["clouds"]!=1 else ""))
             ml=ctk.CTkFrame(txt, fg_color="transparent"); ml.pack(anchor="w", fill="x")
             ctk.CTkLabel(ml, text=" · ".join(parts), text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left")
             if p.get("local"):
-                ctk.CTkLabel(ml, text="  ● on this PC", text_color=AC, font=ctk.CTkFont(size=10)).pack(side="left")
+                ctk.CTkLabel(ml, text="  ● on PC", text_color=AC, font=ctk.CTkFont(size=10)).pack(side="left")
             elif self.is_imported(name):
                 if self.changed(name):
                     ctk.CTkLabel(ml, text="  ↻ updated", text_color=WARN, font=ctk.CTkFont(size=10)).pack(side="left")
@@ -1830,17 +1833,90 @@ class App(ctk.CTk):
         self.set_status("WiFi: waiting for the scanner")
         self._wifi_dialog(rx)
     def _wifi_dialog(self, rx):
-        t=self._top("Share to PC over WiFi", 480, 330, key="wifi")
+        t=self._top("Share to PC over WiFi", 520, 400, key="wifi")
         if t is None: return
-        t.protocol("WM_DELETE_WINDOW", self._wifi_cancel)
-        ctk.CTkLabel(t, text="On the MIRACO, open a project and tap\nShare to PC  ›  Wi-Fi, then enter this code:",
-                     text_color=MUT, font=ctk.CTkFont(size=13), justify="center").pack(pady=(26,6))
-        self.wifi_code_lbl=ctk.CTkLabel(t, text="  ".join(rx.code), text_color=AC, font=ctk.CTkFont(family=WORDMARK, size=54, weight="bold")); self.wifi_code_lbl.pack()
-        self.wifi_state=ctk.CTkLabel(t, text="Waiting for the scanner on %s…" % rx.ip, text_color=MUT, font=ctk.CTkFont(size=12)); self.wifi_state.pack(pady=(8,4))
-        self.wifi_prog=ctk.CTkProgressBar(t, height=8, corner_radius=4, progress_color=AC, fg_color=CARD2); self.wifi_prog.set(0); self.wifi_prog.pack(fill="x", padx=40, pady=(6,4))
-        self.wifi_hint=ctk.CTkLabel(t, text="Both must be on the same network. If the scanner isn't found within 30 seconds, allow port 9706 (UDP and TCP) in your firewall.",
-                                    text_color=MUT, font=ctk.CTkFont(size=10), wraplength=400, justify="center"); self.wifi_hint.pack(pady=(2,0))
-        ctk.CTkButton(t, text="Cancel", width=100, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self._wifi_cancel).pack(pady=(14,0))
+        t.protocol("WM_DELETE_WINDOW", self._wifi_cancel); t.resizable(False, False); self.wifi_top=t
+        card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=16); card.pack(fill="both", expand=True, padx=14, pady=14)
+        ctk.CTkLabel(card, text="On the MIRACO, open the project, tap the share icon,\npick Wi-Fi and enter this code",
+                     text_color=MUT, font=ctk.CTkFont(size=13), justify="center").pack(pady=(22,10))
+        tiles=ctk.CTkFrame(card, fg_color="transparent"); tiles.pack()
+        self.wifi_tiles=[]
+        for ch in rx.code:
+            tl=ctk.CTkLabel(tiles, text=ch, width=64, height=78, corner_radius=14, fg_color="#0d0f14", text_color=AC,
+                            font=ctk.CTkFont(family=WORDMARK, size=44, weight="bold")); tl.pack(side="left", padx=6); self.wifi_tiles.append(tl)
+        st=ctk.CTkFrame(card, fg_color="transparent"); st.pack(pady=(16,2))
+        self.wifi_dot=ctk.CTkLabel(st, text="●", text_color=MUT, font=ctk.CTkFont(size=14)); self.wifi_dot.pack(side="left", padx=(0,6))
+        self.wifi_state=ctk.CTkLabel(st, text="Waiting for the scanner  ·  this PC is %s" % rx.ip, text_color=MUT, font=ctk.CTkFont(size=12)); self.wifi_state.pack(side="left")
+        # receiving block: thumbnail + name, progress, stats (shown once data flows)
+        self.wifi_recv=ctk.CTkFrame(card, fg_color="transparent")
+        row=ctk.CTkFrame(self.wifi_recv, fg_color="transparent"); row.pack(fill="x", padx=24)
+        self.wifi_thumb=ctk.CTkLabel(row, text="", width=84, height=56, fg_color="#0a0c10", corner_radius=10); self.wifi_thumb.pack(side="left")
+        self.wifi_proj=ctk.CTkLabel(row, text="", text_color=TX, font=ctk.CTkFont(size=13, weight="bold"), anchor="w"); self.wifi_proj.pack(side="left", padx=12)
+        # speed graph: fills left to right with progress, height = transfer speed (old-school copy dialog)
+        self.wifi_graph=tk.Canvas(self.wifi_recv, height=84, bg="#0d0f14", highlightthickness=0); self.wifi_graph.pack(fill="x", padx=24, pady=(12,6))
+        self.wifi_samples=[]
+        stats=ctk.CTkFrame(self.wifi_recv, fg_color="transparent"); stats.pack(fill="x", padx=24)
+        self.wifi_stats={}
+        for key,cap in (("got","received"),("files","files"),("rate","speed"),("eta","time left")):
+            col=ctk.CTkFrame(stats, fg_color="#0d0f14", corner_radius=10); col.pack(side="left", expand=True, fill="x", padx=3)
+            v=ctk.CTkLabel(col, text="-", text_color=TX, font=ctk.CTkFont(size=14, weight="bold")); v.pack(pady=(8,0))
+            ctk.CTkLabel(col, text=cap, text_color=MUT, font=ctk.CTkFont(size=10)).pack(pady=(0,8)); self.wifi_stats[key]=v
+        self.wifi_hint=ctk.CTkLabel(card, text="Both must be on the same network. If the scanner isn't found within 30 seconds, allow port 9706 (UDP and TCP) in your firewall.",
+                                    text_color=MUT, font=ctk.CTkFont(size=10), wraplength=420, justify="center"); self.wifi_hint.pack(pady=(10,0))
+        br=ctk.CTkFrame(card, fg_color="transparent"); br.pack(side="bottom", pady=(0,16))
+        self.wifi_newcode=ctk.CTkButton(br, text="↻ New code", width=110, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self._wifi_new_code)
+        self.wifi_newcode.pack(side="left", padx=6)
+        ctk.CTkButton(br, text="Cancel", width=100, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self._wifi_cancel).pack(side="left", padx=6)
+        self._wifi_pulse_i=0; self._wifi_pulse()
+    def _wifi_pulse(self):
+        """Breathing status dot while the dialog is up."""
+        rx=self._wifi
+        try:
+            if not rx or not self.wifi_dot.winfo_exists(): return
+            self._wifi_pulse_i=(self._wifi_pulse_i+1)%20; k=abs(10-self._wifi_pulse_i)/10.0
+            base=OK if rx.t0 else (AC if rx.seen else MUT)
+            r,g,b=int(base[1:3],16),int(base[3:5],16),int(base[5:7],16); f=0.45+0.55*k
+            self.wifi_dot.configure(text_color="#%02x%02x%02x" % (int(r*f),int(g*f),int(b*f)))
+            self.after(60, self._wifi_pulse)
+        except Exception: pass
+    def _wifi_graph_add(self, frac, rate):
+        """Append a (progress, speed) sample and redraw the area chart."""
+        sm=self.wifi_samples
+        if not sm or frac-sm[-1][0]>=0.002: sm.append((frac, rate))   # a 4 MiB part of a 1 GB transfer is ~0.4%
+        else: sm[-1]=(frac, rate)
+        cv=self.wifi_graph
+        try: W=max(50, cv.winfo_width()); H=int(cv.cget("height"))
+        except Exception: return
+        cv.delete("all")
+        for gy in (0.25,0.5,0.75): cv.create_line(0, H*gy, W, H*gy, fill="#161a22")
+        top=max(r for _,r in sm)*1.15 or 1.0
+        pts=[(4+f*(W-8), H-4-(r/top)*(H-14)) for f,r in sm]
+        if len(pts)>=2:
+            poly=[(pts[0][0], H-4)]+pts+[(pts[-1][0], H-4)]
+            cv.create_polygon(*[c for xy in poly for c in xy], fill="#1d3f66", outline="")
+            cv.create_line(*[c for xy in pts for c in xy], fill=AC, width=2, smooth=True)
+        x=4+min(1.0, frac)*(W-8)
+        cv.create_rectangle(x, 0, W, H, fill="#0d0f14", outline="")       # the unfilled remainder
+        cv.create_line(x, 0, x, H, fill=AC, width=1)
+        peak=max(r for _,r in sm)
+        cv.create_text(W-8, 8, text="peak %.0f MB/s" % (peak/1048576), fill=MUT, anchor="ne", font=("TkDefaultFont", 9))
+        cv.create_text(W-8, 22, text="now %.0f MB/s" % (rate/1048576), fill=AC, anchor="ne", font=("TkDefaultFont", 9, "bold"))
+        cv.create_text(8, 10, text="%.0f%%" % (100*frac), fill=TX, anchor="nw", font=("TkDefaultFont", 10, "bold"))
+    def _wifi_set_code(self, code):
+        for tl,ch in zip(self.wifi_tiles, code): tl.configure(text=ch)
+    def _wifi_new_code(self):
+        """Fresh random code without closing the dialog (only while nothing is being received)."""
+        rx=self._wifi
+        if not rx or rx.t0: return
+        import wifi
+        rx.stop(); shutil.rmtree(rx.stage, ignore_errors=True)
+        try:
+            nrx=wifi.Receiver(rx.dest, None, lambda k,i: self.q.put(("wifi", k, i))); nrx.start()
+        except OSError as e:
+            log_error("wifi-newcode", e); self._wifi=None; self._wifi_cancel(); return
+        self._wifi=nrx; self._wifi_set_code(nrx.code)
+        self.wifi_state.configure(text="Waiting for the scanner  ·  this PC is %s" % nrx.ip, text_color=MUT)
+        self.set_banner("WiFi share open - on the MIRACO: Share to PC > Wi-Fi, enter code %s" % nrx.code, AC)
     def _wifi_close_dialog(self):
         d=getattr(self, "_dialogs", {}).pop("wifi", None)
         try:
@@ -1870,12 +1946,29 @@ class App(ctk.CTk):
             else:
                 self.wifi_state.configure(text="Wrong code entered on the scanner - try again (%d attempts left)." % (5-rx.bad), text_color=WARN)
         elif kind=="connected":
-            self.wifi_state.configure(text="Code accepted - receiving…", text_color=OK); self.set_status("WiFi: receiving…")
+            self.wifi_state.configure(text="Code accepted  ·  receiving", text_color=OK); self.set_status("WiFi: receiving…")
+            try:
+                self.wifi_hint.pack_forget(); self.wifi_recv.pack(fill="x", pady=(14,0)); self.wifi_newcode.configure(state="disabled")
+                self.wifi_top.geometry("520x560")     # room for the thumbnail, progress and stats rows
+            except Exception: pass
         elif kind=="progress":
-            tot=info["total"]; frac=(info["bytes"]/tot) if tot else 0
-            self.wifi_prog.set(min(1.0, frac))
-            self.wifi_state.configure(text="Receiving  %.0f of %.0f MB  ·  %d files  ·  %.0f MB/s" % (info["bytes"]/1048576, tot/1048576, info["files"], info["rate"]/1048576), text_color=OK)
+            tot=info["total"]; frac=(info["bytes"]/tot) if tot else 0; rate=info["rate"]; avg=info.get("avg") or rate
+            self._wifi_graph_add(frac, rate)
+            left=(tot-info["bytes"])/avg if (tot and avg>0) else None
+            self.wifi_stats["got"].configure(text="%.0f / %.0f MB" % (info["bytes"]/1048576, tot/1048576) if tot else "%.0f MB" % (info["bytes"]/1048576))
+            self.wifi_stats["files"].configure(text=str(info["files"]))
+            self.wifi_stats["rate"].configure(text="%.0f MB/s" % (rate/1048576))
+            self.wifi_stats["eta"].configure(text=("%d s" % left if left<90 else "%d min" % (left/60)) if left is not None else "-")
             self.set_status("WiFi: %.0f%%" % (100*frac))
+            if not self.wifi_proj.cget("text"):     # name + thumbnail as soon as they exist in staging
+                try:
+                    projs=[d for d in os.listdir(rx.stage) if os.path.isdir(os.path.join(rx.stage, d))]
+                    if projs:
+                        self.wifi_proj.configure(text="%s%s" % (self.disp(projs[0]), "  (+%d more)" % (len(projs)-1) if len(projs)>1 else ""))
+                        pv=glob.glob(os.path.join(rx.stage, projs[0], "data", "*", "preview.png"))
+                        if pv:
+                            self.imgs["wifi_thumb"]=cimg(pv[0], 84); self.wifi_thumb.configure(image=self.imgs["wifi_thumb"])
+                except Exception: pass
         elif kind=="done":
             self._wifi=None; rx.stop(); self._wifi_close_dialog(); self.wifi_btn.configure(text="WiFi", fg_color=CARD2)
             projects=info["projects"]
@@ -1883,6 +1976,17 @@ class App(ctk.CTk):
                 shutil.rmtree(rx.stage, ignore_errors=True); self.set_banner("The scanner finished but sent no project.", WARN); self.set_status(""); return
             self.set_banner("Received %s over WiFi - choose what to keep." % ", ".join(projects), OK); self.set_status("")
             self._wifi_picker(rx.stage, projects)
+    def _wifi_recover(self):
+        """A transfer that finished but was never imported (app closed, picker lost) is still in
+        staging: offer it again instead of leaving a gigabyte stranded in a hidden folder."""
+        if self._wifi or self.pulling: return
+        stage=os.path.join(self.dest.get() or DEFAULT_DEST, ".wifi-incoming")
+        try: projects=sorted(d for d in os.listdir(stage) if os.path.isdir(os.path.join(stage, d, "data")))
+        except Exception: return
+        if not projects:
+            shutil.rmtree(stage, ignore_errors=True); return
+        self.set_banner("A WiFi transfer was received earlier but never imported - choose what to keep.", AC)
+        self._wifi_picker(stage, projects)
     def _wifi_picker(self, stage, projects):
         """After a transfer: show each scan with its sizes, tick what to keep, models-only or full."""
         rows=[]
