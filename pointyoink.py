@@ -1103,11 +1103,12 @@ class App(ctk.CTk):
 
     def _tip(self, widget, text):
         """Lightweight hover tooltip for a widget."""
-        st={"win":None}
+        st={"win":None, "job":None}
         def show(_=None):
             if st["win"] or not text: return
             try:
-                tw=tk.Toplevel(widget); tw.wm_overrideredirect(True); tw.configure(bg="#0b0e13")
+                # build hidden, position, then show: mapping first flashes a black sliver at 0,0
+                tw=tk.Toplevel(widget); tw.withdraw(); tw.wm_overrideredirect(True); tw.configure(bg="#0b0e13")
                 try: tw.wm_attributes("-type","tooltip"); tw.attributes("-topmost",True)
                 except Exception: pass
                 f=ctk.CTkFrame(tw, fg_color="#0b0e13", corner_radius=8, border_width=1, border_color=STROKE)
@@ -1118,15 +1119,23 @@ class App(ctk.CTk):
                 x=widget.winfo_rootx()+14
                 y=widget.winfo_rooty()-tw.winfo_reqheight()-8          # above the widget
                 if y < 0: y=widget.winfo_rooty()+widget.winfo_height()+6   # fall back below if no room
-                tw.wm_geometry("+%d+%d"%(x,y))
+                tw.wm_geometry("+%d+%d"%(x,y)); tw.deiconify()
                 st["win"]=tw
             except Exception: pass
+        def arm(_=None):
+            cancel(); st["job"]=widget.after(400, show)       # only after the pointer rests on it
+        def cancel():
+            if st["job"]:
+                try: widget.after_cancel(st["job"])
+                except Exception: pass
+                st["job"]=None
         def hide(_=None):
+            cancel()
             if st["win"]:
                 try: st["win"].destroy()
                 except Exception: pass
                 st["win"]=None
-        widget.bind("<Enter>", show); widget.bind("<Leave>", hide)
+        widget.bind("<Enter>", arm); widget.bind("<Leave>", hide); widget.bind("<ButtonPress>", hide)
 
     def _modal(self, title, message, buttons):
         """Dark-themed modal. buttons: list of (label, value, accent). Returns chosen value."""
