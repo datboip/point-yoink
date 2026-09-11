@@ -210,7 +210,13 @@ def do_mount():
     # Clear our OWN mountpoint gracefully first (don't blanket-kill MTP for other
     # devices the user may have connected). Release any gvfs claim on the device,
     # lazily unmount our path, and only then kill a jmtpfs still holding OUR mount.
-    subprocess.run(["bash","-c","gio mount -u 'mtp://*' 2>/dev/null; true"])
+    # GNOME auto-mounts the scanner through gvfs the moment it enters File Transfer mode, which
+    # makes it "busy" for jmtpfs. Unmount exactly those gvfs MTP mounts (a glob does nothing here).
+    try:
+        lst=subprocess.run(["gio","mount","-l"], capture_output=True, text=True, timeout=10).stdout
+        for m in re.findall(r"(mtp://[^\s/]+/)", lst):
+            subprocess.run(["gio","mount","-u",m], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+    except Exception: pass
     subprocess.run(["fusermount","-uz",MOUNT], stderr=subprocess.DEVNULL)
     subprocess.run(["pkill","-9","-f","jmtpfs .*%s" % os.path.basename(MOUNT)], stderr=subprocess.DEVNULL)
     if not os.path.isdir(MOUNT):
