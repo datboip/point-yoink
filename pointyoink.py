@@ -1085,34 +1085,8 @@ class App(ctk.CTk):
         self.opts=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.opts.grid(row=0,column=0, sticky="nsew", padx=(6,0))
         self.rail_btns={}; self.rail_bars={}
 
-        # -- Process mode: tools that work on the selected project's mesh --
-        pr=self.mode_frames["Process"]; pr.grid_columnconfigure(0, weight=1)
-        card=ctk.CTkFrame(pr, fg_color=CARD, corner_radius=14, width=520); card.grid(row=0,column=0, pady=28)
-        card.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(card, text="Process", font=ctk.CTkFont(size=18, weight="bold"), text_color=TX, anchor="w").grid(row=0,column=0, sticky="ew", padx=20, pady=(18,0))
-        ctk.CTkLabel(card, text="Tools that build or change a 3D model on this PC. The original file is always kept.", text_color=MUT,
-                     font=ctk.CTkFont(size=12), wraplength=470, justify="left", anchor="w").grid(row=1,column=0, sticky="ew", padx=20, pady=(2,10))
-        self.proc_title=ctk.CTkLabel(card, text="No project selected. Pick one on the Import tab first.", text_color=TX, anchor="w",
-                                     font=ctk.CTkFont(size=13, weight="bold"), wraplength=470, justify="left")
-        self.proc_title.grid(row=2,column=0, sticky="ew", padx=20, pady=(0,4))
-        self.tools=ctk.CTkFrame(card, fg_color="transparent", width=500); self.tools.grid(row=3,column=0, sticky="ew", padx=6, pady=(0,12)); self.tools.grid_remove()
-        group_label(self.tools, "Mesh tools", top=6)
-        ActionRow(self.tools, "View in 3D", "interactive viewer, drag to rotate", icon="⟳", icon_color=AC, command=self.on_view_3d).pack(fill="x", padx=6)
-        hairline(self.tools)
-        self.proc_btn=ActionRow(self.tools, "Process on PC", "build the 3D model from the raw scan data, on this PC", icon="⚙", icon_color=AC, command=self.on_process_pc)
-        self.proc_btn.pack(fill="x", padx=6)
-        self._tip(self.proc_btn, "Build this scan's 3D model on your PC from the raw scan data (on the graphics card when there is one). "
-                                 "Uses local frames if a full import already has them, otherwise pulls just what it needs. "
-                                 "Saves <name>_<scan>_pcfused.ply. Needs Open3D.")
-        hairline(self.tools)
-        self.base_btn=ActionRow(self.tools, "Remove base", "slice the table or turntable off with a cut plane", icon="✂", icon_color=AC, command=self.on_remove_base)
-        self.base_btn.pack(fill="x", padx=6)
-        self._tip(self.base_btn, "Interactively slice the table/turntable off the scan. Opens a cut-plane "
-                                 "tool; saves a cleaned copy as <name>_clean.ply. Original is kept.")
-        hairline(self.tools)
-        group_label(self.tools, "Coming next")
-        ctk.CTkLabel(self.tools, text="The cut-plane tool inside this window, and clean-up you can preview before saving.",
-                     text_color=DIM, font=ctk.CTkFont(size=10), wraplength=460, justify="left", anchor="w").pack(fill="x", padx=16, pady=(2,6))
+        # -- Process mode: the selected project's scans, each with its versions and the tools --
+        self._build_process_page(self.mode_frames["Process"])
 
         # Captures mode: device screenshots AND screen recordings, out of the project list
         sc=self.mode_frames["Captures"]
@@ -1841,7 +1815,7 @@ class App(ctk.CTk):
         self.renders_lbl.configure(text=""); self.renders_lbl.place(relx=1.0, rely=0.0, x=-12, y=10, anchor="ne")
         if p.get("meshes") or p.get("nodes"): self.tools.grid()   # Process on PC works on unfused scans too
         else: self.tools.grid_remove()
-        self.proc_title.configure(text="Selected: %s" % self.disp(name))
+        self._proc_refresh()
         for w in self.film.winfo_children(): w.destroy()
         if name in self.gallery_cache: self.render_gallery(name, self.gallery_cache[name])
         else:
@@ -1930,12 +1904,10 @@ class App(ctk.CTk):
 
     # ---- shaded 3D preview: the scan's mesh rendered off-screen (worker thread, cached PNG) ----
     def _mesh_for_node(self, name, node):
-        local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
-        for c in (os.path.join(local, "%s_%s.ply"%(name,node)), os.path.join(local, "%s_%s_clean.ply"%(name,node)),
-                  os.path.join(local, "%s_%s_pcfused.ply"%(name,node)), os.path.join(local, "data", node, "fuse_mesh.ply"),
-                  os.path.join(PROJECTS, name, "data", node, "fuse_mesh.ply")):
-            if os.path.exists(c): return c
-        return None
+        cur=self._proc_current(name, node)          # the version picked on the Process page (or the best available)
+        if cur: return cur[2]
+        c=os.path.join(PROJECTS, name, "data", node, "fuse_mesh.ply")
+        return c if os.path.exists(c) else None
     def _node_of(self, name, path):
         base=os.path.basename(path)
         if base=="fuse_mesh.ply": return os.path.basename(os.path.dirname(path))
@@ -2287,6 +2259,186 @@ class App(ctk.CTk):
             log_error("base-launch", e); self.q.put(("base_done", ("err", str(e))))
 
     # ---- process on PC: raw depth frames -> fused mesh, via fuse.py (Open3D TSDF) ----
+    # ---- Process page ----
+    PROC_DETAIL=(("Fast (0.6 mm)",0.6),("Normal (0.4 mm, like the scanner)",0.4),("Fine (0.3 mm, ~2x memory)",0.3),("Ultra (0.2 mm, ~6x memory)",0.2))
+    def _build_process_page(self, pr):
+        pr.grid_columnconfigure(0, weight=1); pr.grid_rowconfigure(1, weight=1)
+        ph=ctk.CTkFrame(pr, fg_color="transparent"); ph.grid(row=0,column=0, sticky="ew", padx=16, pady=(14,4))
+        ctk.CTkLabel(ph, text="Process", font=ctk.CTkFont(size=18, weight="bold"), text_color=TX).pack(side="left")
+        self.proc_pick=ctk.CTkOptionMenu(ph, values=["No projects on this PC yet"], width=300, command=self._proc_pick, fg_color="#0d0f14", button_color=CARD2,
+                                         button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=10)
+        self.proc_pick.pack(side="left", padx=(16,8))
+        self._tip(self.proc_pick, "Which project to work on. Same selection as the Import tab.")
+        self.proc_title=ctk.CTkLabel(ph, text="", text_color=MUT, font=ctk.CTkFont(size=12)); self.proc_title.pack(side="left")
+        ctk.CTkButton(ph, text="Delete project from this PC", width=190, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
+                      hover_color="#3a2530", text_color=MUT, command=self._proc_delete_project).pack(side="right")
+        self.base_btn=ctk.CTkButton(ph, text="✂  Remove base", width=130, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
+                                    hover_color=CARD2, text_color=TX, command=self.on_remove_base); self.base_btn.pack(side="right", padx=8)
+        self._tip(self.base_btn, "Slice the table or turntable off the current scan with a cut plane. Saves a cleaned copy; the original is kept.")
+        self.proc_btn=ctk.CTkButton(ph, text="⚙  Build all models", width=150, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=AC,
+                                    hover_color=CARD2, text_color=AC, command=self.on_process_pc); self.proc_btn.pack(side="right", padx=8)
+        self._tip(self.proc_btn, "Build the 3D model of every scan that has raw scan data, on this PC.")
+        dr=ctk.CTkFrame(pr, fg_color="transparent"); dr.grid(row=2,column=0, sticky="ew", padx=16, pady=(0,10))
+        ctk.CTkLabel(dr, text="Detail when building", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
+        cur=float(self.cfg.get("fuse_voxel",0.4) or 0.4); lab=min(self.PROC_DETAIL, key=lambda d: abs(d[1]-cur))[0]   # the vars come later
+        self.proc_detail=ctk.CTkOptionMenu(dr, values=[d[0] for d in self.PROC_DETAIL], width=300, command=self._proc_detail_changed, fg_color="#0d0f14", button_color=CARD2,
+                                           button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=10)
+        self.proc_detail.pack(side="left", padx=10); self.proc_detail.set(lab)
+        ctk.CTkLabel(dr, text="Normal matches the scanner. Finer takes longer and needs more graphics memory (about 2 GB per scan at Normal).",
+                     text_color=DIM, font=ctk.CTkFont(size=10)).pack(side="left")
+        self.proc_cards=ctk.CTkScrollableFrame(pr, fg_color="transparent"); self.proc_cards.grid(row=1,column=0, sticky="nsew", padx=10)
+        self.proc_cards.grid_columnconfigure(0, weight=1)
+        self.tools=ctk.CTkFrame(pr, fg_color="transparent", height=1); self.tools.grid(row=3,column=0); self.tools.grid_remove()   # kept for older call sites
+        self._proc_rows={}; self._proc_names=[]
+        self._proc_empty=self._empty_state(self.proc_cards, "projects"); self._proc_empty.grid(row=0,column=0, sticky="nsew", pady=40)
+    def _proc_detail_changed(self, label):
+        for l,v in self.PROC_DETAIL:
+            if l==label: self.fuse_voxel.set(v)
+    def _proc_pick(self, label):
+        for n in self._proc_names:
+            if self.disp(n)==label: self.select_project(n); return
+    def _proc_nodes(self, name):
+        local=os.path.join(self.dest.get() or DEFAULT_DEST, name); nodes=set()
+        for d in glob.glob(os.path.join(local, "data", "*")):
+            if os.path.isdir(d): nodes.add(os.path.basename(d))
+        for f in glob.glob(os.path.join(local, name+"_*.ply")):
+            n=os.path.basename(f)[len(name)+1:-4]
+            for suf in ("_cloud","_pcfused","_clean"):
+                if n.endswith(suf): n=n[:-len(suf)]
+            nodes.add(n)
+        return sorted(nodes)
+    def _proc_versions(self, name, node):
+        """The model files a scan has on this PC: [(key, label, path)] in default preference order."""
+        local=os.path.join(self.dest.get() or DEFAULT_DEST, name); out=[]
+        for key,label,cands in (("clean","cleaned here",[os.path.join(local,"%s_%s_clean.ply"%(name,node)), os.path.join(local,"%s_%s_pcfused_clean.ply"%(name,node))]),
+                                ("scanner","from the scanner",[os.path.join(local,"%s_%s.ply"%(name,node)), os.path.join(local,"data",node,"fuse_mesh.ply")]),
+                                ("pcfused","built here",[os.path.join(local,"%s_%s_pcfused.ply"%(name,node))])):
+            for c in cands:
+                if os.path.exists(c) and os.path.getsize(c)>1024: out.append((key,label,c)); break
+        return out
+    def _proc_current(self, name, node):
+        """Which version the preview and exports use for this scan: the user's pick if it still exists, else the first available."""
+        vs=self._proc_versions(name, node)
+        if not vs: return None
+        want=self.records.get(name,{}).get("current",{}).get(node)
+        for v in vs:
+            if v[0]==want: return v
+        return vs[0]
+    def _proc_set_current(self, name, node, key):
+        self.records.setdefault(name,{}).setdefault("current",{})[node]=key; self._persist(); self._mesh_stats={}
+        self._proc_render(name)
+        if self.selected==name: self._mv_key=None; self._request_shaded(name, node)
+    def _trash(self, path):
+        """Move a file or folder to the desktop trash (gio), else into <dest>/.trash."""
+        try:
+            if subprocess.run(["gio","trash",path], capture_output=True, timeout=30).returncode==0: return True
+        except Exception: pass
+        try:
+            tdir=os.path.join(self.dest.get() or DEFAULT_DEST, ".trash"); os.makedirs(tdir, exist_ok=True)
+            shutil.move(path, os.path.join(tdir, time.strftime("%Y%m%d-%H%M%S_")+os.path.basename(path))); return True
+        except Exception as e:
+            log_error("trash", e); return False
+    def _proc_delete_version(self, name, node, key, path):
+        if not self._confirm("Delete this version?", "%s: the %s version of scan %s goes to the trash.\nOther versions and the raw data stay." % (self.disp(name), dict(clean="cleaned", scanner="scanner's", pcfused="built-here")[key], node)): return
+        if self._trash(path):
+            self.set_banner("Moved to the trash: %s" % os.path.basename(path), MUT); self._mesh_stats={}; self.gallery_cache.pop(name, None)
+            self._proc_render(name)
+            if self.selected==name: self._mv_key=None; self.projects_sig=None; self.listed=False; self.start_listing()
+    def _proc_delete_project(self):
+        name=self.selected
+        if not name: return
+        local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
+        if not os.path.isdir(local): self.set_banner("That project is not on this PC.", WARN); return
+        if not self._confirm("Delete from this PC?", "%s and everything in its folder go to the trash.\nThe copy on the scanner is not touched." % self.disp(name)): return
+        if self._trash(local):
+            self.set_banner("Moved to the trash: %s" % self.disp(name), MUT); self.selected=None; self.gallery_cache.pop(name, None)
+            self.projects_sig=None; self.listed=False; self.start_listing(); self._proc_render(None)
+    def _proc_refresh(self):
+        if not hasattr(self, "proc_pick"): return
+        dest=self.dest.get() or DEFAULT_DEST
+        self._proc_names=[p["name"] for p in self.projects if os.path.isdir(os.path.join(dest, p["name"]))]
+        self.proc_pick.configure(values=[self.disp(n) for n in self._proc_names] or ["No projects on this PC yet"])
+        name=self.selected if self.selected in self._proc_names else (self._proc_names[0] if self._proc_names else None)
+        self.proc_pick.set(self.disp(name) if name else "No projects on this PC yet")
+        self._proc_render(name)
+    def _proc_render(self, name):
+        for w in self.proc_cards.winfo_children():
+            if w is not self._proc_empty: w.destroy()
+        self._proc_rows={}
+        if not name:
+            self.proc_title.configure(text=""); self._proc_empty.grid(); return
+        self._proc_empty.grid_remove()
+        nodes=self._proc_nodes(name); local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
+        self.proc_title.configure(text="%d scan%s · %s" % (len(nodes), "" if len(nodes)==1 else "s", name if self.disp(name)!=name else ""))
+        for i,node in enumerate(nodes):
+            vs=self._proc_versions(name, node); cur=self._proc_current(name, node)
+            raw=len(glob.glob(os.path.join(local, "data", node, "cache", "*.dph")))
+            card=ctk.CTkFrame(self.proc_cards, fg_color=CARD, corner_radius=14); card.grid(row=i, column=0, sticky="ew", padx=6, pady=6)
+            card.grid_columnconfigure(1, weight=1)
+            thumb=os.path.join(local, "data", node, "preview.png")
+            if not os.path.exists(thumb): thumb=os.path.join(local, "%s_%s.png" % (name, node))
+            if os.path.exists(thumb):
+                try: self.imgs["proc_"+node]=cimg(thumb, 110); ctk.CTkLabel(card, image=self.imgs["proc_"+node], text="", fg_color="#0a0c10", corner_radius=8).grid(row=0,column=0, rowspan=3, padx=(14,12), pady=12)
+                except Exception: pass
+            top=ctk.CTkFrame(card, fg_color="transparent"); top.grid(row=0,column=1, sticky="ew", pady=(12,0))
+            ctk.CTkLabel(top, text="Scan %02d" % (i+1), font=ctk.CTkFont(size=14, weight="bold"), text_color=TX).pack(side="left")
+            ctk.CTkLabel(top, text=node, text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=10)
+            status=("no 3D model yet · %d raw frames" % raw) if not vs else ("%d version%s · %d raw frames" % (len(vs), "" if len(vs)==1 else "s", raw) if raw else "%d version%s · no raw data on this PC" % (len(vs), "" if len(vs)==1 else "s"))
+            ctk.CTkLabel(top, text=status, text_color=(WARN if not vs else MUT), font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
+            vr=ctk.CTkFrame(card, fg_color="transparent"); vr.grid(row=1,column=1, sticky="ew", pady=(6,0))
+            ctk.CTkLabel(vr, text="Versions:" if vs else "", text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0,6))
+            for key,label,path in vs:
+                is_cur=(cur and cur[0]==key)
+                chip=ctk.CTkFrame(vr, fg_color=("#15304d" if is_cur else CARD2), corner_radius=9); chip.pack(side="left", padx=3)
+                b=ctk.CTkButton(chip, text=("✓ " if is_cur else "")+label, height=22, corner_radius=9, fg_color="transparent", hover_color=STROKE,
+                                text_color=(AC if is_cur else TX), font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key: self._proc_set_current(n, nd, k)); b.pack(side="left", padx=(6,0))
+                self._tip(b, "%s · %s\nClick to make this the version the preview and exports use." % (os.path.basename(path), human(os.path.getsize(path))))
+                x=ctk.CTkButton(chip, text="✕", width=22, height=22, corner_radius=9, fg_color="transparent", hover_color="#3a2530", text_color=MUT,
+                                font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key,pth=path: self._proc_delete_version(n, nd, k, pth)); x.pack(side="left")
+                self._tip(x, "Delete this version (to the trash)")
+            act=ctk.CTkFrame(card, fg_color="transparent"); act.grid(row=0,column=2, rowspan=2, padx=14, pady=12, sticky="e")
+            bb=ctk.CTkButton(act, text="⚙  Build model", width=130, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=(AC if raw else STROKE),
+                             hover_color=CARD2, text_color=(AC if raw else MUT), state=("normal" if raw else "disabled"), command=lambda n=name,nd=node: self._proc_build(n, [nd]))
+            bb.pack(side="top", fill="x", pady=2)
+            self._tip(bb, "Build this scan's 3D model from its raw data, on this PC." if raw else "No raw scan data on this PC for this scan (share the project over WiFi as Full project).")
+            cb=ctk.CTkButton(act, text="✦  Clean up", width=130, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=(STROKE if vs else STROKE),
+                             hover_color=CARD2, text_color=(TX if vs else MUT), state=("normal" if vs else "disabled"), command=lambda n=name,nd=node: self._proc_clean(n, nd))
+            cb.pack(side="top", fill="x", pady=2)
+            self._tip(cb, "Drop floating bits, fill small holes and smooth the current version. Saves a cleaned copy; the original is kept.")
+            pb=ctk.CTkProgressBar(card, height=6, corner_radius=3, progress_color=AC, fg_color="#0d0f14"); pb.set(0)
+            pl=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w")
+            self._proc_rows[node]={"card":card, "bar":pb, "lbl":pl, "build":bb, "clean":cb}
+    def _proc_progress(self, node, frac, text):
+        r=self._proc_rows.get(node)
+        if not r: return
+        try:
+            if not r["bar"].winfo_manager():
+                r["bar"].grid(row=2,column=1, columnspan=2, sticky="ew", padx=(0,14), pady=(8,0)); r["lbl"].grid(row=3,column=1, columnspan=2, sticky="w", pady=(2,10))
+            if frac is None: r["bar"].configure(mode="indeterminate"); r["bar"].start()
+            else:
+                if r["bar"].cget("mode")=="indeterminate": r["bar"].stop(); r["bar"].configure(mode="determinate")
+                r["bar"].set(max(0.0, min(1.0, frac)))
+            r["lbl"].configure(text=text)
+        except Exception: pass
+    def _proc_build(self, name, nodes):
+        if getattr(self, "_fusing", False): self.set_banner("A build is already running.", WARN); return
+        if not _has_open3d():
+            self._alert("Open3D needed", "Building models needs Open3D, which isn't installed for this Python.\n\nInstall it with:\n  pip3 install --user --break-system-packages open3d\n\n(~400 MB. The GPU is used automatically when available.)"); return
+        self._fusing=True
+        try: self.proc_btn.configure(state="disabled")
+        except Exception: pass
+        for nd in nodes: self._proc_progress(nd, None, "Starting…")
+        self.set_status("Building 3D model%s…" % ("" if len(nodes)==1 else "s"))
+        threading.Thread(target=self._fuse_worker, args=(name, nodes), daemon=True).start()
+    def _proc_clean(self, name, node):
+        cur=self._proc_current(name, node)
+        if not cur: return
+        src=cur[2]; out=os.path.join(os.path.dirname(src), "%s_%s_clean.ply" % (name, node))
+        self._proc_progress(node, None, "Cleaning up: dropping floating bits, filling holes, smoothing…"); self.set_status("Cleaning up scan %s…" % node)
+        def work():
+            ok=self._clean_subprocess(src, out); self.q.put(("proc_clean_done", name, node, ok))
+        threading.Thread(target=work, daemon=True).start()
+
     def on_process_pc(self):
         if getattr(self, "_fusing", False): return
         name=self.selected
@@ -2300,10 +2452,10 @@ class App(ctk.CTk):
         self._fusing=True
         try: self.proc_btn.configure(state="disabled")
         except Exception: pass
-        self.set_status("Process on PC - preparing…")
-        self._open_loader("Process on PC", "Finding raw frames…")
+        self.set_status("Building 3D models…")
+        for nd in self._proc_nodes(name): self._proc_progress(nd, None, "Waiting…")
         threading.Thread(target=self._fuse_worker, args=(name,), daemon=True).start()
-    def _fuse_worker(self, name):
+    def _fuse_worker(self, name, only_nodes=None):
         dest=self.dest.get() or DEFAULT_DEST; local=os.path.join(dest, name)
         nodes=[]
         for base in (os.path.join(PROJECTS, name), local):          # device listing first, else local
@@ -2311,10 +2463,12 @@ class App(ctk.CTk):
                 nodes=[n for n in sorted(os.listdir(os.path.join(base,"data"))) if os.path.isdir(os.path.join(base,"data",n))]
                 if nodes: break
             except Exception: pass
+        if only_nodes: nodes=[n for n in nodes if n in only_nodes]
         if not nodes:
             self.q.put(("fuse_done", ("err","no scan data found"))); return
         outs=[]; voxel=float(self.fuse_voxel.get() or 0.4)
         for ni,node in enumerate(nodes):
+            self.q.put(("fuse_node", node, None, "Preparing…"))
             lcache=os.path.join(local,"data",node,"cache"); lparam=os.path.join(local,"data",node,"param")
             dcache=os.path.join(PROJECTS,name,"data",node,"cache"); dparam=os.path.join(PROJECTS,name,"data",node,"param")
             if not glob.glob(os.path.join(lcache,"*.dph")):          # smart: local frames if present, else pull just what's needed
@@ -2347,13 +2501,17 @@ class App(ctk.CTk):
                     try: payload=json.loads(parts[2]) if len(parts)>2 else {}
                     except Exception: payload={}
                     if stage=="device": devname="GPU" if "CUDA" in str(payload.get("device","")) else "CPU"
-                    elif stage=="integrate": self.q.put(("fuse_status","Scan %d/%d: %s integrating frame %d/%d…"%(ni+1,len(nodes),devname,payload.get("done",0),payload.get("total",0))))
-                    elif stage=="extract": self.q.put(("fuse_status","Scan %d/%d: building the 3D model…"%(ni+1,len(nodes))))
+                    elif stage=="integrate":
+                        d,t_=payload.get("done",0),payload.get("total",0) or 1
+                        self.q.put(("fuse_status","Scan %d/%d: %s integrating frame %d/%d…"%(ni+1,len(nodes),devname,d,t_)))
+                        self.q.put(("fuse_node", node, 0.9*d/t_, "%s: frame %d of %d" % (devname, d, t_)))
+                    elif stage=="extract":
+                        self.q.put(("fuse_status","Scan %d/%d: building the 3D model…"%(ni+1,len(nodes)))); self.q.put(("fuse_node", node, 0.95, "Building the 3D model…"))
                     elif stage=="done": ok=True
                     elif stage=="error": log_line("fuse %s/%s: %s"%(name,node,payload.get("msg","")))
                 proc.wait()
-                if ok and os.path.exists(out): outs.append(os.path.basename(out))
-                else: log_line("fuse produced no mesh for %s/%s"%(name,node))
+                if ok and os.path.exists(out): outs.append(os.path.basename(out)); self.q.put(("fuse_node", node, 1.0, "Built: %s" % os.path.basename(out)))
+                else: log_line("fuse produced no mesh for %s/%s"%(name,node)); self.q.put(("fuse_node", node, 0.0, "Could not build this scan (see Help > Log)"))
             except Exception as e:
                 log_error("fuse-launch", e)
         if outs: self.q.put(("fuse_done", ("ok", ", ".join(outs))))
@@ -3163,7 +3321,7 @@ class App(ctk.CTk):
                     if ok: self.listed=False
                     else: self.set_banner("Couldn't connect: "+msg, WARN); log_line("mount failed: "+msg)
                 elif kind=="projects":
-                    self.listing=False; self.listed=True; self.listed_src=self._listing_src; self.render_list(rest[0])
+                    self.listing=False; self.listed=True; self.listed_src=self._listing_src; self.render_list(rest[0]); self._proc_refresh()
                     if not getattr(self, "_shots_loaded", False):   # auto-load device screenshots once
                         self._shots_loaded=True; self.refresh_screenshots()
                 elif kind=="sizes": self.projects_sig=None; self.update_summary()
@@ -3203,6 +3361,7 @@ class App(ctk.CTk):
                     zpath,sz,zfails=rest; self.pulling=False; self.zip_btn.configure(state="normal")
                     self.progress.set(0); self.progress.grid_remove()
                     self.progline.configure(text="Zipped -> %s (%s)"%(os.path.basename(zpath), human(sz)))
+                    if self.auto_open.get(): subprocess.Popen(["xdg-open", os.path.dirname(zpath)])   # same option as imports
                     if zfails:
                         self.set_banner("ZIP ready, but %d file(s) failed - see Help > Log."%zfails, WARN)
                     else:
@@ -3226,6 +3385,13 @@ class App(ctk.CTk):
                     n, d = rest[0]; self.set_status("")
                     self.set_banner("Pulled %d screenshot%s -> %s" % (n, "" if n==1 else "s", d), OK)
                     if self.auto_open.get(): subprocess.Popen(["xdg-open", d])
+                elif kind=="fuse_node": self._proc_progress(rest[0], rest[1], rest[2])
+                elif kind=="proc_clean_done":
+                    n,node,ok=rest; self.set_status("")
+                    if ok:
+                        self.set_banner("Cleaned scan %s: saved as a new version, the original is kept." % node, OK)
+                        self._proc_set_current(n, node, "clean"); self.gallery_cache.pop(n, None); self.projects_sig=None
+                    else: self.set_banner("Clean-up failed for scan %s (see Help > Log)." % node, WARN); self._proc_render(n)
                 elif kind=="fuse_status":
                     self.set_status(rest[0])
                     if getattr(self,"_loader_msg",None):
@@ -3244,6 +3410,7 @@ class App(ctk.CTk):
                         if self.auto_open.get(): self.open_folder()
                     else:
                         self.set_banner("Process on PC failed - see Help > Log. %s" % (info or ""), WARN); self.set_status("")
+                        if self.selected: self._proc_render(self.selected)
                 elif kind=="live_found":
                     if rest[0]:
                         self.live_ip.set(rest[0]); self.set_status("Scanner found at %s"%rest[0])
