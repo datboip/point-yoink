@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.8-pre"
+APP = "PointYoink"; VERSION = "0.9.9-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1057,6 +1057,7 @@ class App(ctk.CTk):
         self.chips=ctk.CTkFrame(ir, fg_color="transparent"); self.chips.pack(side="left")
         self.hdr_date=ctk.CTkLabel(ir, text="", text_color=DIM, anchor="w", font=ctk.CTkFont(size=11)); self.hdr_date.pack(side="left", padx=(10,0))
         self.detail=ctk.CTkLabel(self.projbar, text="", text_color=TX, anchor="w", justify="left", font=ctk.CTkFont(size=12), wraplength=360)
+        self.next_strip=ctk.CTkFrame(self.projbar, fg_color="#0f1a2b", corner_radius=12, border_width=1, border_color="#1f3a5f")   # NEXT: shown on the Projects page only
         self.tabs=TabStrip(centre, base=BG, size=13); self.tabs.grid(row=1,column=0, sticky="nsew")
         pv=self.tabs.add("3D preview"); fl=self.tabs.add("Files")
         ctl=ctk.CTkFrame(self.tabs.bar, fg_color="transparent"); ctl.pack(side="right", pady=(0,4))
@@ -1335,7 +1336,7 @@ class App(ctk.CTk):
         for b in self.list_selbtns:
             if imp: b.pack(side="right")
             else: b.pack_forget()
-        if imp: self.projpanel.grid_remove(); self.opts.grid()
+        if imp: self.projpanel.grid_remove(); self.opts.grid(); self.next_strip.pack_forget()
         else: self.opts.grid_remove(); self.projpanel.grid()
         self._bottom_refresh()
         self.projects_sig=None; self.render_list(getattr(self, "all_projects", self.projects))
@@ -1345,7 +1346,7 @@ class App(ctk.CTk):
         """Nothing selected on this page: the centre goes back to its empty state."""
         self.selected=None; self._film_sel=None; self._film_cells={}
         try:
-            self.projbar.grid_remove(); self.film.grid_remove(); self.proj_empty.grid()
+            self.next_strip.pack_forget(); self.projbar.grid_remove(); self.film.grid_remove(); self.proj_empty.grid()
             self._mv_key=None; self.mv.grid_remove(); self.big.grid(); self.big_empty.grid(); self.big_empty.lift()
         except Exception as e: log_error("clear selection", e)
     def _bottom_refresh(self):
@@ -2592,6 +2593,22 @@ class App(ctk.CTk):
         self._film_sel=node; self._mark_scan(node)
         try: self._request_shaded(name, node)
         except Exception: pass
+    def _next_refresh(self, name=None, nodes=None, local=None):
+        """The NEXT bar under the project title on the Projects page: what to do now, the step trail, one button."""
+        ns=self.next_strip
+        for w in ns.winfo_children(): w.destroy()
+        if self.page!="projects" or not name: ns.pack_forget(); return
+        title, detail, btxt, cmd, step = self._proc_next(name, nodes, local)
+        ns.pack(fill="x", pady=(2,6)); ns.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(ns, text="NEXT", text_color=AC, font=ctk.CTkFont(size=10, weight="bold")).grid(row=0,column=0, padx=(14,10), pady=(10,0), sticky="w")
+        ctk.CTkLabel(ns, text=title, text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w").grid(row=0,column=1, sticky="w", pady=(10,0))
+        ctk.CTkLabel(ns, text=detail, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=520).grid(row=1,column=1, sticky="w", pady=(0,2))
+        trail=ctk.CTkFrame(ns, fg_color="transparent"); trail.grid(row=2,column=1, sticky="w", pady=(0,10))
+        for i,nm in enumerate(self.STEPS):
+            col=(OK if i<step else (AC if i==step else DIM)); mark=("✓ " if i<step else ("▶ " if i==step else ""))
+            ctk.CTkLabel(trail, text=mark+nm, text_color=col, font=ctk.CTkFont(size=11, weight=("bold" if i==step else "normal"))).pack(side="left")
+            if i<len(self.STEPS)-1: ctk.CTkLabel(trail, text="  →  ", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left")
+        if btxt: ctk.CTkButton(ns, text=btxt, width=210, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).grid(row=0,column=2, rowspan=3, padx=14, pady=10)
     def _proc_next_strip(self, name, nodes, local):
         title, detail, btxt, cmd, step = self._proc_next(name, nodes, local)
         strip=ctk.CTkFrame(self.proc_cards, fg_color="#0f1a2b", corner_radius=14, border_width=1, border_color="#1f3a5f"); strip.grid(row=0, column=0, sticky="ew", padx=6, pady=(4,10))
@@ -2614,16 +2631,8 @@ class App(ctk.CTk):
         if not name or not local or not os.path.isdir(local):
             ctk.CTkLabel(pp, text="Pick a project on the left.", text_color=MUT, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=16, pady=20); return
         nodes=self._proc_nodes(name)
-        title, detail, btxt, cmd, step = self._proc_next(name, nodes, local)
-        nx=ctk.CTkFrame(pp, fg_color="#0f1a2b", corner_radius=12, border_width=1, border_color="#1f3a5f"); nx.pack(fill="x", padx=6, pady=(12,8))
-        ctk.CTkLabel(nx, text="NEXT", text_color=AC, font=ctk.CTkFont(size=10, weight="bold")).pack(anchor="w", padx=14, pady=(10,0))
-        ctk.CTkLabel(nx, text=title, text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w", justify="left", wraplength=200).pack(anchor="w", padx=14)
-        ctk.CTkLabel(nx, text=detail, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=200).pack(anchor="w", padx=14, pady=(2,6))
-        trail=ctk.CTkFrame(nx, fg_color="transparent"); trail.pack(anchor="w", padx=14, pady=(0,8))
-        for i,nm in enumerate(self.STEPS):
-            col=(OK if i<step else (AC if i==step else DIM)); mark=("✓" if i<step else ("▶" if i==step else "○"))
-            ctk.CTkLabel(trail, text=mark+nm, text_color=col, font=ctk.CTkFont(size=9, weight=("bold" if i==step else "normal"))).pack(side="left", padx=(0,5))
-        if btxt: ctk.CTkButton(nx, text=btxt, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=12, weight="bold"), command=cmd).pack(fill="x", padx=14, pady=(0,12))
+        self._next_refresh(name, nodes, local)
+        ctk.CTkFrame(pp, fg_color="transparent", height=6).pack()
         # the selected scan
         node=self._film_sel if self._film_sel in nodes else (nodes[0] if nodes else None)
         if node:
@@ -2989,21 +2998,40 @@ class App(ctk.CTk):
                 if hasattr(v, "clear_layers"): v.clear_layers(draw=False)
             caps[0].configure(text="Base · %s · click a recognisable spot" % lab(st["base"]))
             caps[1].configure(text="%s · then click the same spot here" % (lab(st["moving"]) if st["moving"] else "no scan"))
+            saved=rec.get(st["moving"]) if st["moving"] else None
+            saved=saved if (isinstance(saved, dict) and saved.get("base")==st["base"]) else None
+            if saved: st["pairs"]=[list(pr) for pr in saved.get("pairs", [])]
+            def restore(i):
+                """Put a kept alignment back on screen: its dots on both views, its overlay on the base view."""
+                if not saved or not can_pick or getattr(views[i], "tf", None) is None: return
+                import shade
+                pts=[pr[0] for pr in st["pairs"]] if i==0 else [pr[1] for pr in st["pairs"]]
+                views[i].markers=[(shade.world_to_view(pt, views[i].tf), self.PAIR_COLOURS[k % len(self.PAIR_COLOURS)]) for k,pt in enumerate(pts)]
+                views[i].draw()
+                if i==0 and hasattr(views[0], "add_layer") and st["moving"]:
+                    views[0].clear_layers(draw=False); views[0].add_layer(self._proc_current(name, st["moving"])[2], saved["matrix"], colour=(1.0,0.55,0.25))
+                    caps[0].configure(text="Base · %s (grey) with %s as kept (orange)" % (lab(st["base"]), lab(st["moving"])))
             def shown(i):
                 def cb(ok):
                     if not t.winfo_exists(): return
                     loads[i].grid_remove()
                     if not ok: caps[i].configure(text=caps[i].cget("text")+"  (could not load)", text_color=WARN)
+                    else: restore(i)
                 return cb
             for i,l in enumerate(loads): l.configure(text="Loading the 3D view…"); l.grid(); l.lift()
             views[0].load(self._proc_current(name, st["base"])[2], shown(0), max_faces=600000)     # lighter copies: they appear in seconds and picking stays accurate
             if st["moving"]: views[1].load(self._proc_current(name, st["moving"])[2], shown(1), max_faces=600000)
             else: loads[1].grid_remove()
-            keepb.pack_forget(); status.configure(text="")
+            keepb.pack_forget()
+            if saved:
+                fit=saved.get("fitness"); n=len(st["pairs"])
+                status.configure(text="%s was lined up %s%s%s. Add or undo points and press Line up from points again, or press Start over." % (
+                    lab(st["moving"]), saved.get("when","before"), (" with %d point pair%s" % (n, "" if n==1 else "s")) if n else " by Auto", (", %.0f%% overlap" % (fit*100)) if fit else ""), text_color=TX)
+            else: status.configure(text="")
             hint.configure(text=("Click a spot you can recognise on the base scan, then the same spot on the other scan. Three pairs are enough; five spread-out ones are better. Then press Line up from points. "
                                  "Or press Auto if the two scans overlap a lot.") if can_pick else
                                 "Point picking needs the graphics-card 3D view (Settings). Auto still works when the scans overlap a lot.")
-            pairs_lbl.configure(text="0 pairs")
+            pairs_lbl.configure(text="%d pair%s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s")); able(alignb, len(st["pairs"])>=3)
         def pick_base():
             newb=next(n for n in nodes if lab(n)==bsel.get())
             if newb==st["base"]: return
@@ -3034,6 +3062,14 @@ class App(ctk.CTk):
             able(alignb, len(st["pairs"])>=3)
         if can_pick:
             views[0].on_pick=lambda w,v: on_pick(0, w, v); views[1].on_pick=lambda w,v: on_pick(1, w, v)
+        def start_over():
+            st["pairs"]=[]; st["pending"]=None; st["result"]=None
+            for v in views:
+                if hasattr(v, "markers"): v.markers=[]
+                if hasattr(v, "clear_layers"): v.clear_layers(draw=False)
+                v.draw()
+            caps[0].configure(text="Base · %s · click a recognisable spot" % lab(st["base"]))
+            pairs_lbl.configure(text="0 pairs"); able(alignb, False); keepb.pack_forget(); status.configure(text="Cleared. Click new points, or Auto.", text_color=MUT)
         def undo():
             if st["pending"] is not None: st["pending"]=None; views[0].markers.pop(); views[0].draw()
             elif st["pairs"]: st["pairs"].pop(); views[0].markers.pop(); views[1].markers.pop(); views[0].draw(); views[1].draw()
@@ -3098,10 +3134,11 @@ class App(ctk.CTk):
             threading.Thread(target=work, daemon=True).start()
         def keep():
             if not st["result"]: return
-            rec[st["moving"]]={"base": st["base"], "matrix": st["result"]["matrix"], "fitness": st["result"].get("fitness"), "rmse": st["result"].get("rmse"), "when": time.strftime("%Y-%m-%d %H:%M")}
+            rec[st["moving"]]={"base": st["base"], "matrix": st["result"]["matrix"], "fitness": st["result"].get("fitness"), "rmse": st["result"].get("rmse"),
+                               "pairs": [list(pr) for pr in st["pairs"]], "when": time.strftime("%Y-%m-%d %H:%M")}
             rec["_base"]=st["base"]; self._persist(); refresh_chips(); keepb.pack_forget()
             self.set_banner("%s lined up to %s. Saved with the project." % (lab(st["moving"]), lab(st["base"])), OK)
-            nxt=next((n for n in nodes if n!=st["base"] and n not in rec), None)
+            nxt=next((n for n in nodes if n!=st["base"] and not (isinstance(rec.get(n), dict) and rec[n].get("base")==st["base"])), None)
             if nxt: st["moving"]=nxt; msel.set(lab(nxt)); load_views(); status.configure(text="Now line up %s." % lab(nxt))
             else: status.configure(text="Every scan is lined up. Build one model from all of them below.")
         def combine():
@@ -3114,6 +3151,7 @@ class App(ctk.CTk):
             t.after(1500, watch)
         pairs_lbl=ctk.CTkLabel(btns, text="0 pairs", text_color=MUT, font=ctk.CTkFont(size=12)); pairs_lbl.pack(side="left", padx=(6,10))
         ctk.CTkButton(btns, text="Undo point", width=100, height=32, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=undo).pack(side="left", padx=4)
+        ctk.CTkButton(btns, text="Start over", width=90, height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, command=start_over).pack(side="left", padx=4)
         alignb=ctk.CTkButton(btns, text="Line up from points", width=160, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", state="disabled", command=lambda: run_align(False)); alignb.pack(side="left", padx=4)
         autob=ctk.CTkButton(btns, text="Auto", width=80, height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: run_align(True)); autob.pack(side="left", padx=4)
         self._tip(autob, "Finds the fit by itself. Works when the two scans share a lot of surface; otherwise use points.")

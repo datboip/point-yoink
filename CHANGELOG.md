@@ -3,7 +3,25 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
-## 0.9.9 (local)
+## 0.9.9 (pre-release, testing; source on the dev branch, no package)
+- **Import and Projects are separate pages.** Import is the scanner: what is on
+  it and the import options. Projects is this PC: the 3D view and scan strip in
+  the middle, and a panel on the right with the selected scan's versions and
+  actions plus the whole-project actions. The app opens on Projects when no
+  scanner is attached.
+- **NEXT bar** under the project title says what to do now, with one button
+  and the trail Build → Cut base → Combine → Prepare → Export.
+- **Remove base per scan** remembers the plane you placed; combining drops
+  everything below each scan's plane while fusing, so the table never gets
+  fused in. Cut base is its own step before Combine.
+- **Combine window** remembers your point pairs: reopen a lined-up scan to see
+  its dots and overlay, add or undo points, or start over. Busy bar with the
+  stage and seconds; fine adjustment takes seconds, not minutes.
+- **Compare versions**: two linked 3D views, any scan or version in each.
+- What the scanner already did is visible: raw only / partly scanner-edited /
+  scanner-edited badges per project, and per scan.
+- 3D views rotate freely with no stops. Prepare dialog shows live linked
+  before/after views and can remove the base.
 - **Prepare page** (was Process): the clean-up button is four named actions
   in one dialog: Remove floating pieces, Smooth surface, Fill small holes,
   Reduce triangle count, each with the scanner's default. It runs on a copy,
