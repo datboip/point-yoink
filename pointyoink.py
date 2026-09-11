@@ -460,7 +460,7 @@ class ActionRow(ctk.CTkFrame):
         return super().cget(attribute_name)
 
 ROW="transparent"            # project list row at rest (selected rows use SELB)
-MODE_LABEL={"Projects":"Import","Captures":"Captures","Process":"Prepare","Live":"Live view"}
+MODE_LABEL={"Projects":"Import","Local":"Projects","Captures":"Captures","Process":"Prepare","Live":"Live view"}
 MODE_KEY={v:k for k,v in MODE_LABEL.items()}
 
 class TabStrip(ctk.CTkFrame):
@@ -949,8 +949,8 @@ class App(ctk.CTk):
         ctk.CTkLabel(wm, text="v"+VERSION, font=ctk.CTkFont(size=10), text_color=DIM).pack(side="left", padx=(6,0), pady=(6,0))
         self._modes=TabStrip(h, command=lambda lab: self._set_mode(lab), content=False, base=CARD, size=13)
         self._modes.grid(row=0,column=2, sticky="w", padx=(26,0), pady=(8,0))
-        self._modes.add("Import", icon="⬇"); self._modes.add("Captures", icon="▣")
-        self._modes.add("Prepare", tag="In development", icon="✦"); self._modes.add("Live view", tag="Planned", icon="◉")
+        self._modes.add("Import", icon="⬇"); self._modes.add("Projects", icon="▤"); self._modes.add("Captures", icon="▣")
+        self._modes.add("Live view", tag="Planned", icon="◉")
         self.mode_sw=_ModeSwitch(self._modes)
         btns=ctk.CTkFrame(h, fg_color="transparent"); btns.grid(row=0,column=3, sticky="e", padx=(0,14)); self._hbtns=btns
         sb=ctk.CTkButton(btns, text="⚙  Settings", width=96, height=30, corner_radius=6, fg_color="transparent", hover_color=CARD2,
@@ -1015,11 +1015,13 @@ class App(ctk.CTk):
         left=ctk.CTkFrame(pm, fg_color="transparent", width=300); left.grid(row=0,column=0, sticky="nsew")
         left.grid_propagate(False); left.grid_rowconfigure(2, weight=1); left.grid_columnconfigure(0, weight=1)
         lh=ctk.CTkFrame(left, fg_color="transparent"); lh.grid(row=0,column=0, sticky="ew", padx=(18,10), pady=(14,8))
-        ctk.CTkLabel(lh, text="Projects", font=ctk.CTkFont(size=15,weight="bold"), text_color=TX, anchor="w").pack(side="left")
-        ctk.CTkButton(lh, text="none", width=44, height=22, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT,
-                      font=ctk.CTkFont(size=10), command=self.select_none).pack(side="right")
-        ctk.CTkButton(lh, text="all", width=36, height=22, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT,
-                      font=ctk.CTkFont(size=10), command=self.select_all).pack(side="right")
+        self.page="import"
+        self.list_title=ctk.CTkLabel(lh, text="On the scanner", font=ctk.CTkFont(size=15,weight="bold"), text_color=TX, anchor="w"); self.list_title.pack(side="left")
+        b1=ctk.CTkButton(lh, text="none", width=44, height=22, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT,
+                      font=ctk.CTkFont(size=10), command=self.select_none); b1.pack(side="right")
+        b2=ctk.CTkButton(lh, text="all", width=36, height=22, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT,
+                      font=ctk.CTkFont(size=10), command=self.select_all); b2.pack(side="right")
+        self.list_selbtns=[b1, b2]
         se=ctk.CTkEntry(left, placeholder_text="⌕  Search projects…", height=34, corner_radius=8,
                         fg_color="#0d0f14", border_color=STROKE, text_color=TX, placeholder_text_color=MUT, font=ctk.CTkFont(size=12))
         se.grid(row=1,column=0, sticky="ew", padx=18, pady=(0,6))
@@ -1097,6 +1099,7 @@ class App(ctk.CTk):
         self.side=ctk.CTkFrame(pm, fg_color="transparent", width=278); self.side.grid(row=0,column=4, sticky="nsew")
         self.side.grid_propagate(False); self.side.grid_columnconfigure(0, weight=1); self.side.grid_rowconfigure(0, weight=1)
         self.opts=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.opts.grid(row=0,column=0, sticky="nsew", padx=(6,0))
+        self.projpanel=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.projpanel.grid(row=0,column=0, sticky="nsew", padx=(6,0)); self.projpanel.grid_remove()
         self.rail_btns={}; self.rail_bars={}
 
         # -- Process mode: the selected project's scans, each with its versions and the tools --
@@ -1258,11 +1261,11 @@ class App(ctk.CTk):
         ctk.CTkLabel(op, text="Original PLY files are kept", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6, pady=(4,0))
         self._hr(op)
         # editing is an action with a result, not an import option: it lives on the Process page
-        ctk.CTkLabel(op, text="Edit", text_color=TX, font=ctk.CTkFont(size=13, weight="bold"), anchor="w").pack(fill="x", padx=16, pady=(4,2))
-        eb=ctk.CTkButton(op, text="✦  Prepare: build, clean up, export…", height=32, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
-                         hover_color=CARD2, text_color=TX, anchor="w", command=lambda: self._set_mode("Process"))
+        ctk.CTkLabel(op, text="After importing", text_color=TX, font=ctk.CTkFont(size=13, weight="bold"), anchor="w").pack(fill="x", padx=16, pady=(4,2))
+        eb=ctk.CTkButton(op, text="▤  Open the Projects page…", height=32, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
+                         hover_color=CARD2, text_color=TX, anchor="w", command=lambda: self._set_mode("Local"))
         eb.pack(fill="x", padx=14, pady=(0,4))
-        self._tip(eb, "Opens the Prepare page for the selected project: build 3D models from raw data, remove floating pieces, smooth, cut the base, pick which version to keep, export.")
+        self._tip(eb, "Everything on this PC lives on the Projects page: build 3D models from raw data, line up scans, prepare, export.")
         self._hr(op)
         self._title(op, "Destination")
         dr=ctk.CTkFrame(op, fg_color="transparent"); dr.pack(fill="x", padx=6, pady=(2,0)); dr.grid_columnconfigure(0, weight=1)
@@ -1302,17 +1305,41 @@ class App(ctk.CTk):
         column: 'folder' opens the Files tab, 'edit' the Process tab, anything else is a no-op."""
         if key=="folder":
             self._set_mode("Projects"); self.tabs.set("Files"); self._fit_folder(); self.refresh_folder()
-        elif key=="edit": self._set_mode("Process")
+        elif key=="edit": self._set_mode("Local")
         elif key in ("project","import"): self._set_mode("Projects")
         self.side_mode=key if key in self.sections else None; self.cfg["side"]=self.side_mode or "none"
     def _set_mode(self, m):
+        """Import and Projects share one page (list | preview | right column); the page just changes what it shows:
+        Import = what is on the scanner with the import options, Projects = what is on this PC with the project panel."""
         m=MODE_KEY.get(m, m)
-        if m not in self.mode_frames: return
+        if m=="Local": self.page="projects"; target=self.mode_frames["Projects"]
+        elif m=="Projects": self.page="import"; target=self.mode_frames["Projects"]
+        elif m in self.mode_frames: target=self.mode_frames[m]
+        else: return
         for k,f in self.mode_frames.items():
-            if k==m: f.grid()
+            if f is target: f.grid()
             else: f.grid_remove()
-        self._modes.set(MODE_LABEL.get(m, m))
+        self._modes.set("Projects" if m in ("Local","Process") else MODE_LABEL.get(m, m))
+        if m in ("Projects","Local"): self._apply_page()
         if m=="Projects" and self.tabs.get()=="Files" and not self._folder_loaded: self._folder_loaded=True; self.refresh_folder()
+    def _page_filter(self, projs):
+        if self.page=="projects": return [p for p in projs if p.get("local") or self.is_imported(p["name"])]
+        return [p for p in projs if not p.get("local")]
+    def _apply_page(self):
+        imp=(self.page=="import")
+        self.list_title.configure(text="On the scanner" if imp else "On this PC")
+        for b in self.list_selbtns:
+            if imp: b.pack(side="right")
+            else: b.pack_forget()
+        if imp: self.projpanel.grid_remove(); self.opts.grid()
+        else: self.opts.grid_remove(); self.projpanel.grid()
+        self._bottom_refresh()
+        self.projects_sig=None; self.render_list(getattr(self, "all_projects", self.projects))
+        if not imp: self._panel_refresh()
+    def _bottom_refresh(self):
+        if getattr(self, "pulling", False): return
+        if self.page=="import": self.import_btn.grid(row=0,column=3, padx=(6,20), pady=(12,4))
+        else: self.import_btn.grid_remove()
     def _fit_folder(self, _=None):
         """Tree rows from the space it has, so the folder view fills the Files tab."""
         try:
@@ -1754,14 +1781,21 @@ class App(ctk.CTk):
     def render_list(self, projs):
         # include imported/changed state and the search text so the list re-renders when files or the filter change
         q=(self.search.get() or "").strip().lower()
-        sig=json.dumps([q]+[[p, self.is_imported(p["name"]), self.changed(p["name"])] for p in projs])
+        self.all_projects=projs; projs=self._page_filter(projs)
+        sig=json.dumps([q, self.page]+[[p, self.is_imported(p["name"]), self.changed(p["name"])] for p in projs])
         if sig==self.projects_sig: return
         self.projects_sig=sig; self.projects=projs
         for w in self.llist.winfo_children(): w.destroy()
         old=self.pull_sel; self.pull_sel={}; self.rows={}
         if not projs:
-            self.list_empty=self._empty_state(self.llist, "projects"); self.list_empty.grid(row=0,column=0, sticky="nsew")
-            self._fit_empty("list_empty", self.llist)
+            if self.page=="projects":
+                self.list_empty=ctk.CTkFrame(self.llist, fg_color="transparent"); self.list_empty.grid(row=0,column=0, sticky="nsew")
+                ctk.CTkLabel(self.list_empty, text="Nothing on this PC yet", text_color=TX, font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(60,4))
+                ctk.CTkLabel(self.list_empty, text="Import a project from the scanner first.\nIt shows up here with everything you make from it.", text_color=MUT, font=ctk.CTkFont(size=12), justify="center").pack()
+                ctk.CTkButton(self.list_empty, text="⬇  Go to Import", width=140, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=lambda: self._set_mode("Projects")).pack(pady=14)
+            else:
+                self.list_empty=self._empty_state(self.llist, "projects"); self.list_empty.grid(row=0,column=0, sticky="nsew")
+                self._fit_empty("list_empty", self.llist)
             # nothing to preview either: cover the preview box (and park the 3D view so it cannot draw over the panel)
             self._mv_key=None; self.mv.grid_remove(); self.big.grid(); self.big_empty.grid(); self.big_empty.lift()
         else: self.list_empty=None
@@ -1775,8 +1809,9 @@ class App(ctk.CTk):
             card=ctk.CTkFrame(self.llist, fg_color=(SELB if name==self.selected else ROW), corner_radius=10, border_width=0)
             card.grid(row=2*shown, column=0, sticky="ew", pady=(2,0), padx=4); card.grid_columnconfigure(2, weight=1)
             self.rows[name]=card
-            ctk.CTkCheckBox(card, text="", width=24, checkbox_width=20, checkbox_height=20, corner_radius=5, border_color=DIM,
-                            variable=var, fg_color=AC, hover_color=AC_H).grid(row=0,column=0, padx=(8,0), pady=10)
+            if self.page=="import":
+                ctk.CTkCheckBox(card, text="", width=24, checkbox_width=20, checkbox_height=20, corner_radius=5, border_color=DIM,
+                                variable=var, fg_color=AC, hover_color=AC_H).grid(row=0,column=0, padx=(8,0), pady=10)
             tbox=ctk.CTkFrame(card, fg_color="#0a0c10", corner_radius=8, width=60, height=50); tbox.grid(row=0,column=1, padx=(2,2), pady=8); tbox.grid_propagate(False)
             tbox.grid_columnconfigure(0, weight=1); tbox.grid_rowconfigure(0, weight=1)
             if p.get("thumb"):
@@ -1895,6 +1930,7 @@ class App(ctk.CTk):
     def _pick_scan(self, name, node, path):
         self._film_sel=node; self._mark_scan(node)
         self._set_big_image(path); self._request_shaded(name, node)
+        if self.page=="projects": self._panel_refresh()
     def _mark_scan(self, node):
         for nd,cell in self._film_cells.items():
             try: cell.configure(border_color=(AC if nd==node else STROKE))
@@ -2420,6 +2456,7 @@ class App(ctk.CTk):
         self.proc_pick.set(self.disp(name) if name else "No projects on this PC yet")
         self._proc_render(name)
     def _proc_render(self, name):
+        if getattr(self, "page", "import")=="projects" and hasattr(self, "projpanel"): self._panel_refresh()
         for w in self.proc_cards.winfo_children():
             if w is not self._proc_empty: w.destroy()
         self._proc_rows={}
@@ -2524,6 +2561,62 @@ class App(ctk.CTk):
             if i<3: ctk.CTkLabel(trail, text="  →  ", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left")
         if btxt:
             ctk.CTkButton(strip, text=btxt, width=190, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).grid(row=0,column=2, rowspan=3, padx=16, pady=12)
+    def _panel_refresh(self):
+        """The right column on the Projects page: what to do next, the selected scan's versions and actions, project actions."""
+        pp=self.projpanel
+        for w in pp.winfo_children(): w.destroy()
+        name=self.selected; dest=self.dest.get() or DEFAULT_DEST; local=os.path.join(dest, name) if name else None
+        if not name or not local or not os.path.isdir(local):
+            ctk.CTkLabel(pp, text="Pick a project on the left.", text_color=MUT, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=16, pady=20); return
+        nodes=self._proc_nodes(name)
+        title, detail, btxt, cmd, step = self._proc_next(name, nodes, local)
+        nx=ctk.CTkFrame(pp, fg_color="#0f1a2b", corner_radius=12, border_width=1, border_color="#1f3a5f"); nx.pack(fill="x", padx=6, pady=(12,8))
+        ctk.CTkLabel(nx, text="NEXT", text_color=AC, font=ctk.CTkFont(size=10, weight="bold")).pack(anchor="w", padx=14, pady=(10,0))
+        ctk.CTkLabel(nx, text=title, text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w", justify="left", wraplength=200).pack(anchor="w", padx=14)
+        ctk.CTkLabel(nx, text=detail, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=200).pack(anchor="w", padx=14, pady=(2,6))
+        trail=ctk.CTkFrame(nx, fg_color="transparent"); trail.pack(anchor="w", padx=14, pady=(0,8))
+        for i,nm in enumerate(("Build", "Combine", "Prepare", "Export")):
+            col=(OK if i<step else (AC if i==step else DIM)); mark=("✓" if i<step else ("▶" if i==step else "○"))
+            ctk.CTkLabel(trail, text=mark+" "+nm, text_color=col, font=ctk.CTkFont(size=10, weight=("bold" if i==step else "normal"))).pack(side="left", padx=(0,8))
+        if btxt: ctk.CTkButton(nx, text=btxt, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=12, weight="bold"), command=cmd).pack(fill="x", padx=14, pady=(0,12))
+        # the selected scan
+        node=self._film_sel if self._film_sel in nodes else (nodes[0] if nodes else None)
+        if node:
+            vs=self._proc_versions(name, node); cur=self._proc_current(name, node)
+            raw=len(glob.glob(os.path.join(local, "data", node, "cache", "*.dph"))); has_prep=any(k=="clean" for k,_,_ in vs)
+            self._title(pp, self._scan_label(name, node), size=14, pady=(10,0))
+            sub=("built from the scans you lined up" if node=="combined" else ("%d raw frames on this PC" % raw if raw else "no raw data on this PC"))
+            ctk.CTkLabel(pp, text=sub, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6)
+            if vs:
+                ctk.CTkLabel(pp, text="Versions (tick = the one the preview and exports use)", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w").pack(fill="x", padx=6, pady=(8,2))
+                for key,label,path in vs:
+                    is_cur=(cur and cur[0]==key)
+                    chip=ctk.CTkFrame(pp, fg_color=("#15304d" if is_cur else CARD2), corner_radius=9); chip.pack(fill="x", padx=6, pady=2)
+                    b=ctk.CTkButton(chip, text=("✓ " if is_cur else "")+label+"  ·  "+human(os.path.getsize(path)), height=24, corner_radius=9, fg_color="transparent", hover_color=STROKE, anchor="w",
+                                    text_color=(AC if is_cur else TX), font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key: self._proc_set_current(n, nd, k)); b.pack(side="left", fill="x", expand=True, padx=(6,0))
+                    x=ctk.CTkButton(chip, text="✕", width=24, height=24, corner_radius=9, fg_color="transparent", hover_color="#3a2530", text_color=MUT, font=ctk.CTkFont(size=11),
+                                    command=lambda n=name,nd=node,k=key,pth=path: self._proc_delete_version(n, nd, k, pth)); x.pack(side="right")
+                    self._tip(x, "Delete this version (to the trash)")
+            else: ctk.CTkLabel(pp, text="No 3D model yet", text_color=WARN, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6, pady=(6,0))
+            primary="build" if (raw and not vs) else ("prepare" if (vs and not has_prep) else ("export" if vs else None))
+            def mk(kind, text, enabled, cmd, tip):
+                filled=(kind==primary and enabled)
+                b=ctk.CTkButton(pp, text=text, height=32, corner_radius=8, fg_color=(AC if filled else "transparent"), hover_color=(AC_H if filled else CARD2), border_width=(0 if filled else 1), border_color=STROKE,
+                                text_color=("#04121f" if filled else (TX if enabled else MUT)), state=("normal" if enabled else "disabled"), anchor="w", command=cmd)
+                b.pack(fill="x", padx=6, pady=(6,0)); self._tip(b, tip); return b
+            if node!="combined": mk("build", "⚙  Build model", bool(raw), lambda n=name,nd=node: self._proc_build(n, [nd]), "Build this scan's 3D model from its raw data, on this PC." if raw else "No raw data on this PC for this scan (share the project over WiFi as Full project).")
+            mk("prepare", "✦  Prepare…", bool(vs), lambda n=name,nd=node: self._prepare_dialog(n, nd), "Remove floating pieces or the base, smooth, fill holes, reduce triangles. Before and after, then keep or discard.")
+            mk("export", "⬆  Export…", bool(vs), lambda n=name,nd=node: self._export_dialog(n, nd), "Save as STL, OBJ, GLB or PLY with a size and mesh check.")
+        self._hr(pp, pady=(14,6)); self._title(pp, "Whole project", size=13)
+        def act(text, cmd, tip=None, danger=False):
+            b=ctk.CTkButton(pp, text=text, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=("#3a2530" if danger else CARD2), text_color=(MUT if danger else TX), anchor="w", command=cmd)
+            b.pack(fill="x", padx=6, pady=3)
+            if tip: self._tip(b, tip)
+        act("⧉  Combine scans…", lambda: self._align_dialog(name), "Scanned each side separately? Line the scans up and build one model from all of them.")
+        act("⚙  Build all models", self.on_process_pc, "Build the 3D model of every scan that has raw data.")
+        act("✂  Remove base by hand…", self.on_remove_base, "Slice the table off the current scan with a cut plane you place yourself.")
+        act("▤  All scans as cards…", lambda: self._set_mode("Process"), "The detail page: every scan with its versions and actions.")
+        act("🗑  Delete project from this PC", self._proc_delete_project, "Everything in its folder goes to the trash. The scanner copy is not touched.", danger=True)
     def _proc_progress(self, node, frac, text):
         r=self._proc_rows.get(node)
         if not r: return
@@ -3802,7 +3895,7 @@ class App(ctk.CTk):
         except Exception as e:
             log_error("zip", e); self.q.put(("zipfail", str(e)))
     def _finish(self, dest, failed, cancelled=False):
-        self.pulling=False; self.cancel_btn.grid_remove(); self.import_btn.grid(row=0,column=3)
+        self.pulling=False; self.cancel_btn.grid_remove(); self._bottom_refresh()
         try:
             if self.progress.cget("mode")=="indeterminate": self.progress.stop(); self.progress.configure(mode="determinate")
         except Exception: pass
@@ -3846,7 +3939,12 @@ class App(ctk.CTk):
                     if ok: self.listed=False
                     else: self.set_banner("Couldn't connect: "+msg, WARN); log_line("mount failed: "+msg)
                 elif kind=="projects":
-                    self.listing=False; self.listed=True; self.listed_src=self._listing_src; self.render_list(rest[0]); self._proc_refresh()
+                    self.listing=False; self.listed=True; self.listed_src=self._listing_src
+                    if not getattr(self, "_first_listed", False):
+                        self._first_listed=True
+                        if self.listed_src=="local" and any(p.get("local") for p in rest[0]): self._set_mode("Local")   # no scanner: start on what is on this PC
+                    self.render_list(rest[0]); self._proc_refresh()
+                    if self.page=="projects": self._panel_refresh()
                     if not getattr(self, "_shots_loaded", False):   # auto-load device screenshots once
                         self._shots_loaded=True; self.refresh_screenshots()
                 elif kind=="sizes": self.projects_sig=None; self.update_summary()

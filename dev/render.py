@@ -35,9 +35,10 @@ import pointyoink as P
 app = P.App()
 def finish():
     try:
-        if a.mode != "Projects":
+        if a.mode not in ("Projects", "Local"):
             app.mode_sw.set(a.mode); app._set_mode(a.mode)
         elif a.select != "none" and app.projects:
+            app._set_mode(a.mode); app.update()      # Projects = the Import page, Local = the Projects page
             name = app.projects[0]["name"] if a.select == "first" else a.select
             app.select_project(name)
             if a.section != "none": app.set_side(a.section, True)
