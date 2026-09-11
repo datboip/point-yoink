@@ -442,9 +442,9 @@ class App(ctk.CTk):
         # window size: default, but never bigger than the screen (keeps it usable on small/scaled displays)
         try:
             sw=self.winfo_screenwidth(); sh=self.winfo_screenheight()
-            dw=min(1080, int(sw*0.92)); dh=min(840, int(sh*0.90))
+            dw=min(1090, int(sw*0.92)); dh=min(1070, int(sh*0.90))   # tall enough for preview + renders + tools
         except Exception:
-            dw,dh=1080,840
+            dw,dh=1090,1070
         self.title("%s  %s" % (APP, VERSION))
         self.geometry(self.cfg.get("geometry", "%dx%d"%(dw,dh)))
         self.minsize(min(940,dw), min(680,dh))
@@ -687,8 +687,8 @@ class App(ctk.CTk):
                                  segmented_button_selected_color=AC, text_color=TX)
         self.tabs.grid(row=0,column=0, sticky="nsew")
         pv=self.tabs.add("Preview"); fl=self.tabs.add("Files")
-        pv.grid_columnconfigure(0, weight=1); pv.grid_rowconfigure(0, weight=1, minsize=240)
-        bigwrap=ctk.CTkFrame(pv, fg_color="transparent"); bigwrap.grid(row=0,column=0, sticky="nsew"); bigwrap.grid_propagate(False)
+        pv.grid_columnconfigure(0, weight=1); pv.grid_rowconfigure(0, weight=1, minsize=120)
+        bigwrap=ctk.CTkFrame(pv, fg_color="transparent", height=120); bigwrap.grid(row=0,column=0, sticky="nsew"); bigwrap.grid_propagate(False)
         bigwrap.grid_columnconfigure(0, weight=1); bigwrap.grid_rowconfigure(0, weight=1)
         self.big=ctk.CTkLabel(bigwrap, text="Select a project to preview its scans", fg_color="#0a0c10",
                               corner_radius=12, text_color=MUT); self.big.grid(row=0,column=0, sticky="nsew", padx=10, pady=10)
@@ -697,8 +697,8 @@ class App(ctk.CTk):
         self.detail.grid(row=1,column=0, sticky="w", padx=12); self.detail.grid_remove()
         self.renders_lbl=ctk.CTkLabel(pv, text="scan renders (click to enlarge)", text_color=MUT, font=ctk.CTkFont(size=11))
         self.renders_lbl.grid(row=2,column=0, sticky="w", padx=12, pady=(6,0)); self.renders_lbl.grid_remove()
-        self.film=ctk.CTkScrollableFrame(pv, orientation="horizontal", fg_color="transparent", height=104)
-        self.film.grid(row=3,column=0, sticky="ew", padx=8, pady=(0,10)); self.film.grid_remove()
+        self.film=ctk.CTkScrollableFrame(pv, orientation="horizontal", fg_color="transparent", height=72)
+        self.film.grid(row=3,column=0, sticky="ew", padx=8, pady=(0,8)); self.film.grid_remove()
         # Tools toolbar: grouped scan actions (no floating buttons -> no square-corner artifacts)
         self.tools=ctk.CTkFrame(pv, fg_color=CARD2, corner_radius=12)
         self.tools.grid(row=4,column=0, sticky="ew", padx=10, pady=(0,10)); self.tools.grid_remove()
