@@ -1242,8 +1242,12 @@ class App(ctk.CTk):
         self._opt(op, "check", "GLB", None, self.exp_glb, tip="For the web and editing")
         ctk.CTkLabel(op, text="Original PLY files are kept", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6, pady=(4,0))
         self._hr(op)
-        self._opt(op, "check", "Clean up on import", "Drops floating bits, fills small holes", self.cleanup,
-                  tip="Tidy the 3D model on your PC during import: keep the main object (remove floating bits), fill small holes, and lightly smooth. Off = raw mesh, untouched.")
+        # editing is an action with a result, not an import option: it lives on the Process page
+        ctk.CTkLabel(op, text="Edit", text_color=TX, font=ctk.CTkFont(size=13, weight="bold"), anchor="w").pack(fill="x", padx=16, pady=(4,2))
+        eb=ctk.CTkButton(op, text="✦  Clean up, build, remove base…", height=32, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
+                         hover_color=CARD2, text_color=TX, anchor="w", command=lambda: self._set_mode("Process"))
+        eb.pack(fill="x", padx=14, pady=(0,4))
+        self._tip(eb, "Opens the Process page for the selected project: build 3D models from raw data, clean them up, cut the base, pick which version to keep.")
         self._hr(op)
         self._title(op, "Destination")
         dr=ctk.CTkFrame(op, fg_color="transparent"); dr.pack(fill="x", padx=6, pady=(2,0)); dr.grid_columnconfigure(0, weight=1)
