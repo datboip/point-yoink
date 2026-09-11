@@ -646,7 +646,7 @@ class App(ctk.CTk):
         self.mode_sw=ctk.CTkSegmentedButton(h, values=["Projects","Captures","Live"], command=self._set_mode, height=30, corner_radius=15,
                                             fg_color=CARD2, selected_color=STROKE, selected_hover_color=STROKE, unselected_color=CARD2, unselected_hover_color="#242b38",
                                             text_color=TX, font=ctk.CTkFont(size=12, weight="bold"))
-        self.mode_sw.grid(row=0,column=2, padx=20); self.mode_sw.set("Projects")
+        self.mode_sw.grid(row=0,column=2, padx=16); self.mode_sw.set("Projects")
         if os.path.exists(ICON):
             try:
                 self.imgs["logo"]=cimg(ICON,30)
@@ -655,12 +655,10 @@ class App(ctk.CTk):
         col=ctk.CTkFrame(h, fg_color="transparent"); col.grid(row=0,column=1, sticky="w")
         ctk.CTkLabel(col, text=APP, font=ctk.CTkFont(family=WORDMARK, size=18, weight="bold"), text_color=TX).pack(side="left")
         ctk.CTkLabel(col, text="v"+VERSION, font=ctk.CTkFont(size=11), text_color=MUT).pack(side="left", padx=(6,12), pady=(3,0))
-        ctk.CTkLabel(col, text="yoink 3D scans off your Revopoint MIRACO over USB or WiFi",
-                     font=ctk.CTkFont(size=11), text_color=MUT).pack(side="left", pady=(3,0))
         btns=ctk.CTkFrame(h, fg_color="transparent"); btns.grid(row=0,column=3, sticky="e"); self._hbtns=btns
-        for t,c in [("Settings",self.dlg_settings),("Help",self.dlg_help),("About",self.dlg_about)]:
-            ctk.CTkButton(btns, text=t, width=82, height=30, corner_radius=15, fg_color=CARD2,
-                          hover_color=STROKE, text_color=TX, command=c).pack(side="left", padx=4)
+        for t,tip,c in [("⚙","Settings",self.dlg_settings),("?","Help",self.dlg_help),("i","About PointYoink",self.dlg_about)]:
+            b=ctk.CTkButton(btns, text=t, width=34, height=30, corner_radius=15, fg_color=CARD2, hover_color=STROKE, text_color=TX,
+                            font=ctk.CTkFont(size=13, weight="bold"), command=c); b.pack(side="left", padx=3); self._tip(b, tip)
 
     # ---- status ----
     def _statusbar(self):
@@ -689,7 +687,7 @@ class App(ctk.CTk):
         pm=self.mode_frames["Projects"]
         pm.grid_columnconfigure(1, weight=1); pm.grid_rowconfigure(0, weight=1)
 
-        left=ctk.CTkFrame(pm, fg_color=CARD, corner_radius=14, width=300); left.grid(row=0,column=0, sticky="nsew")
+        left=ctk.CTkFrame(pm, fg_color=CARD, corner_radius=14, width=280); left.grid(row=0,column=0, sticky="nsew")
         left.grid_propagate(False); left.grid_rowconfigure(1, weight=1); left.grid_columnconfigure(0, weight=1)
         lh=ctk.CTkFrame(left, fg_color="transparent"); lh.grid(row=0,column=0, sticky="ew", padx=12, pady=(10,0))
         ctk.CTkLabel(lh, text="PROJECTS", font=ctk.CTkFont(size=12,weight="bold"), text_color=MUT).pack(side="left", padx=4)
@@ -700,7 +698,7 @@ class App(ctk.CTk):
         self.llist=ctk.CTkScrollableFrame(left, fg_color="transparent"); self.llist.grid(row=1,column=0, sticky="nsew", padx=6, pady=6)
         self.llist.grid_columnconfigure(0, weight=1)
 
-        centre=ctk.CTkFrame(pm, fg_color="transparent"); centre.grid(row=0,column=1, sticky="nsew", padx=(12,0))
+        centre=ctk.CTkFrame(pm, fg_color="transparent"); centre.grid(row=0,column=1, sticky="nsew", padx=(10,0))
         centre.grid_rowconfigure(0, weight=1); centre.grid_columnconfigure(0, weight=1)
         self.tabs=ctk.CTkTabview(centre, fg_color=CARD, corner_radius=14, segmented_button_fg_color=CARD2,
                                  segmented_button_selected_color=AC, text_color=TX)
@@ -710,7 +708,7 @@ class App(ctk.CTk):
         bigwrap=ctk.CTkFrame(pv, fg_color="transparent", height=120); bigwrap.grid(row=0,column=0, sticky="nsew"); bigwrap.grid_propagate(False)
         bigwrap.grid_columnconfigure(0, weight=1); bigwrap.grid_rowconfigure(0, weight=1)
         self.big=ctk.CTkLabel(bigwrap, text="Select a project to preview its scans", fg_color="#0a0c10",
-                              corner_radius=12, text_color=MUT); self.big.grid(row=0,column=0, sticky="nsew", padx=10, pady=10)
+                              corner_radius=12, text_color=MUT); self.big.grid(row=0,column=0, sticky="new", padx=10, pady=10)
         self.big.bind("<Configure>", self._on_big_resize)
         self.renders_lbl=ctk.CTkLabel(pv, text="scan renders (click to enlarge)", text_color=MUT, font=ctk.CTkFont(size=11))
         self.renders_lbl.grid(row=1,column=0, sticky="w", padx=12, pady=(2,0)); self.renders_lbl.grid_remove()
@@ -718,7 +716,7 @@ class App(ctk.CTk):
         self.film.grid(row=2,column=0, sticky="ew", padx=8, pady=(0,8)); self.film.grid_remove()
 
         # side panel + rail: click a rail icon to open that section, click again to fold the panel away
-        self.side=ctk.CTkFrame(pm, fg_color=CARD, corner_radius=14, width=300); self.side.grid(row=0,column=2, sticky="nsew", padx=(12,0))
+        self.side=ctk.CTkFrame(pm, fg_color=CARD, corner_radius=14, width=290); self.side.grid(row=0,column=2, sticky="nsew", padx=(10,0))
         self.side.grid_propagate(False); self.side.grid_columnconfigure(0, weight=1); self.side.grid_rowconfigure(1, weight=1)
         self.side_title=ctk.CTkLabel(self.side, text="", font=ctk.CTkFont(size=12,weight="bold"), text_color=MUT, anchor="w")
         self.side_title.grid(row=0,column=0, sticky="ew", padx=16, pady=(12,4))
@@ -739,8 +737,10 @@ class App(ctk.CTk):
         self.projbar=ctk.CTkFrame(ps, fg_color="transparent"); self.projbar.grid(row=1,column=0, sticky="nsew"); self.projbar.grid_remove()
         self.projbar.grid_columnconfigure(0, weight=1)
         self.detail=ctk.CTkLabel(self.projbar, text="", text_color=TX, anchor="w", justify="left", font=ctk.CTkFont(size=12), wraplength=260)
-        self.detail.grid(row=0,column=0, sticky="ew", padx=16, pady=(4,10))
-        self.tools=ctk.CTkFrame(self.projbar, fg_color="transparent"); self.tools.grid(row=1,column=0, sticky="ew", padx=12); self.tools.grid_remove()
+        self.detail.grid(row=0,column=0, sticky="ew", padx=16, pady=(4,4))
+        rn=ctk.CTkButton(self.projbar, text="✎ rename", width=70, height=22, corner_radius=11, fg_color="transparent", hover_color=STROKE, text_color=MUT,
+                         font=ctk.CTkFont(size=10), command=lambda: self.selected and self.rename_project(self.selected)); rn.grid(row=0,column=1, sticky="ne", padx=(0,12), pady=(6,0))
+        self.tools=ctk.CTkFrame(self.projbar, fg_color="transparent"); self.tools.grid(row=1,column=0, columnspan=2, sticky="ew", padx=12, pady=(6,0)); self.tools.grid_remove()
         self.view_btn=ctk.CTkButton(self.tools, text="⟳  View in 3D", height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX,
                                     border_width=1, border_color=STROKE, font=ctk.CTkFont(size=12,weight="bold"), anchor="w", command=self.on_view_3d)
         self.view_btn.pack(fill="x", pady=3)
@@ -1344,15 +1344,15 @@ class App(ctk.CTk):
             card=ctk.CTkFrame(self.llist, fg_color=CARD2, corner_radius=12, border_width=0)
             card.grid(row=i, column=0, sticky="ew", pady=5, padx=2); card.grid_columnconfigure(2, weight=1)
             self.rows[name]=card
-            ctk.CTkCheckBox(card, text="", width=24, variable=var, fg_color=AC, hover_color=AC_H).grid(row=0,column=0, padx=(10,4), pady=10)
+            ctk.CTkCheckBox(card, text="", width=24, variable=var, fg_color=AC, hover_color=AC_H).grid(row=0,column=0, padx=(8,0), pady=10)
             if p.get("thumb"):
-                try: self.imgs["row_"+name]=cimg(p["thumb"],54); ctk.CTkLabel(card, image=self.imgs["row_"+name], text="").grid(row=0,column=1, padx=4)
-                except Exception: ctk.CTkLabel(card, text="-", text_color=MUT, width=54).grid(row=0,column=1)
-            else: ctk.CTkLabel(card, text="-", text_color=MUT, width=54).grid(row=0,column=1)
+                try: self.imgs["row_"+name]=cimg(p["thumb"],48); ctk.CTkLabel(card, image=self.imgs["row_"+name], text="").grid(row=0,column=1, padx=2)
+                except Exception: ctk.CTkLabel(card, text="-", text_color=MUT, width=48).grid(row=0,column=1)
+            else: ctk.CTkLabel(card, text="-", text_color=MUT, width=48).grid(row=0,column=1)
             txt=ctk.CTkFrame(card, fg_color="transparent"); txt.grid(row=0,column=2, sticky="ew", padx=6, pady=6)
             # line 1: name (+ original id underneath if it was renamed)
             ctk.CTkLabel(txt, text=self.disp(name), text_color=TX, font=ctk.CTkFont(size=12,weight="bold"),
-                         anchor="w").pack(anchor="w", fill="x")
+                         anchor="w", justify="left", wraplength=140).pack(anchor="w", fill="x")
             if self.records.get(name,{}).get("label"):
                 ctk.CTkLabel(txt, text=name, text_color=MUT, font=ctk.CTkFont(size=9), anchor="w").pack(anchor="w", fill="x")
             # line 2: date · size
@@ -1372,8 +1372,6 @@ class App(ctk.CTk):
             if badge:
                 ctk.CTkLabel(ml, text=badge[0], text_color=badge[1], fg_color=badge[2], corner_radius=8, width=1, height=18,
                              font=ctk.CTkFont(size=10)).pack(side="left", padx=(8,0), ipadx=6)
-            ctk.CTkButton(card, text="✎", width=30, height=30, corner_radius=15, fg_color="transparent",
-                          hover_color=STROKE, text_color=MUT, command=lambda n=name: self.rename_project(n)).grid(row=0,column=3, padx=(0,8))
             for w in [card, txt, ml] + txt.winfo_children() + ml.winfo_children():
                 w.bind("<Button-1>", lambda e,n=name: self.select_project(n))
         threading.Thread(target=self._compute_sizes, args=([p["name"] for p in projs],), daemon=True).start()
@@ -1443,7 +1441,7 @@ class App(ctk.CTk):
         src=getattr(self,"_big_src",None)
         if src is None or "big" not in self.imgs: return
         try:
-            bw=max(60, self.big.winfo_width()-24); bh=max(60, self.big.winfo_height()-24)
+            bw=max(60, self.big.master.winfo_width()-44); bh=max(60, self.big.master.winfo_height()-44)
             iw,ih=src.size
             scale=min(bw/iw, bh/ih)
             scale=min(scale, 2.2)   # cap upscaling so a small preview doesn't get too blurry
