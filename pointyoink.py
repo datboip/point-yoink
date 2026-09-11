@@ -1339,7 +1339,15 @@ class App(ctk.CTk):
         else: self.opts.grid_remove(); self.projpanel.grid()
         self._bottom_refresh()
         self.projects_sig=None; self.render_list(getattr(self, "all_projects", self.projects))
+        if self.selected and self.selected not in {p["name"] for p in self.projects}: self._clear_selection()
         if not imp: self._panel_refresh()
+    def _clear_selection(self):
+        """Nothing selected on this page: the centre goes back to its empty state."""
+        self.selected=None; self._film_sel=None; self._film_cells={}
+        try:
+            self.projbar.grid_remove(); self.film.grid_remove(); self.proj_empty.grid()
+            self._mv_key=None; self.mv.grid_remove(); self.big.grid(); self.big_empty.grid(); self.big_empty.lift()
+        except Exception as e: log_error("clear selection", e)
     def _bottom_refresh(self):
         if getattr(self, "pulling", False): return
         if self.page=="import": self.import_btn.grid(row=0,column=3, padx=(6,20), pady=(12,4))

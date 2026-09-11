@@ -41,7 +41,8 @@ def finish():
             app._set_mode(a.mode); app.update()      # Projects = the Import page, Local = the Projects page
             name = app.projects[0]["name"] if a.select == "first" else a.select
             app.select_project(name)
-            if a.section != "none": app.set_side(a.section, True)
+            if a.mode == "Local": pass                          # the Projects page has no side sections
+            elif a.section != "none": app.set_side(a.section, True)
             else: app.set_side(app.side_mode)  # fold
         app.update_idletasks(); app.update()
         app.after(700, shoot)
