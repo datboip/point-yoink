@@ -1784,7 +1784,7 @@ class App(ctk.CTk):
             self.big_hint.configure(text="Scanner preview · 3D render unavailable"); return
         if mesh.startswith(PROJECTS) and self.pulling:
             self.big_hint.configure(text="Scanner preview · the 3D render waits for the import to finish"); return
-        self.big_hint.configure(text="Rendering 3D preview…")
+        self.big_hint.configure(text="Rendering 3D preview…"); self._dim_preview()
         with self._shade_lock:
             self._shade_want=(key, mode, name, mesh, out); start=not self._shade_running; self._shade_running=True
         if start: threading.Thread(target=self._shade_thread, daemon=True).start()
@@ -1807,6 +1807,16 @@ class App(ctk.CTk):
                 self.q.put(("shaded", key, mode, out))
             except Exception as e:
                 log_error("shaded-preview "+key, e); self.q.put(("shaded", key, mode, None))
+    def _dim_preview(self):
+        """Darken whatever the preview box shows while a render is in flight, so the wait is obvious."""
+        try:
+            from PIL import ImageEnhance
+            src=getattr(self, "_big_src", None)
+            if src is None: return
+            dim=ImageEnhance.Brightness(src).enhance(0.35)
+            self.imgs["big"]=ctk.CTkImage(light_image=dim, dark_image=dim, size=self.imgs["big"].cget("size") if "big" in self.imgs else (320,240))
+            self.big.configure(image=self.imgs["big"], text="")
+        except Exception: pass
     def _show_shaded(self, out):
         self._set_big_image(out)
         self.big_hint.configure(text="Static render · View in 3D to rotate and zoom")
