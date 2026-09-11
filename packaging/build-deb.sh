@@ -2,7 +2,7 @@
 # Build a .deb for PointYoink. Bundles the pip-only Python libs (customtkinter,
 # trimesh + pure-python deps) and declares the rest as apt dependencies.
 set -e
-VER="${1:-0.3.0}"
+VER="${1:-$(grep -oP 'VERSION = "\K[0-9.]+' "$(dirname "$0")/../pointyoink.py")}"
 ROOT="$HOME/pointyoink"
 BUILD="$ROOT/packaging/build"
 PKG="$BUILD/pointyoink_${VER}_amd64"
