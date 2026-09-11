@@ -1961,8 +1961,14 @@ class App(ctk.CTk):
         self._mv_start()                            # a local model: start the live view now, don't wait for the still image
         st=self._mesh_stats.get(key)
         if st: self._show_stats(st)
-        try: fresh=os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh)
-        except Exception: fresh=False
+        try:
+            fresh=os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh) and os.path.getsize(out)>1024
+            if fresh:
+                Image.open(out).verify()          # a render killed half-way leaves a broken PNG behind: redo it
+        except Exception:
+            fresh=False
+            try: os.remove(out)
+            except Exception: pass
         if fresh:
             self._show_shaded(out)
             if not st: threading.Thread(target=lambda: self.q.put(("mesh_stats", key, _ply_counts(mesh))), daemon=True).start()

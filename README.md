@@ -120,11 +120,12 @@ The `.ply` mesh is what you print or render; the `_cloud.ply` is the raw point c
 
 ## Process on PC
 
-The MIRACO does its fusion and meshing on a phone-class chip, so it is slow and gives you few knobs. PointYoink can do that step on your computer instead: **Tools -> Process on PC** rebuilds a scan's mesh from the raw depth frames, using your GPU when one is available. It matches the scanner's own output to about 0.2 mm, and it works on scans you never fused on the device.
+The MIRACO builds its 3D models on a phone-class chip, so it is slow and gives you few knobs. PointYoink can do that step on your computer instead: **Process on PC** builds a scan's 3D model from the raw scan data, on your graphics card when there is one (an NVIDIA card does a scan in seconds; the CPU takes minutes).
 
-- If you imported the project with **Models only** off, the raw frames are already on disk and it fuses immediately. Otherwise it pulls just the frames and calibration it needs (a few hundred MB per scan over USB), then fuses.
-- The result lands next to the project as `<name>_<scan>_pcfused.ply`, ready for View in 3D, Remove base, and export.
-- Detail is set in Settings (voxel size; 0.4 mm matches the scanner, 0.3 is finer).
+- Raw scan data comes over WiFi with **Full project** (over USB it is impractically slow, about 4 seconds per file).
+- The result lands next to the project as `<name>_<scan>_pcfused.ply`, ready for the 3D view, Remove base and export.
+- Measured against the scanner's own model of the same scan: the surfaces agree to about 0.5 mm where both exist. What the scanner's One-tap Edit adds on top is clean-up (floaters removed, base cut, holes filled, smoothed); in PointYoink those are separate steps for now, so a freshly built model is noisier than the scanner's until you run them. See `dev/compare.py`.
+- Detail is set in Settings (voxel size; 0.4 mm matches the scanner, 0.3 is finer and uses more memory).
 - Needs [Open3D](https://www.open3d.org/), which is large and optional: `pip3 install --user --break-system-packages open3d`. PointYoink tells you if it is missing.
 
 ## Troubleshooting
