@@ -3,7 +3,24 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
-## 0.9.4 (local, unreleased)
+## 0.9.5 (local, unreleased)
+- New window layout, built to the reference concept: mode tabs in the header
+  (Import, Captures, Process, Live view), a device bar with the connection
+  state and the WiFi / USB / Refresh buttons, a searchable project list with
+  friendly names, the project in the centre (title, 3D preview / Files, Solid /
+  Wireframe, View in 3D, the scan strip with "Scan 01" tiles and mesh stats),
+  import options always visible on the right, and one "Import" button.
+- **Interactive 3D in the window**: drag to rotate, scroll to zoom, right-drag
+  to pan, double-click to reset, Solid or Wireframe. Software rendered (no GPU
+  needed); a cached shaded render shows instantly while the live view loads.
+- Review fixes: clean-up writes `_clean.ply` and keeps the original, runs in a
+  memory-capped process; ZIP entries from nested imports get unique names and
+  conversion failures are counted; import and viewer workers always finish;
+  "imported" needs a real file; private thumbnail cache; log copy hides your
+  home path; USB connect releases GNOME's grab on the scanner; tooltips no
+  longer flash.
+
+## 0.9.4 (local)
 - New arrangement: Projects / Captures / Live are modes in the header; WiFi and
   USB sit next to Settings; all status lives in the bottom bar. In Projects the
   list is on the left, Preview / Files in the centre, and a side panel on the
