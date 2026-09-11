@@ -42,3 +42,8 @@ That is the whole workflow. Everything below is optional.
   before you type the code).
 - USB shows "Not connected": tap **File Transfer** on the scanner, then click **USB** again.
 - "Imported" badge but no files: the badge only appears when a real model landed; re-import.
+
+## Screenshots and recordings
+
+They only come over the USB cable (Captures tab). WiFi sends the project you share and nothing
+else; the scanner has no way to offer its screenshots over the network.
