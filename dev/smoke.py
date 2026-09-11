@@ -15,6 +15,7 @@ cfgdir = tempfile.mkdtemp(prefix="py-smoke-"); cfg = os.path.join(cfgdir, "confi
 json.dump({"dest": a.dest, "models_only": True, "geometry": "1090x1070", "exp_stl": True}, open(cfg, "w"))
 os.environ["POINTYOINK_CONFIG"] = cfg; os.environ["POINTYOINK_SCALE"] = "1.0"
 os.environ.setdefault("POINTYOINK_NO_GL", "1")   # a virtual X server has no GL drawable for the GPU view
+os.environ.setdefault("POINTYOINK_NO_HOWTO", "1")  # no first-run dialog in scripted runs
 sys.path.insert(0, os.path.abspath(a.src))
 import pointyoink as P
 

@@ -1341,7 +1341,9 @@ class App(ctk.CTk):
         self._bottom_refresh()
         self.projects_sig=None; self.render_list(getattr(self, "all_projects", self.projects))
         if self.selected and self.selected not in {p["name"] for p in self.projects}: self._clear_selection()
-        if not imp: self._panel_refresh()
+        if not imp:
+            self._panel_refresh()
+            if not self.cfg.get("seen_howto") and self.projects and os.environ.get("POINTYOINK_NO_HOWTO")!="1": self.after(900, self._howto_dialog)
     def _clear_selection(self):
         """Nothing selected on this page: the centre goes back to its empty state."""
         self.selected=None; self._film_sel=None; self._film_cells={}
@@ -1509,6 +1511,7 @@ class App(ctk.CTk):
         t=self._top("How to use "+APP, 780, 700)
         if t is None: return
         head=ctk.CTkFrame(t, fg_color="transparent"); head.pack(fill="x", padx=22, pady=(18,6))
+        ctk.CTkButton(head, text="The five steps…", width=130, height=30, corner_radius=15, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=self._howto_dialog).pack(side="right")
         if os.path.exists(ICON):
             try: self.imgs["helpico"]=cimg(ICON,46); ctk.CTkLabel(head, image=self.imgs["helpico"], text="").pack(side="left", padx=(0,12))
             except Exception: pass
@@ -2593,6 +2596,28 @@ class App(ctk.CTk):
         self._film_sel=node; self._mark_scan(node)
         try: self._request_shaded(name, node)
         except Exception: pass
+    HOWTO=(("Import", "⬇", "Get the project off the scanner: USB lists everything on it, WiFi Share to PC sends one project. Finished models is quick; Full project also brings the raw frames you need for building and combining here."),
+           ("Build", "⚙", "A scan is raw frames until something fuses them into a 3D model. The scanner does that with One-tap Edit; this PC does it with Build, in seconds on a graphics card, using the scanner's own registration. Easiest: One-tap Edit on the scanner when it turns out fine, Build here when it does not."),
+           ("Cut base", "✂", "Every scan carries the table under the part. Drag one line above it and apply. The cut is remembered for that scan and applied again when scans are combined, so the table never gets fused in."),
+           ("Combine", "⧉", "Scanned each side separately? Pick a base scan, click three to five matching spots on it and on another scan, Line up, check the orange overlay, Keep. Repeat for each side, then Build one model from all their frames at once. Your points stay editable."),
+           ("Prepare", "✦", "Remove floating pieces, smooth, fill small holes, reduce triangles. It runs on a copy and shows before and after; Keep or Discard. Once Combined exists, prepare that one."),
+           ("Export", "⬆", "Pick the version, the format (STL for slicers, OBJ, GLB, PLY) and the folder. The size and a mesh check are shown first: open edges and extra pieces mean the surface is not closed."))
+    def _howto_dialog(self):
+        t=self._top("How PointYoink works", 700, 640, key="howto")
+        if t is None: return
+        box=ctk.CTkScrollableFrame(t, fg_color="transparent"); box.pack(fill="both", expand=True, padx=12, pady=(12,0))
+        ctk.CTkLabel(box, text="Scan to model, in five steps", text_color=TX, font=ctk.CTkFont(size=17, weight="bold"), anchor="w").pack(fill="x", padx=10, pady=(6,2))
+        ctk.CTkLabel(box, text="The NEXT bar on the Projects page always shows which step you are on and does it with one button. Originals are never changed: every step saves a new version.",
+                     text_color=MUT, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=620).pack(fill="x", padx=10, pady=(0,10))
+        for i,(nm,ico,txt) in enumerate(self.HOWTO):
+            card=ctk.CTkFrame(box, fg_color=CARD, corner_radius=12); card.pack(fill="x", padx=6, pady=4)
+            ctk.CTkLabel(card, text="%s  %d · %s" % (ico, i, nm) if i else "%s  %s" % (ico, nm), text_color=AC, font=ctk.CTkFont(size=13, weight="bold"), anchor="w").pack(fill="x", padx=14, pady=(10,2))
+            ctk.CTkLabel(card, text=txt, text_color=TX, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=600).pack(fill="x", padx=14, pady=(0,10))
+        row=ctk.CTkFrame(t, fg_color="transparent"); row.pack(fill="x", padx=12, pady=10)
+        def ok(): self.cfg["seen_howto"]=True; save_cfg(self.cfg); self._dialogs.pop("howto", None); t.destroy()
+        ctk.CTkButton(row, text="Got it", width=110, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=ok).pack(side="right")
+        ctk.CTkLabel(row, text="Open this again any time from the ? button or the NEXT bar.", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
+        t.protocol("WM_DELETE_WINDOW", ok)
     def _next_refresh(self, name=None, nodes=None, local=None):
         """The NEXT bar under the project title on the Projects page: what to do now, the step trail, one button."""
         ns=self.next_strip
@@ -2601,6 +2626,8 @@ class App(ctk.CTk):
         title, detail, btxt, cmd, step = self._proc_next(name, nodes, local)
         ns.pack(fill="x", pady=(2,6)); ns.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(ns, text="NEXT", text_color=AC, font=ctk.CTkFont(size=10, weight="bold")).grid(row=0,column=0, padx=(14,10), pady=(10,0), sticky="w")
+        hb=ctk.CTkButton(ns, text="how this works", width=90, height=20, corner_radius=6, fg_color="transparent", hover_color="#15304d", text_color=DIM, font=ctk.CTkFont(size=10), command=self._howto_dialog)
+        hb.grid(row=2,column=0, padx=(8,0), pady=(0,10), sticky="w")
         ctk.CTkLabel(ns, text=title, text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w").grid(row=0,column=1, sticky="w", pady=(10,0))
         ctk.CTkLabel(ns, text=detail, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=640).grid(row=1,column=1, columnspan=2, sticky="w", padx=(0,14), pady=(0,2))
         trail=ctk.CTkFrame(ns, fg_color="transparent"); trail.grid(row=2,column=1, columnspan=2, sticky="w", pady=(0,10))
@@ -2657,7 +2684,8 @@ class App(ctk.CTk):
                                     command=lambda n=name,nd=node,k=key,pth=path: self._proc_delete_version(n, nd, k, pth)); x.pack(side="right")
                     self._tip(x, "Delete this version (to the trash)")
             else: ctk.CTkLabel(pp, text="No 3D model yet", text_color=WARN, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6, pady=(6,0))
-            primary="build" if (raw and not vs) else ("cut" if (vs and node!="combined" and node not in self._base_planes(name)) else ("prepare" if (vs and not has_prep) else ("export" if vs else None)))
+            combined_exists=("combined" in nodes and node!="combined")
+            primary="build" if (raw and not vs) else ("cut" if (vs and node!="combined" and node not in self._base_planes(name)) else (None if combined_exists else ("prepare" if (vs and not has_prep) else ("export" if vs else None))))
             def mk(kind, text, enabled, cmd, tip):
                 filled=(kind==primary and enabled)
                 b=ctk.CTkButton(pp, text=text, height=32, corner_radius=8, fg_color=(AC if filled else "transparent"), hover_color=(AC_H if filled else CARD2), border_width=(0 if filled else 1), border_color=STROKE,
@@ -2665,8 +2693,10 @@ class App(ctk.CTk):
                 b.pack(fill="x", padx=6, pady=(6,0)); self._tip(b, tip); return b
             if node!="combined": mk("build", "⚙  Build model", bool(raw), lambda n=name,nd=node: self._proc_build(n, [nd]), "Build this scan's 3D model from its raw data, on this PC." if raw else "No raw data on this PC for this scan (share the project over WiFi as Full project).")
             if node!="combined": mk("cut", "✂  Remove base…", bool(vs), lambda nd=node: self.on_remove_base(nd), "Drag one line just above the table and apply. Saves a prepared version and remembers the cut for combining.")
-            mk("prepare", "✦  Prepare…", bool(vs), lambda n=name,nd=node: self._prepare_dialog(n, nd), "Remove floating pieces, smooth, fill holes, reduce triangles. Before and after, then keep or discard.")
-            mk("export", "⬆  Export…", bool(vs), lambda n=name,nd=node: self._export_dialog(n, nd), "Save as STL, OBJ, GLB or PLY with a size and mesh check.")
+            aside="This project has a Combined model: prepare and export that one (pick the Combined tile). The cards page still allows it per scan."
+            mk("prepare", "✦  Prepare…", bool(vs) and not combined_exists, lambda n=name,nd=node: self._prepare_dialog(n, nd), aside if combined_exists else "Remove floating pieces, smooth, fill holes, reduce triangles. Before and after, then keep or discard.")
+            mk("export", "⬆  Export…", bool(vs) and not combined_exists, lambda n=name,nd=node: self._export_dialog(n, nd), aside if combined_exists else "Save as STL, OBJ, GLB or PLY with a size and mesh check.")
+            if combined_exists: ctk.CTkLabel(pp, text="Combined exists: prepare and export it instead of single scans.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=230).pack(fill="x", padx=6, pady=(4,0))
         self._hr(pp, pady=(14,6)); self._title(pp, "Whole project", size=13)
         def act(text, cmd, tip=None, danger=False):
             b=ctk.CTkButton(pp, text=text, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=("#3a2530" if danger else CARD2), text_color=(MUT if danger else TX), anchor="w", command=cmd)
