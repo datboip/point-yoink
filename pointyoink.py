@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.0"
+APP = "PointYoink"; VERSION = "0.9.1"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -290,19 +290,59 @@ def list_recordings():
     except Exception: pass
     return out
 
-def project_model_size(name):
+SKIP_LOCAL = {"range", "wifi", "device-screenshots"}
+def list_local_projects(dest):
+    """Projects already on this PC (USB or WiFi imports), so the list works with no scanner attached."""
+    out=[]
+    try: names=sorted(os.listdir(dest), reverse=True)
+    except Exception: return out
+    for name in names:
+        pdir=os.path.join(dest, name)
+        if name.startswith(".") or name in SKIP_LOCAL or name.endswith("_glb") or not os.path.isdir(pdir): continue
+        flat=[x for x in glob.glob(os.path.join(pdir, name+"_*.ply")) if not x.endswith("_cloud.ply")]
+        nested=glob.glob(os.path.join(pdir, "data", "*", "fuse_mesh.ply"))
+        clouds=glob.glob(os.path.join(pdir, name+"_*_cloud.ply")) or glob.glob(os.path.join(pdir, "data", "*", "fuse.ply"))
+        nodes=set(os.path.basename(x)[len(name)+1:-4] for x in flat) | set(os.path.basename(os.path.dirname(x)) for x in nested) \
+              | set(os.path.basename(d) for d in glob.glob(os.path.join(pdir, "data", "*")) if os.path.isdir(d))
+        if not (flat or nested or clouds or os.path.exists(os.path.join(pdir, name+".revo"))): continue
+        info={"name":name, "local":True, "meshes":len(flat or nested), "clouds":len(clouds), "nodes":len(nodes) or None, "date":None, "thumb":None, "edit_time":None}
+        try:
+            d=json.load(open(os.path.join(pdir, name+".revo"))); et=d.get("edit_time")
+            if et: info["date"]=time.strftime("%Y-%m-%d %H:%M", time.localtime(int(et))); info["edit_time"]=int(et)
+        except Exception:
+            try: info["date"]=time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(pdir)))
+            except Exception: pass
+        tp=os.path.join(THUMBS, name+"__thumb.png")
+        if not os.path.exists(tp):
+            for src in sorted(glob.glob(os.path.join(pdir, name+"_*.png"))) + sorted(glob.glob(os.path.join(pdir, "data", "*", "preview.png"))):
+                try: os.makedirs(THUMBS, exist_ok=True); shutil.copyfile(src, tp); break
+                except Exception: pass
+        if os.path.exists(tp): info["thumb"]=tp
+        out.append(info)
+    return out
+
+def project_model_size(name, local=None):
     total=0; files=[]
-    for ply in glob.glob(os.path.join(PROJECTS,name,"data","*","*.ply")):
+    plys=glob.glob(os.path.join(PROJECTS,name,"data","*","*.ply"))
+    if not plys and local:
+        plys=glob.glob(os.path.join(local, "*.ply")) or glob.glob(os.path.join(local, "data", "*", "*.ply"))
+    for ply in plys:
         try:
             sz=os.path.getsize(ply); total+=sz
             files.append((os.path.basename(os.path.dirname(ply)), os.path.basename(ply), sz))
         except Exception: pass
     return total, files
 
-def gather_gallery(name):
+def gather_gallery(name, local=None):
     paths=[]
     try: nodes=sorted(os.listdir(os.path.join(PROJECTS,name,"data")))
-    except Exception: return paths
+    except Exception:
+        nodes=[]
+    if not nodes and local:      # project only on this PC: flat <name>_<node>.png or nested previews
+        for png in sorted(glob.glob(os.path.join(local, name+"_*.png"))): paths.append((os.path.basename(png)[len(name)+1:-4], png))
+        if not paths:
+            for pv in sorted(glob.glob(os.path.join(local, "data", "*", "preview.png"))): paths.append((os.path.basename(os.path.dirname(pv)), pv))
+        return paths
     for node in nodes:
         prev=os.path.join(PROJECTS,name,"data",node,"preview.png")
         lp=os.path.join(THUMBS,"%s__%s.png"%(name,node))
@@ -425,7 +465,7 @@ class App(ctk.CTk):
         self.selected=None; self.gallery_cache={}; self.size_cache={}
         self.rows={}; self.serial=None
         self.pulling=False; self.cancel=False; self.listing=False; self.listed=False; self.proc=None
-        self._mounting=False; self.auto_tried=False; self._wifi=None
+        self._mounting=False; self.auto_tried=False; self._wifi=None; self.listed_src=None; self._listing_src=None
         self.report_callback_exception = self._on_tk_error
         log_line("PointYoink %s started" % VERSION)
 
@@ -1138,14 +1178,15 @@ class App(ctk.CTk):
     def refresh_loop(self):
         if not self.pulling and not self._wifi:
             st,serial=usb_state(); self.serial=serial; mounted=quick_mounted()
+            if not mounted and self.listed_src!="local": self.listed=False; self.start_listing()   # show what's on this PC
             if st=="absent":
-                self.set_banner("Scanner not detected - plug in the USB-C cable.", WARN)
-                self.action_btn.configure(text="Connect", state="normal"); self.listed=False; self.auto_tried=False
+                self.set_banner("Scanner not detected - plug in the USB-C cable, or use WiFi.", WARN)
+                self.action_btn.configure(text="Connect", state="normal"); self.auto_tried=False
             elif st=="adb":
                 self.set_banner("MIRACO detected · Not connected - tap “File Transfer” on the scanner", WARN)
-                self.action_btn.configure(text="Connect", state="normal"); self.listed=False; self.auto_tried=False
+                self.action_btn.configure(text="Connect", state="normal"); self.auto_tried=False
             elif st=="mtp" and not mounted:
-                self.action_btn.configure(text="Connect", state="normal"); self.listed=False
+                self.action_btn.configure(text="Connect", state="normal")
                 if self._mounting:
                     self.set_banner("Connecting…", AC)
                 elif not self.auto_tried:
@@ -1154,6 +1195,7 @@ class App(ctk.CTk):
                     self.set_banner("MIRACO detected · Not connected - click Connect →", AC)
             elif mounted:
                 self.action_btn.configure(text="Rescan", state="normal")
+                if self.listed_src!="device": self.listed=False
                 if self.listed:
                     self.set_banner("Connected - tick scans to import, click one to preview.", OK)
                     if self.projects: self.render_list(self.projects)   # refresh badges if files changed on disk (cheap no-op otherwise)
@@ -1161,8 +1203,12 @@ class App(ctk.CTk):
         self.after(1500, self.refresh_loop)
     def start_listing(self):
         if self.listing: return
-        self.listing=True
-        threading.Thread(target=lambda: self.q.put(("projects", list_projects())), daemon=True).start()
+        self.listing=True; dest=self.dest.get() or DEFAULT_DEST; self._listing_src="device" if quick_mounted() else "local"
+        def work():
+            dev=list_projects() if self._listing_src=="device" else []
+            names={p["name"] for p in dev}
+            self.q.put(("projects", dev+[p for p in list_local_projects(dest) if p["name"] not in names]))
+        threading.Thread(target=work, daemon=True).start()
     def on_mount(self):
         if self._mounting: return
         st,_=usb_state()
@@ -1207,7 +1253,9 @@ class App(ctk.CTk):
             if p.get("clouds"): parts.append("%d cloud%s"%(p["clouds"], "s" if p["clouds"]!=1 else ""))
             ml=ctk.CTkFrame(txt, fg_color="transparent"); ml.pack(anchor="w", fill="x")
             ctk.CTkLabel(ml, text=" · ".join(parts), text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left")
-            if self.is_imported(name):
+            if p.get("local"):
+                ctk.CTkLabel(ml, text="  ● on this PC", text_color=AC, font=ctk.CTkFont(size=10)).pack(side="left")
+            elif self.is_imported(name):
                 if self.changed(name):
                     ctk.CTkLabel(ml, text="  ↻ updated", text_color=WARN, font=ctk.CTkFont(size=10)).pack(side="left")
                 else:
@@ -1219,9 +1267,10 @@ class App(ctk.CTk):
         threading.Thread(target=self._compute_sizes, args=([p["name"] for p in projs],), daemon=True).start()
         if projs and not self.selected: self.select_project(projs[0]["name"])
     def _compute_sizes(self, names):
+        dest=self.dest.get() or DEFAULT_DEST
         for n in names:
             if n not in self.size_cache:
-                sz,_=project_model_size(n); self.size_cache[n]=sz; self.q.put(("sizes",None))
+                sz,_=project_model_size(n, os.path.join(dest, n)); self.size_cache[n]=sz; self.q.put(("sizes",None))
     def select_project(self, name):
         self.selected=name
         for n,card in self.rows.items():
@@ -1239,10 +1288,12 @@ class App(ctk.CTk):
         if name in self.gallery_cache: self.render_gallery(name, self.gallery_cache[name])
         else:
             ctk.CTkLabel(self.film, text="loading scan renders…", text_color=MUT).pack(side="left", padx=8)
-            threading.Thread(target=lambda n=name: self.q.put(("gallery",n,gather_gallery(n))), daemon=True).start()
+            local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
+            threading.Thread(target=lambda n=name, l=local: self.q.put(("gallery",n,gather_gallery(n, l))), daemon=True).start()
         self.files_box.configure(state="normal"); self.files_box.delete("1.0","end")
         self.files_box.insert("end","computing model files…\n"); self.files_box.configure(state="disabled")
-        threading.Thread(target=lambda n=name: self.q.put(("files",n,project_model_size(n))), daemon=True).start()
+        local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
+        threading.Thread(target=lambda n=name, l=local: self.q.put(("files",n,project_model_size(n, l))), daemon=True).start()
     def render_gallery(self, name, items):
         if self.selected!=name: return
         for w in self.film.winfo_children(): w.destroy()
@@ -1288,6 +1339,10 @@ class App(ctk.CTk):
         if self.pulling: return
         sel=[n for n,v in self.pull_sel.items() if v.get()]
         if not sel: self.set_banner("Tick at least one project to import.", WARN); return
+        onpc=[n for n in sel if (self._proj(n) or {}).get("local")]
+        if onpc:
+            sel=[n for n in sel if n not in onpc]
+            if not sel: self.set_banner("Those are already on this PC - use View in 3D, Export ZIP or Process on PC.", MUT); return
         already=[n for n in sel if self.is_imported(n) and not self.changed(n)]
         if already:
             names=", ".join(self.disp(n) for n in already)
@@ -1783,7 +1838,7 @@ class App(ctk.CTk):
         self.wifi_code_lbl=ctk.CTkLabel(t, text="  ".join(rx.code), text_color=AC, font=ctk.CTkFont(family=WORDMARK, size=54, weight="bold")); self.wifi_code_lbl.pack()
         self.wifi_state=ctk.CTkLabel(t, text="Waiting for the scanner on %s…" % rx.ip, text_color=MUT, font=ctk.CTkFont(size=12)); self.wifi_state.pack(pady=(8,4))
         self.wifi_prog=ctk.CTkProgressBar(t, height=8, corner_radius=4, progress_color=AC, fg_color=CARD2); self.wifi_prog.set(0); self.wifi_prog.pack(fill="x", padx=40, pady=(6,4))
-        self.wifi_hint=ctk.CTkLabel(t, text="Both must be on the same network. Nothing after 30 s? Allow port 9706 (UDP and TCP) in your firewall.",
+        self.wifi_hint=ctk.CTkLabel(t, text="Both must be on the same network. If the scanner isn't found within 30 seconds, allow port 9706 (UDP and TCP) in your firewall.",
                                     text_color=MUT, font=ctk.CTkFont(size=10), wraplength=400, justify="center"); self.wifi_hint.pack(pady=(2,0))
         ctk.CTkButton(t, text="Cancel", width=100, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self._wifi_cancel).pack(pady=(14,0))
     def _wifi_close_dialog(self):
@@ -1806,6 +1861,8 @@ class App(ctk.CTk):
         if not rx: return
         if kind=="searching":
             self.wifi_state.configure(text="Scanner found at %s - enter the code on it." % info["ip"], text_color=OK); self.set_status("WiFi: scanner found, waiting for the code")
+            try: self.wifi_hint.pack_forget()      # the firewall hint only matters while nothing has been heard
+            except Exception: pass
         elif kind=="badcode":
             if info["locked"]:
                 self.wifi_state.configure(text="Too many wrong codes - closing this share. Click WiFi for a new code.", text_color=WARN)
@@ -1837,7 +1894,7 @@ class App(ctk.CTk):
                 raw=sum(os.path.getsize(f) for f in glob.glob(os.path.join(nd, "cache", "*")))
                 rows.append({"project":name, "node":os.path.basename(nd), "mesh":sz("fuse_mesh.ply"), "cloud":sz("fuse.ply"),
                              "raw":raw, "frames":len(glob.glob(os.path.join(nd, "cache", "*.dph"))), "thumb":os.path.join(nd, "preview.png")})
-        t=self._top("Received over WiFi", 640, min(720, 250+78*max(1,len(rows))), key="wifipick")
+        t=self._top("Received over WiFi", 640, min(720, 215+66*max(1,len(rows))), key="wifipick")
         if t is None: return
         t.protocol("WM_DELETE_WINDOW", lambda: None)   # decide with the buttons; the data is only in staging
         ctk.CTkLabel(t, text="%s  ·  %d scan%s" % (", ".join(projects), len(rows), "" if len(rows)==1 else "s"),
@@ -2206,7 +2263,7 @@ class App(ctk.CTk):
                     if ok: self.listed=False
                     else: self.set_banner("Couldn't connect: "+msg, WARN); log_line("mount failed: "+msg)
                 elif kind=="projects":
-                    self.listing=False; self.listed=True; self.render_list(rest[0])
+                    self.listing=False; self.listed=True; self.listed_src=self._listing_src; self.render_list(rest[0])
                     if not getattr(self, "_shots_loaded", False):   # auto-load device screenshots once
                         self._shots_loaded=True; self.refresh_screenshots()
                 elif kind=="sizes": self.projects_sig=None; self.update_summary()
@@ -2217,7 +2274,7 @@ class App(ctk.CTk):
                         self.files_box.configure(state="normal"); self.files_box.delete("1.0","end")
                         self.files_box.insert("end","Model files in %s  (total %s)\n\n"%(n,human(tot)))
                         for node,fn,sz in sorted(files,key=lambda x:-x[2]):
-                            self.files_box.insert("end","  %-5s %9s   %s/%s\n"%("MESH" if "mesh" in fn else "CLOUD", human(sz), node, fn))
+                            self.files_box.insert("end","  %-5s %9s   %s/%s\n"%("CLOUD" if (fn=="fuse.ply" or fn.endswith("_cloud.ply")) else "MESH", human(sz), node, fn))
                         self.files_box.configure(state="disabled")
                 elif kind=="prog":
                     frac,line=rest

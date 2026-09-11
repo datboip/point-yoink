@@ -3,7 +3,14 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
-## 0.9.0 (local, unreleased)
+## 0.9.1 (local, unreleased)
+- Projects already on this PC (from USB or WiFi) show in the list with an
+  "on this PC" badge even with no scanner attached, so preview, View in 3D,
+  Remove base, Process on PC and Export ZIP work without the cable.
+- WiFi dialog: firewall hint reads properly and disappears once the scanner is
+  found; picker window sized to its rows; Files tab labels flat meshes correctly.
+
+## 0.9.0 (local)
 - **WiFi import, no cable.** A WiFi button next to Connect shows a 4-digit code;
   on the MIRACO choose Share to PC > Wi-Fi and enter it, and the project comes
   straight into PointYoink (about 20 MB/s, a 1 GB project in under a minute,
