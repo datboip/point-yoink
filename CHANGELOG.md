@@ -7,6 +7,11 @@ builds; 1.0.0 will be the first public GitHub release.
 - First public pre-release of the new PointYoink: see 0.9.x below. Marked
   unstable on GitHub; 0.7.0 stays the latest release until 1.0.0.
 - Loading overlay on the preview; View in 3D button retired; short clean-up line.
+- Process page: Clean up now uses the scanner's own knobs with its defaults
+  (drop pieces under 15% of the biggest, smooth 3 times, keep all triangles,
+  hole filling off). Set them on the page; they are remembered.
+- The scanner's Fusion and Mesh panels are written down as text in
+  dev/design/device/SCANNER-EDIT-OPTIONS.md with the screenshots.
 
 ## 0.9.6 (local)
 - **GPU 3D view**: the preview draws the full model on the graphics card (smooth,

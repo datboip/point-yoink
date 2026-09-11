@@ -1225,6 +1225,7 @@ class App(ctk.CTk):
         self.auto_open=ctk.BooleanVar(value=self.cfg.get("auto_open",True))
         self.cleanup=ctk.BooleanVar(value=self.cfg.get("cleanup",False))
         self.fuse_voxel=ctk.DoubleVar(value=float(self.cfg.get("fuse_voxel",0.4)))
+        self._ensure_clean_vars()
         self.exp_stl=ctk.BooleanVar(value=self.cfg.get("exp_stl",False))
         self.exp_obj=ctk.BooleanVar(value=self.cfg.get("exp_obj",False))
         self.exp_glb=ctk.BooleanVar(value=self.cfg.get("exp_glb",False))
@@ -1620,6 +1621,8 @@ class App(ctk.CTk):
                         auto_open=self.auto_open.get(), geometry=self.geometry(),
                         exp_stl=self.exp_stl.get(), exp_obj=self.exp_obj.get(), exp_glb=self.exp_glb.get(),
                         fuse_voxel=round(float(self.fuse_voxel.get() or 0.4),2),
+                        clean_isolation=self._num(self.clean_iso,15,0,100), clean_fill_holes=self.clean_holes.get(),
+                        clean_smooth_times=int(self._num(self.clean_smooth,3,0,50)), clean_keep_pct=self._num(self.clean_keep,100,1,100),
                         scanner_ip=self.live_ip.get().strip(),
                         cleanup=self.cleanup.get(), side=self.cfg.get("side","project"),
                         gl_view=self.cfg.get("gl_view","auto"), fuse_device=self.cfg.get("fuse_device","auto"),
@@ -2116,11 +2119,31 @@ class App(ctk.CTk):
         if (fmts or cleanup) and not self.cancel:
             self._process_meshes(meshes, name, fmts, cleanup, i, total)
 
+    def _ensure_clean_vars(self):
+        """Clean-up knobs, named and defaulted like the scanner's Mesh panel (dev/design/device/SCANNER-EDIT-OPTIONS.md).
+        The Process page is built before the settings vars, so both sides call this."""
+        if "clean_iso" in self.__dict__: return
+        self.clean_iso=ctk.StringVar(value=str(self.cfg.get("clean_isolation",15)))
+        self.clean_holes=ctk.BooleanVar(value=bool(self.cfg.get("clean_fill_holes",False)))
+        self.clean_smooth=ctk.StringVar(value=str(self.cfg.get("clean_smooth_times",3)))
+        self.clean_keep=ctk.StringVar(value=str(self.cfg.get("clean_keep_pct",100)))
+    def _num(self, var, default, lo, hi):
+        try: v=float(str(var.get()).strip().rstrip("%"))
+        except Exception: v=default
+        return max(lo, min(hi, v))
+    def _clean_args(self):
+        """process.py flags for the clean-up knobs shown on the Process page."""
+        args=["--clean", "--isolation-rate", "%g" % self._num(self.clean_iso,15,0,100),
+              "--smooth-times", "%d" % int(self._num(self.clean_smooth,3,0,50))]
+        if self.clean_holes.get(): args.append("--fill-holes")
+        keep=self._num(self.clean_keep,100,1,100)
+        if keep<100: args+=["--simplify-pct", "%g" % keep]
+        return args
     def _clean_subprocess(self, src, out):
         """Run process.py --clean in a memory-capped child so a huge mesh cannot take the app down."""
         try:
             env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "10")
-            r=subprocess.run([_sys.executable, os.path.join(HERE, "process.py"), src, out, "--clean"],
+            r=subprocess.run([_sys.executable, os.path.join(HERE, "process.py"), src, out]+self._clean_args(),
                              capture_output=True, text=True, timeout=1800, env=env)
             if r.returncode==0 and os.path.exists(out) and os.path.getsize(out)>1024: return True
             log_line("clean %s failed (rc=%s): %s" % (os.path.basename(src), r.returncode, (r.stdout+r.stderr)[-400:]))
@@ -2290,9 +2313,25 @@ class App(ctk.CTk):
         self.proc_detail.pack(side="left", padx=10); self.proc_detail.set(lab)
         ctk.CTkLabel(dr, text="Normal matches the scanner. Finer takes longer and needs more graphics memory (about 2 GB per scan at Normal).",
                      text_color=DIM, font=ctk.CTkFont(size=10)).pack(side="left")
+        # clean-up row: the same four knobs the scanner's Mesh panel has, with its defaults
+        self._ensure_clean_vars()
+        cr=ctk.CTkFrame(pr, fg_color="transparent"); cr.grid(row=3,column=0, sticky="ew", padx=16, pady=(0,10))
+        ctk.CTkLabel(cr, text="Clean up", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
+        def knob(label, var, tip, width=44):
+            ctk.CTkLabel(cr, text=label, text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left", padx=(12,4))
+            e=ctk.CTkEntry(cr, textvariable=var, width=width, height=26, corner_radius=6, fg_color="#0d0f14", border_color=STROKE, text_color=TX, justify="center"); e.pack(side="left")
+            self._tip(e, tip); return e
+        knob("drop pieces under", self.clean_iso, "Floating bits smaller than this share of the biggest piece are removed. The scanner's Isolation rate; its default is 15%. 100 keeps only the biggest piece.")
+        ctk.CTkLabel(cr, text="% of the biggest", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left", padx=(4,0))
+        knob("smooth", self.clean_smooth, "How many smoothing passes. The scanner's Smooth Times; its default is 3. 0 turns smoothing off.", 36)
+        ctk.CTkLabel(cr, text="times", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left", padx=(4,0))
+        knob("keep", self.clean_keep, "Keep this share of the triangles (the scanner's Simplify ratio, default 40%). 100 keeps them all.", 44)
+        ctk.CTkLabel(cr, text="% of triangles", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left", padx=(4,0))
+        hb=ctk.CTkCheckBox(cr, text="fill holes", variable=self.clean_holes, width=24, height=26, checkbox_width=18, checkbox_height=18, corner_radius=5, border_color=STROKE, fg_color=AC, hover_color=AC, text_color=TX, font=ctk.CTkFont(size=11))
+        hb.pack(side="left", padx=(14,0)); self._tip(hb, "Close small gaps in the surface. The scanner has this off by default; it can invent surface where the scan missed.")
         self.proc_cards=ctk.CTkScrollableFrame(pr, fg_color="transparent"); self.proc_cards.grid(row=1,column=0, sticky="nsew", padx=10)
         self.proc_cards.grid_columnconfigure(0, weight=1)
-        self.tools=ctk.CTkFrame(pr, fg_color="transparent", height=1); self.tools.grid(row=3,column=0); self.tools.grid_remove()   # kept for older call sites
+        self.tools=ctk.CTkFrame(pr, fg_color="transparent", height=1); self.tools.grid(row=4,column=0); self.tools.grid_remove()   # kept for older call sites
         self._proc_rows={}; self._proc_names=[]
         self._proc_empty=self._empty_state(self.proc_cards, "projects"); self._proc_empty.grid(row=0,column=0, sticky="nsew", pady=40)
     def _proc_detail_changed(self, label):
@@ -2438,7 +2477,7 @@ class App(ctk.CTk):
         cur=self._proc_current(name, node)
         if not cur: return
         src=cur[2]; out=os.path.join(os.path.dirname(src), "%s_%s_clean.ply" % (name, node))
-        self._proc_progress(node, None, "Cleaning up: dropping floating bits, filling holes, smoothing…"); self.set_status("Cleaning up scan %s…" % node)
+        self._proc_progress(node, None, "Cleaning up: dropping floating bits, smoothing%s…" % (", filling holes" if self.clean_holes.get() else "")); self.set_status("Cleaning up scan %s…" % node)
         def work():
             ok=self._clean_subprocess(src, out); self.q.put(("proc_clean_done", name, node, ok))
         threading.Thread(target=work, daemon=True).start()

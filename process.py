@@ -23,7 +23,12 @@ def main():
     ap.add_argument("--base-remove", action="store_true")
     ap.add_argument("--isolate", action="store_true")
     ap.add_argument("--plane-thresh", type=float, default=0, help="mm; 0=auto from bbox")
-    ap.add_argument("--clean", action="store_true", help="dedupe, keep the largest piece, fill small holes, light smooth")
+    ap.add_argument("--clean", action="store_true", help="dedupe, drop small pieces, optional hole fill, smooth, optional simplify")
+    # The scanner's own editing knobs (see dev/design/device/SCANNER-EDIT-OPTIONS.md); defaults match its Mesh panel.
+    ap.add_argument("--isolation-rate", type=float, default=15.0, help="drop pieces smaller than this %% of the largest one (100 = keep only the largest)")
+    ap.add_argument("--fill-holes", action="store_true", help="fill small holes (the scanner has this off by default)")
+    ap.add_argument("--smooth-times", type=int, default=3, help="smoothing passes (scanner default 3; 0 = off)")
+    ap.add_argument("--simplify-pct", type=float, default=0, help="keep this %% of faces after cleaning (0 = keep all; the scanner's Simplify uses 40)")
     a = ap.parse_args()
 
     import numpy as np, trimesh
@@ -78,22 +83,35 @@ def main():
                  thresh_mm=round(thresh, 2), removed_faces=int((~keep_f).sum()))
             m.update_faces(keep_f); m.remove_unreferenced_vertices()
 
-    # 3) ISOLATE — keep the largest connected piece (drops floating junk / table remnants).
+    # 3) ISOLATE — drop floating junk / table remnants. --isolate and --base-remove keep only the
+    # largest connected piece; --clean keeps every piece at least --isolation-rate % of the largest
+    # (the scanner's "Isolation rate", default 15%), so an object scanned in parts survives.
     # Use connected_components + a face mask instead of .split() (which builds every
     # submesh and calls fill_holes) — faster, lighter, and no repair dependency.
     if a.isolate or a.base_remove or a.clean:
         comps = trimesh.graph.connected_components(m.face_adjacency, min_len=1)
         if len(comps) > 1:
-            largest = max(comps, key=len)
-            mask = np.zeros(len(m.faces), dtype=bool); mask[largest] = True
+            big = max(len(c) for c in comps)
+            rate = a.isolation_rate if (a.clean and not (a.isolate or a.base_remove)) else 100.0
+            keep = [c for c in comps if len(c) >= big * min(100.0, max(0.0, rate)) / 100.0]
+            mask = np.zeros(len(m.faces), dtype=bool)
+            for c in keep: mask[c] = True
             m.update_faces(mask); m.remove_unreferenced_vertices()
-        emit("isolated", pieces=len(comps), faces=len(m.faces))
+            emit("isolated", pieces=len(comps), kept=len(keep), faces=len(m.faces))
+        else:
+            emit("isolated", pieces=len(comps), kept=len(comps), faces=len(m.faces))
 
-    if a.clean:   # small holes and a light smooth, the same recipe the app used to run in-process
-        try: m.fill_holes()
-        except Exception: pass
-        try: trimesh.smoothing.filter_humphrey(m, iterations=5)
-        except Exception: pass
+    if a.clean:
+        if a.fill_holes:
+            try: m.fill_holes()
+            except Exception: pass
+        if a.smooth_times > 0:
+            try: trimesh.smoothing.filter_humphrey(m, iterations=int(a.smooth_times))
+            except Exception: pass
+        if 0 < a.simplify_pct < 100:
+            import fast_simplification
+            v, f = fast_simplification.simplify(np.asarray(m.vertices, np.float32), np.asarray(m.faces, np.int32), target_reduction=1.0 - a.simplify_pct / 100.0)
+            m = trimesh.Trimesh(v, f, process=False)
         emit("cleaned", faces=len(m.faces))
 
     m.export(a.outfile)
