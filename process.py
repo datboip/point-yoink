@@ -18,7 +18,8 @@ def emit(stage, **kw):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("infile"); ap.add_argument("outfile")
+    ap.add_argument("infile"); ap.add_argument("outfile", nargs="?")
+    ap.add_argument("--info", action="store_true", help="print size, counts, pieces and open edges as JSON and exit")
     ap.add_argument("--decimate", type=int, default=0, help="target face count (0=off)")
     ap.add_argument("--base-remove", action="store_true")
     ap.add_argument("--isolate", action="store_true")
@@ -35,6 +36,16 @@ def main():
     emit("load", file=os.path.basename(a.infile))
     m = trimesh.load(a.infile, force="mesh")
     emit("loaded", verts=len(m.vertices), faces=len(m.faces))
+    if a.info:
+        ext = (m.bounds[1] - m.bounds[0]) if len(m.vertices) else np.zeros(3)
+        try: pieces = len(trimesh.graph.connected_components(m.face_adjacency, min_len=1))
+        except Exception: pieces = -1
+        try: open_edges = int(len(trimesh.grouping.group_rows(m.edges_sorted, require_count=1)))
+        except Exception: open_edges = -1
+        emit("info", verts=len(m.vertices), faces=len(m.faces), extent=[round(float(x), 1) for x in ext], pieces=pieces,
+             open_edges=open_edges, watertight=bool(m.is_watertight), mb=round(os.path.getsize(a.infile) / 1048576, 1))
+        return
+    if not a.outfile: print("outfile required unless --info"); sys.exit(2)
 
     # 1) DECIMATE FIRST — turns the memory-heavy topology ops that follow into cheap ones
     if a.decimate and len(m.faces) > a.decimate:

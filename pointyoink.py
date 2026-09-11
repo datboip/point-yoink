@@ -365,6 +365,9 @@ def gather_gallery(name, local=None):
         paths.append((node, lp))
     return paths
 
+def human_count(n):
+    n=int(n or 0)
+    return ("%.1fM" % (n/1e6)) if n>=1e6 else (("%.0fk" % (n/1e3)) if n>=1e4 else "{:,}".format(n))
 def human(n):
     for u in ("B","KB","MB","GB"):
         if n<1024: return "%.0f %s"%(n,u) if u=="B" else "%.1f %s"%(n,u)
@@ -446,7 +449,7 @@ class ActionRow(ctk.CTkFrame):
         return super().cget(attribute_name)
 
 ROW="transparent"            # project list row at rest (selected rows use SELB)
-MODE_LABEL={"Projects":"Import","Captures":"Captures","Process":"Process","Live":"Live view"}
+MODE_LABEL={"Projects":"Import","Captures":"Captures","Process":"Prepare","Live":"Live view"}
 MODE_KEY={v:k for k,v in MODE_LABEL.items()}
 
 class TabStrip(ctk.CTkFrame):
@@ -936,7 +939,7 @@ class App(ctk.CTk):
         self._modes=TabStrip(h, command=lambda lab: self._set_mode(lab), content=False, base=CARD, size=13)
         self._modes.grid(row=0,column=2, sticky="w", padx=(26,0), pady=(8,0))
         self._modes.add("Import", icon="⬇"); self._modes.add("Captures", icon="▣")
-        self._modes.add("Process", tag="In development", icon="⚙"); self._modes.add("Live view", tag="Planned", icon="◉")
+        self._modes.add("Prepare", tag="In development", icon="✦"); self._modes.add("Live view", tag="Planned", icon="◉")
         self.mode_sw=_ModeSwitch(self._modes)
         btns=ctk.CTkFrame(h, fg_color="transparent"); btns.grid(row=0,column=3, sticky="e", padx=(0,14)); self._hbtns=btns
         sb=ctk.CTkButton(btns, text="⚙  Settings", width=96, height=30, corner_radius=6, fg_color="transparent", hover_color=CARD2,
@@ -1245,10 +1248,10 @@ class App(ctk.CTk):
         self._hr(op)
         # editing is an action with a result, not an import option: it lives on the Process page
         ctk.CTkLabel(op, text="Edit", text_color=TX, font=ctk.CTkFont(size=13, weight="bold"), anchor="w").pack(fill="x", padx=16, pady=(4,2))
-        eb=ctk.CTkButton(op, text="✦  Clean up, build, remove base…", height=32, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
+        eb=ctk.CTkButton(op, text="✦  Prepare: build, clean up, export…", height=32, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
                          hover_color=CARD2, text_color=TX, anchor="w", command=lambda: self._set_mode("Process"))
         eb.pack(fill="x", padx=14, pady=(0,4))
-        self._tip(eb, "Opens the Process page for the selected project: build 3D models from raw data, clean them up, cut the base, pick which version to keep.")
+        self._tip(eb, "Opens the Prepare page for the selected project: build 3D models from raw data, remove floating pieces, smooth, cut the base, pick which version to keep, export.")
         self._hr(op)
         self._title(op, "Destination")
         dr=ctk.CTkFrame(op, fg_color="transparent"); dr.pack(fill="x", padx=6, pady=(2,0)); dr.grid_columnconfigure(0, weight=1)
@@ -1623,6 +1626,7 @@ class App(ctk.CTk):
                         fuse_voxel=round(float(self.fuse_voxel.get() or 0.4),2),
                         clean_isolation=self._num(self.clean_iso,15,0,100), clean_fill_holes=self.clean_holes.get(),
                         clean_smooth_times=int(self._num(self.clean_smooth,3,0,50)), clean_keep_pct=self._num(self.clean_keep,100,1,100),
+                        clean_do_iso=self.clean_do_iso.get(), clean_do_smooth=self.clean_do_smooth.get(), clean_do_keep=self.clean_do_keep.get(),
                         scanner_ip=self.live_ip.get().strip(),
                         cleanup=self.cleanup.get(), side=self.cfg.get("side","project"),
                         gl_view=self.cfg.get("gl_view","auto"), fuse_device=self.cfg.get("fuse_device","auto"),
@@ -2127,17 +2131,21 @@ class App(ctk.CTk):
         self.clean_holes=ctk.BooleanVar(value=bool(self.cfg.get("clean_fill_holes",False)))
         self.clean_smooth=ctk.StringVar(value=str(self.cfg.get("clean_smooth_times",3)))
         self.clean_keep=ctk.StringVar(value=str(self.cfg.get("clean_keep_pct",100)))
+        self.clean_do_iso=ctk.BooleanVar(value=bool(self.cfg.get("clean_do_iso",True)))
+        self.clean_do_smooth=ctk.BooleanVar(value=bool(self.cfg.get("clean_do_smooth",True)))
+        self.clean_do_keep=ctk.BooleanVar(value=bool(self.cfg.get("clean_do_keep",False)))
     def _num(self, var, default, lo, hi):
         try: v=float(str(var.get()).strip().rstrip("%"))
         except Exception: v=default
         return max(lo, min(hi, v))
     def _clean_args(self):
         """process.py flags for the clean-up knobs shown on the Process page."""
-        args=["--clean", "--isolation-rate", "%g" % self._num(self.clean_iso,15,0,100),
-              "--smooth-times", "%d" % int(self._num(self.clean_smooth,3,0,50))]
+        self._ensure_clean_vars()
+        args=["--clean", "--isolation-rate", "%g" % (self._num(self.clean_iso,15,0,100) if self.clean_do_iso.get() else 0),
+              "--smooth-times", "%d" % (int(self._num(self.clean_smooth,3,0,50)) if self.clean_do_smooth.get() else 0)]
         if self.clean_holes.get(): args.append("--fill-holes")
         keep=self._num(self.clean_keep,100,1,100)
-        if keep<100: args+=["--simplify-pct", "%g" % keep]
+        if self.clean_do_keep.get() and keep<100: args+=["--simplify-pct", "%g" % keep]
         return args
     def _clean_subprocess(self, src, out):
         """Run process.py --clean in a memory-capped child so a huge mesh cannot take the app down."""
@@ -2291,7 +2299,7 @@ class App(ctk.CTk):
     def _build_process_page(self, pr):
         pr.grid_columnconfigure(0, weight=1); pr.grid_rowconfigure(1, weight=1)
         ph=ctk.CTkFrame(pr, fg_color="transparent"); ph.grid(row=0,column=0, sticky="ew", padx=16, pady=(14,4))
-        ctk.CTkLabel(ph, text="Process", font=ctk.CTkFont(size=18, weight="bold"), text_color=TX).pack(side="left")
+        ctk.CTkLabel(ph, text="Prepare", font=ctk.CTkFont(size=18, weight="bold"), text_color=TX).pack(side="left")
         self.proc_pick=ctk.CTkOptionMenu(ph, values=["No projects on this PC yet"], width=300, command=self._proc_pick, fg_color="#0d0f14", button_color=CARD2,
                                          button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=10)
         self.proc_pick.pack(side="left", padx=(16,8))
@@ -2313,22 +2321,6 @@ class App(ctk.CTk):
         self.proc_detail.pack(side="left", padx=10); self.proc_detail.set(lab)
         ctk.CTkLabel(dr, text="Normal matches the scanner. Finer takes longer and needs more graphics memory (about 2 GB per scan at Normal).",
                      text_color=DIM, font=ctk.CTkFont(size=10)).pack(side="left")
-        # clean-up row: the same four knobs the scanner's Mesh panel has, with its defaults
-        self._ensure_clean_vars()
-        cr=ctk.CTkFrame(pr, fg_color="transparent"); cr.grid(row=3,column=0, sticky="ew", padx=16, pady=(0,10))
-        ctk.CTkLabel(cr, text="Clean up", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
-        def knob(label, var, tip, width=44):
-            ctk.CTkLabel(cr, text=label, text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left", padx=(12,4))
-            e=ctk.CTkEntry(cr, textvariable=var, width=width, height=26, corner_radius=6, fg_color="#0d0f14", border_color=STROKE, text_color=TX, justify="center"); e.pack(side="left")
-            self._tip(e, tip); return e
-        knob("drop pieces under", self.clean_iso, "Floating bits smaller than this share of the biggest piece are removed. The scanner's Isolation rate; its default is 15%. 100 keeps only the biggest piece.")
-        ctk.CTkLabel(cr, text="% of the biggest", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left", padx=(4,0))
-        knob("smooth", self.clean_smooth, "How many smoothing passes. The scanner's Smooth Times; its default is 3. 0 turns smoothing off.", 36)
-        ctk.CTkLabel(cr, text="times", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left", padx=(4,0))
-        knob("keep", self.clean_keep, "Keep this share of the triangles (the scanner's Simplify ratio, default 40%). 100 keeps them all.", 44)
-        ctk.CTkLabel(cr, text="% of triangles", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left", padx=(4,0))
-        hb=ctk.CTkCheckBox(cr, text="fill holes", variable=self.clean_holes, width=24, height=26, checkbox_width=18, checkbox_height=18, corner_radius=5, border_color=STROKE, fg_color=AC, hover_color=AC, text_color=TX, font=ctk.CTkFont(size=11))
-        hb.pack(side="left", padx=(14,0)); self._tip(hb, "Close small gaps in the surface. The scanner has this off by default; it can invent surface where the scan missed.")
         self.proc_cards=ctk.CTkScrollableFrame(pr, fg_color="transparent"); self.proc_cards.grid(row=1,column=0, sticky="nsew", padx=10)
         self.proc_cards.grid_columnconfigure(0, weight=1)
         self.tools=ctk.CTkFrame(pr, fg_color="transparent", height=1); self.tools.grid(row=4,column=0); self.tools.grid_remove()   # kept for older call sites
@@ -2353,7 +2345,7 @@ class App(ctk.CTk):
     def _proc_versions(self, name, node):
         """The model files a scan has on this PC: [(key, label, path)] in default preference order."""
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name); out=[]
-        for key,label,cands in (("clean","cleaned here",[os.path.join(local,"%s_%s_clean.ply"%(name,node)), os.path.join(local,"%s_%s_pcfused_clean.ply"%(name,node))]),
+        for key,label,cands in (("clean","prepared here",[os.path.join(local,"%s_%s_clean.ply"%(name,node)), os.path.join(local,"%s_%s_pcfused_clean.ply"%(name,node))]),
                                 ("scanner","from the scanner",[os.path.join(local,"%s_%s.ply"%(name,node)), os.path.join(local,"data",node,"fuse_mesh.ply")]),
                                 ("pcfused","built here",[os.path.join(local,"%s_%s_pcfused.ply"%(name,node))])):
             for c in cands:
@@ -2382,7 +2374,7 @@ class App(ctk.CTk):
         except Exception as e:
             log_error("trash", e); return False
     def _proc_delete_version(self, name, node, key, path):
-        if not self._confirm("Delete this version?", "%s: the %s version of scan %s goes to the trash.\nOther versions and the raw data stay." % (self.disp(name), dict(clean="cleaned", scanner="scanner's", pcfused="built-here")[key], node)): return
+        if not self._confirm("Delete this version?", "%s: the %s version of scan %s goes to the trash.\nOther versions and the raw data stay." % (self.disp(name), dict(clean="prepared", scanner="scanner's", pcfused="built-here")[key], node)): return
         if self._trash(path):
             self.set_banner("Moved to the trash: %s" % os.path.basename(path), MUT); self._mesh_stats={}; self.gallery_cache.pop(name, None)
             self._proc_render(name)
@@ -2440,17 +2432,23 @@ class App(ctk.CTk):
                                 font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key,pth=path: self._proc_delete_version(n, nd, k, pth)); x.pack(side="left")
                 self._tip(x, "Delete this version (to the trash)")
             act=ctk.CTkFrame(card, fg_color="transparent"); act.grid(row=0,column=2, rowspan=2, padx=14, pady=12, sticky="e")
-            bb=ctk.CTkButton(act, text="⚙  Build model", width=130, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=(AC if raw else STROKE),
-                             hover_color=CARD2, text_color=(AC if raw else MUT), state=("normal" if raw else "disabled"), command=lambda n=name,nd=node: self._proc_build(n, [nd]))
-            bb.pack(side="top", fill="x", pady=2)
-            self._tip(bb, "Build this scan's 3D model from its raw data, on this PC." if raw else "No raw scan data on this PC for this scan (share the project over WiFi as Full project).")
-            cb=ctk.CTkButton(act, text="✦  Clean up", width=130, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=(STROKE if vs else STROKE),
-                             hover_color=CARD2, text_color=(TX if vs else MUT), state=("normal" if vs else "disabled"), command=lambda n=name,nd=node: self._proc_clean(n, nd))
-            cb.pack(side="top", fill="x", pady=2)
-            self._tip(cb, "Drop floating bits, fill small holes and smooth the current version. Saves a cleaned copy; the original is kept.")
+            has_prep=any(k=="clean" for k,_,_ in vs)
+            # one obvious next step per scan: build if there is nothing yet, prepare once there is a model, export once prepared
+            primary="build" if (raw and not vs) else ("prepare" if (vs and not has_prep) else ("export" if vs else None))
+            def mk(kind, text, tip, enabled, cmd):
+                filled=(kind==primary and enabled)
+                b=ctk.CTkButton(act, text=text, width=150, height=30, corner_radius=8, fg_color=(AC if filled else "transparent"),
+                                hover_color=(AC_H if filled else CARD2), border_width=(0 if filled else 1), border_color=STROKE,
+                                text_color=("#04121f" if filled else (TX if enabled else MUT)), state=("normal" if enabled else "disabled"), command=cmd)
+                b.pack(side="top", fill="x", pady=2); self._tip(b, tip); return b
+            bb=mk("build", "⚙  Build model", "Build this scan's 3D model from its raw data, on this PC." if raw else "No raw scan data on this PC for this scan (share the project over WiFi as Full project).",
+                  bool(raw), lambda n=name,nd=node: self._proc_build(n, [nd]))
+            cb=mk("prepare", "✦  Prepare…", "Remove floating pieces, smooth the surface, fill small holes, reduce triangles. You see before and after, then keep or discard.",
+                  bool(vs), lambda n=name,nd=node: self._prepare_dialog(n, nd))
+            xb=mk("export", "⬆  Export…", "Save this scan as STL, OBJ, GLB or PLY, with its size and a mesh check.", bool(vs), lambda n=name,nd=node: self._export_dialog(n, nd))
             pb=ctk.CTkProgressBar(card, height=6, corner_radius=3, progress_color=AC, fg_color="#0d0f14"); pb.set(0)
             pl=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w")
-            self._proc_rows[node]={"card":card, "bar":pb, "lbl":pl, "build":bb, "clean":cb}
+            self._proc_rows[node]={"card":card, "bar":pb, "lbl":pl, "build":bb, "prepare":cb, "export":xb}
     def _proc_progress(self, node, frac, text):
         r=self._proc_rows.get(node)
         if not r: return
@@ -2473,14 +2471,169 @@ class App(ctk.CTk):
         for nd in nodes: self._proc_progress(nd, None, "Starting…")
         self.set_status("Building 3D model%s…" % ("" if len(nodes)==1 else "s"))
         threading.Thread(target=self._fuse_worker, args=(name, nodes), daemon=True).start()
-    def _proc_clean(self, name, node):
+    def _scan_label(self, name, node):
+        nodes=self._proc_nodes(name)
+        return "Scan %02d" % (nodes.index(node)+1) if node in nodes else node
+    def _mesh_info(self, path, cb):
+        """Size, counts, pieces and open edges of a model, measured in a memory-capped child; cb(dict or None) on the UI thread."""
+        def work():
+            info=None
+            try:
+                env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "10")
+                r=subprocess.run([_sys.executable, os.path.join(HERE, "process.py"), path, "--info"], capture_output=True, text=True, timeout=600, env=env)
+                for ln in r.stdout.splitlines():
+                    if ln.startswith("STAGE info "): info=json.loads(ln[11:])
+            except Exception as e: log_error("mesh info", e)
+            self.q.put(("call", lambda: cb(info)))
+        threading.Thread(target=work, daemon=True).start()
+    def _info_text(self, info):
+        if not info: return "Could not measure this model (see Help > Log)."
+        ext=info.get("extent") or [0,0,0]
+        closed="closed surface" if info.get("watertight") else "not a closed surface"
+        return ("Size %.0f × %.0f × %.0f mm (as measured by the scanner)\n%s triangles · %d piece%s · %s open edge%s · %s" % (
+            ext[0], ext[1], ext[2], human_count(info.get("faces",0)), info.get("pieces",0), "" if info.get("pieces")==1 else "s",
+            human_count(info.get("open_edges",0)), "" if info.get("open_edges")==1 else "s", closed))
+    def _prepare_dialog(self, name, node):
+        """The four named clean-up actions, run on a copy, shown before and after, then Keep or Discard."""
         cur=self._proc_current(name, node)
         if not cur: return
-        src=cur[2]; out=os.path.join(os.path.dirname(src), "%s_%s_clean.ply" % (name, node))
-        self._proc_progress(node, None, "Cleaning up: dropping floating bits, smoothing%s…" % (", filling holes" if self.clean_holes.get() else "")); self.set_status("Cleaning up scan %s…" % node)
-        def work():
-            ok=self._clean_subprocess(src, out); self.q.put(("proc_clean_done", name, node, ok))
-        threading.Thread(target=work, daemon=True).start()
+        self._ensure_clean_vars()
+        t=self._top("Prepare · %s" % self._scan_label(name, node), 860, 640, key="prepare")
+        if t is None: return
+        src=cur[2]; final=os.path.join(os.path.dirname(src), "%s_%s_clean.ply" % (name, node)); tmp=final[:-4]+".tmp.ply"
+        card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
+        ctk.CTkLabel(card, text="Starting from the version “%s” · %s" % (cur[1], human(os.path.getsize(src))), text_color=MUT, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=18, pady=(14,6))
+        opts=ctk.CTkFrame(card, fg_color="transparent"); opts.pack(fill="x", padx=12)
+        def row(var, title, before, entry, after, tip):
+            r=ctk.CTkFrame(opts, fg_color=CARD2, corner_radius=10); r.pack(fill="x", padx=4, pady=3)
+            cbx=ctk.CTkCheckBox(r, text=title, variable=var, width=24, checkbox_width=18, checkbox_height=18, corner_radius=5, border_color=STROKE, fg_color=AC, hover_color=AC,
+                                text_color=TX, font=ctk.CTkFont(size=12, weight="bold")); cbx.pack(side="left", padx=(12,10), pady=8)
+            self._tip(cbx, tip)
+            ctk.CTkLabel(r, text=before, text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left")
+            if entry is not None:
+                e=ctk.CTkEntry(r, textvariable=entry, width=46, height=24, corner_radius=6, fg_color="#0d0f14", border_color=STROKE, text_color=TX, justify="center"); e.pack(side="left", padx=6)
+                ctk.CTkLabel(r, text=after, text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left")
+        row(self.clean_do_iso, "Remove floating pieces", "drop pieces smaller than", self.clean_iso, "% of the biggest one",
+            "Loose bits that are not part of the object. The scanner's Isolation rate; its default is 15%.")
+        row(self.clean_do_smooth, "Smooth surface", "", self.clean_smooth, "passes (the scanner uses 3)",
+            "Evens out scan ripple. More passes soften small detail.")
+        row(self.clean_holes, "Fill small holes", "closes small gaps in the surface. Off on the scanner by default: it can invent surface where the scan missed", None, "",
+            "Only small holes are closed. Intentional openings in the part can get filled too, so check the result.")
+        row(self.clean_do_keep, "Reduce triangle count", "keep", self.clean_keep, "% of the triangles (smaller file, less detail)",
+            "The scanner's Simplify ratio (it uses 40%). 100 keeps every triangle.")
+        prev=ctk.CTkFrame(card, fg_color="transparent"); prev.pack(fill="both", expand=True, padx=12, pady=(10,0))
+        prev.grid_columnconfigure((0,1), weight=1); prev.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(prev, text="Before", text_color=MUT, font=ctk.CTkFont(size=11)).grid(row=0,column=0)
+        ctk.CTkLabel(prev, text="After", text_color=MUT, font=ctk.CTkFont(size=11)).grid(row=0,column=1)
+        imgs=[ctk.CTkLabel(prev, text="", fg_color="#0a0c10", corner_radius=10) for _ in range(2)]
+        imgs[0].grid(row=1,column=0, sticky="nsew", padx=(4,3), pady=4); imgs[1].grid(row=1,column=1, sticky="nsew", padx=(3,4), pady=4)
+        status=ctk.CTkLabel(card, text="Tick what to do, then Run. Nothing is changed until you press Keep.", text_color=MUT, font=ctk.CTkFont(size=12)); status.pack(anchor="w", padx=18, pady=(6,0))
+        btns=ctk.CTkFrame(card, fg_color="transparent"); btns.pack(fill="x", padx=12, pady=(6,12))
+        state={"done":False}
+        def close():
+            try:
+                if os.path.exists(tmp): os.remove(tmp)
+            except Exception: pass
+            self._dialogs.pop("prepare", None); t.destroy()
+        t.protocol("WM_DELETE_WINDOW", close)
+        def keep():
+            try: os.replace(tmp, final)
+            except Exception as e: log_error("prepare keep", e); status.configure(text="Could not save the prepared version (see Help > Log).", text_color=WARN); return
+            self._persist(); self._mesh_stats={}; self.gallery_cache.pop(name, None); self.projects_sig=None
+            self.set_banner("%s prepared: saved as a new version, the original is kept." % self._scan_label(name, node), OK)
+            self._proc_set_current(name, node, "clean"); close()
+        def discard(): close(); self.set_banner("Discarded. Nothing was changed.", MUT)
+        def run():
+            if not (self.clean_do_iso.get() or self.clean_do_smooth.get() or self.clean_holes.get() or self.clean_do_keep.get()):
+                status.configure(text="Tick at least one action.", text_color=WARN); return
+            self._persist(); runb.configure(state="disabled"); keepb.pack_forget(); discb.pack_forget()
+            status.configure(text="Working on a copy… (a big model takes a minute)", text_color=MUT)
+            def work():
+                ok=self._clean_subprocess(src, tmp); ims=[None,None]
+                try:
+                    import shade
+                    for i,pth in enumerate((src, tmp if ok else None)):
+                        if not pth: continue
+                        v,f=shade.load_oriented(pth, 300000); ims[i]=shade.render(v, f, size=(400, 250), grid=False)
+                except Exception as e: log_error("prepare preview", e)
+                def show():
+                    for i,im in enumerate(ims):
+                        if im is not None:
+                            self.imgs["prep_%d"%i]=ctk.CTkImage(light_image=im, dark_image=im, size=im.size); imgs[i].configure(image=self.imgs["prep_%d"%i])
+                    runb.configure(state="normal")
+                    if ok:
+                        st=None
+                        try: st=os.path.getsize(tmp)
+                        except Exception: pass
+                        status.configure(text="Done: %s → %s. Keep it as the prepared version, or discard." % (human(os.path.getsize(src)), human(st or 0)), text_color=TX)
+                        keepb.pack(side="right", padx=6); discb.pack(side="right", padx=6); state["done"]=True
+                    else: status.configure(text="Could not prepare this scan (see Help > Log).", text_color=WARN)
+                self.q.put(("call", show))
+            threading.Thread(target=work, daemon=True).start()
+        runb=ctk.CTkButton(btns, text="Run", width=110, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=run); runb.pack(side="left", padx=6)
+        ctk.CTkButton(btns, text="Close", width=90, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=close).pack(side="left", padx=6)
+        keepb=ctk.CTkButton(btns, text="Keep", width=110, height=34, corner_radius=17, fg_color=OK, hover_color="#35b57c", text_color="#04121f", command=keep)
+        discb=ctk.CTkButton(btns, text="Discard", width=100, height=34, corner_radius=17, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=discard)
+    def _export_dialog(self, name, node):
+        """Version, format and destination together, with the model's size and a mesh check."""
+        vs=self._proc_versions(name, node)
+        if not vs: return
+        cur=self._proc_current(name, node) or vs[0]
+        t=self._top("Export · %s" % self._scan_label(name, node), 640, 470, key="export")
+        if t is None: return
+        card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
+        def line(label):
+            r=ctk.CTkFrame(card, fg_color="transparent"); r.pack(fill="x", padx=18, pady=5)
+            ctk.CTkLabel(r, text=label, width=90, anchor="w", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left"); return r
+        menu=dict(fg_color="#0d0f14", button_color=CARD2, button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=8)
+        labels=[l for _,l,_ in vs]; vsel=ctk.StringVar(value=cur[1])
+        r=line("Version"); ctk.CTkOptionMenu(r, values=labels, variable=vsel, width=220, command=lambda _: refresh(), **menu).pack(side="left")
+        fsel=ctk.StringVar(value=self.cfg.get("export_fmt","STL"))
+        r=line("Format"); ctk.CTkOptionMenu(r, values=["STL","OBJ","GLB","PLY"], variable=fsel, width=120, **menu).pack(side="left")
+        ctk.CTkLabel(r, text="STL for slicers · OBJ and GLB for other 3D apps · PLY is the original", text_color=DIM, font=ctk.CTkFont(size=10)).pack(side="left", padx=10)
+        dv=ctk.StringVar(value=self.cfg.get("export_dir") or os.path.join(self.dest.get() or DEFAULT_DEST, "exports"))
+        r=line("Save to"); ctk.CTkEntry(r, textvariable=dv, height=28, corner_radius=6, fg_color="#0d0f14", border_color=STROKE, text_color=TX).pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(r, text="Browse", width=70, height=28, corner_radius=6, fg_color=CARD2, hover_color=STROKE, text_color=TX,
+                      command=lambda: dv.set(filedialog.askdirectory(initialdir=dv.get() or HOME) or dv.get())).pack(side="left", padx=6)
+        base=ctk.StringVar(value="%s_%s" % (self.disp(name).replace(" ","_"), self._scan_label(name, node).replace(" ","")))
+        r=line("File name"); ctk.CTkEntry(r, textvariable=base, height=28, corner_radius=6, fg_color="#0d0f14", border_color=STROKE, text_color=TX).pack(side="left", fill="x", expand=True)
+        info=ctk.CTkLabel(card, text="Measuring the model…", justify="left", anchor="w", text_color=TX, font=ctk.CTkFont(size=12), wraplength=560); info.pack(fill="x", padx=18, pady=(12,2))
+        ctk.CTkLabel(card, text="Open edges and extra pieces mean the surface is not closed. Slicers usually repair small gaps; big ones need Prepare or a mesh editor. An STL file on its own is not a promise that it prints.",
+                     justify="left", anchor="w", text_color=DIM, font=ctk.CTkFont(size=10), wraplength=560).pack(fill="x", padx=18)
+        def path_of(): return dict((l,p) for _,l,p in vs)[vsel.get()]
+        def refresh():
+            info.configure(text="Measuring the model…"); pth=path_of()
+            self._mesh_info(pth, lambda i: (info.configure(text=self._info_text(i)) if t.winfo_exists() else None))
+        status=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=12)); status.pack(anchor="w", padx=18, pady=(8,0))
+        btns=ctk.CTkFrame(card, fg_color="transparent"); btns.pack(side="bottom", fill="x", padx=12, pady=(6,12))
+        def close(): self._dialogs.pop("export", None); t.destroy()
+        t.protocol("WM_DELETE_WINDOW", close)
+        def go():
+            src=path_of(); fmt=fsel.get().lower(); ddir=os.path.expanduser(dv.get().strip() or "."); nm=re.sub(r"[^\w.-]+", "_", base.get().strip()) or "model"
+            self.cfg["export_fmt"]=fsel.get(); self.cfg["export_dir"]=ddir; save_cfg(self.cfg)
+            out=os.path.join(ddir, "%s.%s" % (nm, fmt)); n=1
+            while os.path.exists(out): out=os.path.join(ddir, "%s_%d.%s" % (nm, n, fmt)); n+=1
+            gob.configure(state="disabled"); status.configure(text="Writing %s…" % os.path.basename(out), text_color=MUT)
+            def work():
+                err=None
+                try:
+                    os.makedirs(ddir, exist_ok=True)
+                    if fmt=="ply": shutil.copyfile(src, out)
+                    else:
+                        import trimesh; trimesh.load(src, force="mesh").export(out)
+                except Exception as e: err=e; log_error("export", e)
+                def done():
+                    if not t.winfo_exists(): return
+                    gob.configure(state="normal")
+                    if err: status.configure(text="Export failed (see Help > Log).", text_color=WARN); return
+                    status.configure(text="Saved %s (%s)" % (out, human(os.path.getsize(out))), text_color=OK)
+                    self.set_banner("Exported %s" % os.path.basename(out), OK)
+                    if self.auto_open.get(): subprocess.Popen(["xdg-open", ddir])
+                self.q.put(("call", done))
+            threading.Thread(target=work, daemon=True).start()
+        gob=ctk.CTkButton(btns, text="Export", width=120, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=go); gob.pack(side="right", padx=6)
+        ctk.CTkButton(btns, text="Close", width=90, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=close).pack(side="right", padx=6)
+        refresh()
 
     def on_process_pc(self):
         if getattr(self, "_fusing", False): return
@@ -3429,6 +3582,9 @@ class App(ctk.CTk):
                     self.set_banner("Pulled %d screenshot%s -> %s" % (n, "" if n==1 else "s", d), OK)
                     if self.auto_open.get(): subprocess.Popen(["xdg-open", d])
                 elif kind=="fuse_node": self._proc_progress(rest[0], rest[1], rest[2])
+                elif kind=="call":
+                    try: rest[0]()
+                    except Exception as e: log_error("ui call", e)
                 elif kind=="proc_clean_done":
                     n,node,ok=rest; self.set_status("")
                     if ok:
