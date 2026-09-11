@@ -31,6 +31,7 @@ PointYoink is a small desktop app that does it directly. Put the scanner in File
 - Shows the scanner's own preview render for each scan, and opens any mesh in an interactive 3D viewer (rotate/zoom).
 - Copies just the finished models by default, so you move megabytes instead of gigabytes. Or turn that off to pull the full project including raw frames.
 - Optionally exports the meshes to STL, OBJ, or GLB on import.
+- **Process on PC**: rebuild a scan's mesh on your computer from the raw depth frames (GPU when available), skipping the scanner's slow on-device fusion. Works on scans you never fused on the device.
 - Rename a project to something readable. The original scanner ID stays as the folder name and reference, so nothing is lost.
 - Remembers what you have already imported, across sessions, and asks before importing it again.
 - Export any project as a single .zip for archiving or sharing.
@@ -61,6 +62,7 @@ These are the standalone MIRACO models that store finished projects on the devic
 - Linux with Python 3.10 or newer.
 - System packages: `sudo apt install python3-tk python3-pil.imagetk python3-matplotlib python3-networkx jmtpfs rsync`
 - Python packages: `pip install customtkinter pillow trimesh "pyglet<2" fast-simplification networkx matplotlib`
+- Optional, for Process on PC: `pip3 install --user --break-system-packages open3d` (~400 MB; uses your GPU when available).
 - A USB-C **data** cable. Some bundled cables only charge. If nothing shows up, try a different cable.
 
 ## Install
@@ -70,7 +72,7 @@ These are the standalone MIRACO models that store finished projects on the devic
 Download the latest `.deb` from [Releases](https://github.com/datboip/pointyoink/releases), then install it (this pulls in the dependencies automatically):
 
 ```bash
-sudo apt install ./pointyoink_0.7.0_amd64.deb
+sudo apt install ./pointyoink_0.8.0_amd64.deb
 ```
 
 PointYoink then shows up in your application menu - launch it from there, or run `pointyoink`. No pip, no virtualenv.
@@ -115,6 +117,15 @@ revopoint-scans-models/
 The `.ply` mesh is what you print or render; the `_cloud.ply` is the raw point cloud. Both are standard binary PLY and open in Blender, MeshLab, or CloudCompare. Turn off **Models only** to pull the full project including raw frames instead (kept in the scanner's original nested layout, for re-processing in Revo Scan).
 
 **Export ZIP** bundles the selected projects, and asks what to include - STL only, OBJ only, GLB only, all models, or everything. Files go in flat with clean names, so unzipping gives you a ready-to-use folder (e.g. drop the STLs straight into a slicer).
+
+## Process on PC
+
+The MIRACO does its fusion and meshing on a phone-class chip, so it is slow and gives you few knobs. PointYoink can do that step on your computer instead: **Tools -> Process on PC** rebuilds a scan's mesh from the raw depth frames, using your GPU when one is available. It matches the scanner's own output to about 0.2 mm, and it works on scans you never fused on the device.
+
+- If you imported the project with **Models only** off, the raw frames are already on disk and it fuses immediately. Otherwise it pulls just the frames and calibration it needs (a few hundred MB per scan over USB), then fuses.
+- The result lands next to the project as `<name>_<scan>_pcfused.ply`, ready for View in 3D, Remove base, and export.
+- Detail is set in Settings (voxel size; 0.4 mm matches the scanner, 0.3 is finer).
+- Needs [Open3D](https://www.open3d.org/), which is large and optional: `pip3 install --user --break-system-packages open3d`. PointYoink tells you if it is missing.
 
 ## Troubleshooting
 

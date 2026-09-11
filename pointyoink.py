@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.7.0"
+APP = "PointYoink"; VERSION = "0.9.0"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -17,6 +17,9 @@ PROJECTS = os.path.join(MOUNT, "Internal shared storage", "Projects")
 SCREENSHOTS = os.path.join(MOUNT, "Internal shared storage", "Screenshots")
 THUMBS = "/tmp/pointyoink-thumbs"
 CFG_DIR = os.path.join(HOME, ".config", "pointyoink"); CFG = os.path.join(CFG_DIR, "config.json")
+# tests and scratch runs point POINTYOINK_CONFIG somewhere else so they never overwrite real settings
+if os.environ.get("POINTYOINK_CONFIG"):
+    CFG = os.environ["POINTYOINK_CONFIG"]; CFG_DIR = os.path.dirname(CFG) or CFG_DIR
 HERE = os.path.dirname(os.path.abspath(__file__)); ICON = os.path.join(HERE, "icon.png")
 DEFAULT_DEST = os.path.join(HOME, "revopoint-scans-models")
 VID = "2207"
@@ -27,7 +30,15 @@ BG="#0e1117"; CARD="#171b23"; CARD2="#1d222c"; STROKE="#2a3140"; SELB="#22304a"
 AC="#4aa3ff"; AC_H="#3b8fe6"; OK="#3ecf8e"; WARN="#ffb454"; DANGER="#ff6b6b"
 TX="#eef1f5"; MUT="#98a2b3"
 
-CHANGELOG = """0.7.0
+CHANGELOG = """0.8.0
+  - Process on PC: rebuild a scan's mesh on your computer from the raw depth
+    frames (GPU when available). Skips the scanner's slow on-device fusion and
+    matches its output to about 0.2 mm. Uses frames already on disk from a full
+    import, otherwise pulls just what it needs. Works on unfused scans too.
+    Needs Open3D (optional install; the app tells you if it is missing).
+  - Settings: Process on PC detail (voxel size, 0.4 mm = scanner).
+
+0.7.0
   - Remove base: an interactive cut-plane tool to slice the table/turntable off
     a scan (keeps a cleaned copy). Plus optional mesh cleanup on import.
   - Captures tab: browse and pull the scanner's screenshots AND screen
@@ -210,7 +221,12 @@ def do_mount():
     except subprocess.TimeoutExpired: return False, "jmtpfs timed out -- unplug/replug & re-tap File Transfer"
     time.sleep(2)
     if quick_mounted(): return True, "mounted"
-    return False, (r.stderr or r.stdout or "mount failed -- replug USB & re-tap File Transfer").strip()
+    err=(r.stderr or r.stdout or "").strip()
+    # libmtp's raw panics are noise to a user; say what it actually means
+    if any(k in err for k in ("device is busy", "Can't open device", "MtpErrorCantOpenDevice", "Unable to open")):
+        return False, ("The scanner isn't available over USB right now. If it's in PC mode or on a Model "
+                       "screen, tap File Transfer on the scanner, then Connect.")
+    return False, (err or "mount failed - replug USB & re-tap File Transfer")
 
 def list_projects():
     out = []
@@ -317,6 +333,13 @@ def _has_trimesh():
         import trimesh; return True
     except Exception: return False
 
+def _has_open3d():
+    """Open3D is a ~400MB optional dep for Process on PC. Probe in a subprocess so the
+    GUI process never loads it (it would stay resident in the app's memory)."""
+    try:
+        return subprocess.run([_sys.executable, "-c", "import open3d"], capture_output=True, timeout=60).returncode==0
+    except Exception: return False
+
 def _ply_counts(path):
     """Read vertex/face counts from a PLY header only (fast, no full load)."""
     v=f=0
@@ -402,7 +425,7 @@ class App(ctk.CTk):
         self.selected=None; self.gallery_cache={}; self.size_cache={}
         self.rows={}; self.serial=None
         self.pulling=False; self.cancel=False; self.listing=False; self.listed=False; self.proc=None
-        self._mounting=False; self.auto_tried=False
+        self._mounting=False; self.auto_tried=False; self._wifi=None
         self.report_callback_exception = self._on_tk_error
         log_line("PointYoink %s started" % VERSION)
 
@@ -583,7 +606,7 @@ class App(ctk.CTk):
         col=ctk.CTkFrame(h, fg_color="transparent"); col.grid(row=0,column=1, sticky="w")
         ctk.CTkLabel(col, text=APP, font=ctk.CTkFont(family=WORDMARK, size=18, weight="bold"), text_color=TX).pack(side="left")
         ctk.CTkLabel(col, text="v"+VERSION, font=ctk.CTkFont(size=11), text_color=MUT).pack(side="left", padx=(6,12), pady=(3,0))
-        ctk.CTkLabel(col, text="yoink 3D scans off your Revopoint MIRACO over USB",
+        ctk.CTkLabel(col, text="yoink 3D scans off your Revopoint MIRACO over USB or WiFi",
                      font=ctk.CTkFont(size=11), text_color=MUT).pack(side="left", pady=(3,0))
         btns=ctk.CTkFrame(h, fg_color="transparent"); btns.grid(row=0,column=3, sticky="e")
         for t,c in [("Settings",self.dlg_settings),("Help",self.dlg_help),("About",self.dlg_about)]:
@@ -596,10 +619,14 @@ class App(ctk.CTk):
         s.grid_columnconfigure(1, weight=1)
         self.dot=ctk.CTkLabel(s, text="●", text_color=WARN, font=ctk.CTkFont(size=16)); self.dot.grid(row=0,column=0, padx=(16,8), pady=12)
         self.banner=ctk.CTkLabel(s, text="…", text_color=TX, anchor="w", font=ctk.CTkFont(size=13)); self.banner.grid(row=0,column=1, sticky="w")
+        self.wifi_btn=ctk.CTkButton(s, text="WiFi", width=84, height=36, corner_radius=18, fg_color=CARD2, hover_color=STROKE,
+                                    text_color=TX, font=ctk.CTkFont(size=13,weight="bold"), command=self.on_wifi)
+        self.wifi_btn.grid(row=0,column=2, padx=(0,4), pady=10)
+        self._tip(self.wifi_btn, "Receive a project over WiFi, no cable: the scanner's Share to PC > Wi-Fi sends it straight to PointYoink.")
         self.action_btn=ctk.CTkButton(s, text="Connect", width=120, height=36, corner_radius=18,
                                       fg_color=AC, hover_color=AC_H, text_color="#04121f",
                                       font=ctk.CTkFont(size=13,weight="bold"), command=self.on_mount)
-        self.action_btn.grid(row=0,column=2, padx=12, pady=10)
+        self.action_btn.grid(row=0,column=3, padx=(4,12), pady=10)
 
     # ---- body: list + preview ----
     def _body(self):
@@ -644,6 +671,13 @@ class App(ctk.CTk):
         self.base_btn.pack(side="left", padx=5, pady=8)
         self._tip(self.base_btn, "Interactively slice the table/turntable off the scan. Opens a cut-plane "
                                  "tool; saves a cleaned copy as <name>_clean.ply. Original is kept.")
+        self.proc_btn=ctk.CTkButton(self.tools, text="⚙  Process on PC", width=150, height=32, corner_radius=16,
+                                    fg_color=CARD, hover_color=STROKE, text_color=TX,
+                                    font=ctk.CTkFont(size=12,weight="bold"), command=self.on_process_pc)
+        self.proc_btn.pack(side="left", padx=5, pady=8)
+        self._tip(self.proc_btn, "Rebuild this scan's mesh on your PC from the raw depth frames (GPU when available). "
+                                 "Uses local frames if a full import already has them, otherwise pulls just what it needs. "
+                                 "Saves <name>_<scan>_pcfused.ply. Needs Open3D.")
         self.files_box=ctk.CTkTextbox(fl, fg_color="#0a0c10", text_color=TX, corner_radius=10, font=ctk.CTkFont(family="monospace", size=12))
         self.files_box.pack(fill="both", expand=True, padx=10, pady=10)
 
@@ -661,6 +695,65 @@ class App(ctk.CTk):
         self.shots.grid(row=1,column=0, sticky="nsew", padx=10, pady=(0,10))
         for c in range(4): self.shots.grid_columnconfigure(c, weight=1)
         self._shots_items=[]
+        # Live tab: two live sources. MIRACO streams pose + IMU over WiFi (TCP 9999, 120 Hz);
+        # a tethered RANGE streams its cameras over USB (range.py).
+        lv=self.tabs.add("Live")
+        lv.grid_columnconfigure(0, weight=1); lv.grid_rowconfigure(1, weight=1)
+        bar=ctk.CTkFrame(lv, fg_color="transparent"); bar.grid(row=0,column=0, sticky="ew", padx=10, pady=(10,4))
+        ctk.CTkLabel(bar, text="Source", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
+        self.live_src=ctk.CTkSegmentedButton(bar, values=["MIRACO  (WiFi)", "RANGE  (USB)"], command=self._live_src_changed, height=30, corner_radius=15,
+                                             fg_color=CARD2, selected_color=AC, selected_hover_color=AC_H, unselected_color=CARD2, unselected_hover_color=STROKE,
+                                             text_color=TX, font=ctk.CTkFont(size=12))
+        self.live_src.pack(side="left", padx=10); self.live_src.set("MIRACO  (WiFi)")
+        # -- MIRACO source --
+        mf=ctk.CTkFrame(lv, fg_color="transparent"); mf.grid(row=1,column=0, sticky="nsew"); self.live_miraco=mf
+        mf.grid_columnconfigure(0, weight=1); mf.grid_rowconfigure(1, weight=1)
+        top=ctk.CTkFrame(mf, fg_color="transparent"); top.grid(row=0,column=0,columnspan=2, sticky="ew", padx=10, pady=(0,4))
+        ctk.CTkLabel(top, text="Scanner IP", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
+        self.live_ip=ctk.StringVar(value=self.cfg.get("scanner_ip",""))
+        ctk.CTkEntry(top, textvariable=self.live_ip, width=140, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=10).pack(side="left", padx=8)
+        fb=ctk.CTkButton(top, text="Find", width=64, height=30, corner_radius=15, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self.live_find); fb.pack(side="left", padx=2)
+        self._tip(fb, "Scan your local network for the scanner (it answers on port 9999 whenever its WiFi is on).")
+        self.live_btn=ctk.CTkButton(top, text="▶ Connect", width=110, height=30, corner_radius=15, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=self.live_toggle)
+        self.live_btn.pack(side="right")
+        self.live_rate=ctk.CTkLabel(top, text="", text_color=MUT, font=ctk.CTkFont(size=11)); self.live_rate.pack(side="right", padx=12)
+        self.live_cv=tk.Canvas(mf, bg="#0a0c10", highlightthickness=0); self.live_cv.grid(row=1,column=0, sticky="nsew", padx=(10,4), pady=(0,10))
+        side=ctk.CTkFrame(mf, fg_color=CARD2, corner_radius=10, width=200); side.grid(row=1,column=1, sticky="ns", padx=(4,10), pady=(0,10)); side.grid_propagate(False)
+        self.live_txt=ctk.CTkLabel(side, text="not connected\n\nHit Find, then Connect.", text_color=MUT, justify="left", anchor="nw", font=ctk.CTkFont(family="monospace", size=11))
+        self.live_txt.pack(fill="both", expand=True, padx=12, pady=12)
+        self._live_on=False; self._live_last=None; self._live_n=0; self._live_t=time.time(); self._live_trail=[]
+        # -- RANGE source --
+        rf=ctk.CTkFrame(lv, fg_color="transparent"); rf.grid(row=1,column=0, sticky="nsew"); rf.grid_remove(); self.live_range=rf
+        rf.grid_columnconfigure(0, weight=1); rf.grid_rowconfigure(1, weight=1)
+        rtop=ctk.CTkFrame(rf, fg_color="transparent"); rtop.grid(row=0,column=0, sticky="ew", padx=10, pady=(0,4))
+        self.range_status=ctk.CTkLabel(rtop, text="Not connected - plug the RANGE into a direct USB port (not a hub), then Connect",
+                                       text_color=MUT, font=ctk.CTkFont(size=12), anchor="w"); self.range_status.pack(side="left", fill="x", expand=True)
+        self.range_btn=ctk.CTkButton(rtop, text="▶ Connect", width=120, height=30, corner_radius=15, fg_color=AC, hover_color=AC_H,
+                                     text_color="#04121f", command=self.range_toggle); self.range_btn.pack(side="right")
+        self.range_cap=ctk.CTkButton(rtop, text="⬇ Capture", width=100, height=30, corner_radius=15, fg_color=CARD2, hover_color=STROKE,
+                                     text_color=TX, command=self.range_capture); self.range_cap.pack(side="right", padx=6)
+        self._tip(self.range_cap, "Grab the current depth frame as a point cloud (.ply) plus a color snapshot into your save folder, ready for View in 3D and export.")
+        self.range_view=ctk.CTkSegmentedButton(rtop, values=["All", "Depth", "IR L", "IR R", "Color", "Combined"], command=lambda v: self._range_layout(), height=30, corner_radius=15,
+                                               fg_color=CARD2, selected_color=STROKE, selected_hover_color=STROKE, unselected_color=CARD2, unselected_hover_color=STROKE,
+                                               text_color=TX, font=ctk.CTkFont(size=12))
+        self.range_view.pack(side="right", padx=6); self.range_view.set("All")   # (segmented buttons can't take a tooltip)
+        self.range_rot=int(self.cfg.get("range_rot", 90))   # the sensors are mounted sideways; 90 makes the view upright
+        rb=ctk.CTkButton(rtop, text="↻ %d°" % self.range_rot, width=64, height=30, corner_radius=15, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self._range_rotate)
+        rb.pack(side="right", padx=2); self.range_rot_btn=rb
+        self._tip(rb, "Rotate the live views (and captured clouds) in 90° steps to match how you're holding the scanner.")
+        grid=ctk.CTkFrame(rf, fg_color="transparent"); grid.grid(row=1,column=0, sticky="nsew", padx=10, pady=(0,4)); self.range_grid=grid
+        for c in (0,1): grid.grid_columnconfigure(c, weight=1, uniform="rg")
+        for r in (0,1): grid.grid_rowconfigure(r, weight=1, uniform="rg")
+        self.range_tiles={}
+        for i,(key,cap) in enumerate((("Depth","Depth"),("IR L","IR left"),("IR R","IR right"),("Color","Color"))):
+            cell=ctk.CTkFrame(grid, fg_color="#0a0c10", corner_radius=12); cell.grid(row=i//2, column=i%2, sticky="nsew", padx=3, pady=3)
+            cell.grid_propagate(False); cell.grid_columnconfigure(0, weight=1); cell.grid_rowconfigure(1, weight=1)
+            ctk.CTkLabel(cell, text=cap, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").grid(row=0,column=0, sticky="ew", padx=10, pady=(6,0))
+            lab=ctk.CTkLabel(cell, text=""); lab.grid(row=1,column=0, sticky="nsew"); self.range_tiles[key]=lab
+        self.range_single=ctk.CTkLabel(rf, text="", fg_color="#0a0c10", corner_radius=12); self.range_single.grid(row=1,column=0, sticky="nsew", padx=10, pady=(0,4)); self.range_single.grid_remove()
+        self.range_info=ctk.CTkLabel(rf, text="The RANGE draws 5V/1A: hub ports (500 mA) make it reset when the projector fires. It also reboots itself whenever the stream stops (that's normal).",
+                                     text_color=MUT, font=ctk.CTkFont(size=11), anchor="w"); self.range_info.grid(row=2,column=0, sticky="ew", padx=14, pady=(0,10))
+        self._range=None; self._range_stream=None; self._range_color=None; self._range_intr=None; self._range_on=False; self._range_busy=False
 
     # ---- import options ----
     def _build_options(self):
@@ -679,6 +772,7 @@ class App(ctk.CTk):
                         fg_color=AC, hover_color=AC_H, text_color=TX); ao.pack(side="left", padx=(18,0))
         self._tip(ao, "Open the destination folder automatically when the import finishes.")
         self.cleanup=ctk.BooleanVar(value=self.cfg.get("cleanup",False))
+        self.fuse_voxel=ctk.DoubleVar(value=float(self.cfg.get("fuse_voxel",0.4)))
         cu=ctk.CTkCheckBox(r1, text="Clean up mesh", variable=self.cleanup,
                         fg_color=AC, hover_color=AC_H, text_color=TX); cu.pack(side="left", padx=(18,0))
         self._tip(cu, "Tidy the mesh on your PC during import: keep the main object (remove floating bits), "
@@ -899,7 +993,7 @@ class App(ctk.CTk):
         box=ctk.CTkTextbox(t, fg_color=CARD, text_color=TX, corner_radius=12, wrap="word", height=150)
         box.pack(fill="both", expand=True, padx=24, pady=(4,20)); box.insert("1.0", CHANGELOG); box.configure(state="disabled")
     def dlg_settings(self):
-        t=self._top("Settings", 560, 400)
+        t=self._top("Settings", 560, 520)
         if t is None: return
         ctk.CTkLabel(t, text="Default save folder", text_color=TX, anchor="w").pack(fill="x", padx=20, pady=(20,4))
         dv=ctk.StringVar(value=self.dest.get()); row=ctk.CTkFrame(t, fg_color="transparent"); row.pack(fill="x", padx=20)
@@ -909,6 +1003,16 @@ class App(ctk.CTk):
         mo=ctk.BooleanVar(value=self.models_only.get()); ao=ctk.BooleanVar(value=self.auto_open.get())
         ctk.CTkCheckBox(t, text="Models only by default", variable=mo, fg_color=AC, hover_color=AC_H, text_color=TX).pack(anchor="w", padx=20, pady=(16,4))
         ctk.CTkCheckBox(t, text="Open folder when import finishes", variable=ao, fg_color=AC, hover_color=AC_H, text_color=TX).pack(anchor="w", padx=20)
+        fr=ctk.CTkFrame(t, fg_color="transparent"); fr.pack(fill="x", padx=20, pady=(14,0))
+        ctk.CTkLabel(fr, text="Process on PC detail (voxel, mm)", text_color=TX).pack(side="left")
+        fv=ctk.StringVar(value=str(self.fuse_voxel.get()))
+        ctk.CTkEntry(fr, textvariable=fv, width=64, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=10).pack(side="left", padx=8)
+        ctk.CTkLabel(fr, text="0.4 = match scanner  ·  0.3 finer  ·  0.2 max", text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left")
+        wr=ctk.CTkFrame(t, fg_color="transparent"); wr.pack(fill="x", padx=20, pady=(14,0))
+        ctk.CTkLabel(wr, text="WiFi share code", text_color=TX).pack(side="left")
+        wv=ctk.StringVar(value=str(self.cfg.get("wifi_code","")))
+        ctk.CTkEntry(wr, textvariable=wv, width=64, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=10).pack(side="left", padx=8)
+        ctk.CTkLabel(wr, text="4 digits you'll always use, or leave blank for a fresh random one each time", text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left")
         # UI scale (for HiDPI / tiny-window fix)
         sr=ctk.CTkFrame(t, fg_color="transparent"); sr.pack(fill="x", padx=20, pady=(18,0))
         cur=getattr(self,"_ui_scale",1.0)
@@ -920,6 +1024,10 @@ class App(ctk.CTk):
         sl.pack(fill="x", padx=20, pady=(4,0))
         def save():
             self.dest.set(dv.get()); self.models_only.set(mo.get()); self.auto_open.set(ao.get())
+            try: self.fuse_voxel.set(max(0.1, min(2.0, float(fv.get()))))
+            except Exception: pass
+            code="".join(ch for ch in wv.get() if ch.isdigit())[:4]
+            self.cfg["wifi_code"]=code.zfill(4) if code else ""
             self.cfg["ui_scale"]=round(float(sv.get()),2); self._persist(); t.destroy()
             if abs(float(sv.get())-cur)>0.02:
                 self._alert("UI scale changed", "The new UI scale takes effect next time you open PointYoink.")
@@ -962,6 +1070,8 @@ class App(ctk.CTk):
         self.cfg.update(dest=self.dest.get(), models_only=self.models_only.get(),
                         auto_open=self.auto_open.get(), geometry=self.geometry(),
                         exp_stl=self.exp_stl.get(), exp_obj=self.exp_obj.get(), exp_glb=self.exp_glb.get(),
+                        fuse_voxel=round(float(self.fuse_voxel.get() or 0.4),2),
+                        scanner_ip=self.live_ip.get().strip(),
                         cleanup=self.cleanup.get(),
                         records=self.records); save_cfg(self.cfg)
 
@@ -996,7 +1106,14 @@ class App(ctk.CTk):
         if val is None: return
         self.records.setdefault(name,{})["label"]=(val.strip() or None)
         self._persist(); self.projects_sig=None  # force re-render
-    def on_close(self): self._persist(); self.destroy()
+    def on_close(self):
+        try:
+            if self._wifi: self._wifi.stop()
+        except Exception: pass
+        try:   # projector off while still streaming; the streams die with us and the RANGE reboots (normal)
+            if getattr(self, "_range_on", False) and self._range: self._range.projector(False)
+        except Exception: pass
+        self._persist(); self.destroy()
 
     # ---- helpers ----
     def browse(self):
@@ -1019,7 +1136,7 @@ class App(ctk.CTk):
 
     # ---- polling ----
     def refresh_loop(self):
-        if not self.pulling:
+        if not self.pulling and not self._wifi:
             st,serial=usb_state(); self.serial=serial; mounted=quick_mounted()
             if st=="absent":
                 self.set_banner("Scanner not detected - plug in the USB-C cable.", WARN)
@@ -1116,7 +1233,7 @@ class App(ctk.CTk):
         self.detail.configure(text="Project: %s     Edited: %s\nMeshes: %s   Point clouds: %s   Scans: %s"%(
             name, p.get("date") or "?", p.get("meshes"), p.get("clouds"), p.get("nodes")))
         self.detail.grid(); self.renders_lbl.grid(); self.film.grid()
-        if p.get("meshes"): self.tools.grid()
+        if p.get("meshes") or p.get("nodes"): self.tools.grid()   # Process on PC works on unfused scans too
         else: self.tools.grid_remove()
         for w in self.film.winfo_children(): w.destroy()
         if name in self.gallery_cache: self.render_gallery(name, self.gallery_cache[name])
@@ -1202,14 +1319,17 @@ class App(ctk.CTk):
         self.proc=None
         self.q.put(("cancelled" if self.cancel else "done", dest, failed))
 
-    def _import_flat(self, name, dest, fmts, cleanup, i, total):
-        """Copy just the finished models into <dest>/<name>/ with clean unique names."""
-        src=os.path.join(PROJECTS, name); out=os.path.join(dest, name); os.makedirs(out, exist_ok=True)
+    def _import_flat(self, name, dest, fmts, cleanup, i, total, src_root=None, nodes=None):
+        """Copy just the finished models into <dest>/<name>/ with clean unique names.
+        nodes: optional list of scan ids to keep (WiFi picker); default all."""
+        keep=nodes
+        src=os.path.join(src_root or PROJECTS, name); out=os.path.join(dest, name); os.makedirs(out, exist_ok=True)
         revo=os.path.join(src, name+".revo")
         if os.path.exists(revo):
             try: shutil.copyfile(revo, os.path.join(out, name+".revo"))
             except Exception: pass
         nodes=sorted(glob.glob(os.path.join(src, "data", "*")))
+        if nodes is not None and keep is not None: nodes=[nd for nd in nodes if os.path.basename(nd) in keep]
         n=max(1,len(nodes))
         meshes=[]
         for j,nd in enumerate(nodes):
@@ -1374,6 +1494,423 @@ class App(ctk.CTk):
                 elif ln.startswith("CUT_ERROR"): log_line("cutplane: "+ln); self.q.put(("base_done", ("err", ln))); break
         except Exception as e:
             log_error("base-launch", e); self.q.put(("base_done", ("err", str(e))))
+
+    # ---- process on PC: raw depth frames -> fused mesh, via fuse.py (Open3D TSDF) ----
+    def on_process_pc(self):
+        if getattr(self, "_fusing", False): return
+        name=self.selected
+        if not name: return
+        if not _has_open3d():
+            self._alert("Open3D needed",
+                "Process on PC rebuilds the mesh with Open3D, which isn't installed for this Python.\n\n"
+                "Install it with:\n  pip3 install --user --break-system-packages open3d\n\n"
+                "(~400 MB. The GPU is used automatically when available.)")
+            return
+        self._fusing=True
+        try: self.proc_btn.configure(state="disabled")
+        except Exception: pass
+        self.set_status("Process on PC - preparing…")
+        self._open_loader("Process on PC", "Finding raw frames…")
+        threading.Thread(target=self._fuse_worker, args=(name,), daemon=True).start()
+    def _fuse_worker(self, name):
+        dest=self.dest.get() or DEFAULT_DEST; local=os.path.join(dest, name)
+        nodes=[]
+        for base in (os.path.join(PROJECTS, name), local):          # device listing first, else local
+            try:
+                nodes=[n for n in sorted(os.listdir(os.path.join(base,"data"))) if os.path.isdir(os.path.join(base,"data",n))]
+                if nodes: break
+            except Exception: pass
+        if not nodes:
+            self.q.put(("fuse_done", ("err","no scan data found"))); return
+        outs=[]; voxel=float(self.fuse_voxel.get() or 0.4)
+        for ni,node in enumerate(nodes):
+            lcache=os.path.join(local,"data",node,"cache"); lparam=os.path.join(local,"data",node,"param")
+            dcache=os.path.join(PROJECTS,name,"data",node,"cache"); dparam=os.path.join(PROJECTS,name,"data",node,"param")
+            if not glob.glob(os.path.join(lcache,"*.dph")):          # smart: local frames if present, else pull just what's needed
+                try: frames=sorted(f for f in os.listdir(dcache) if f.endswith((".dph",".inf")))
+                except Exception:
+                    self.q.put(("fuse_status","Scan %s: no raw frames on the device or disk - skipping"%node)); continue
+                os.makedirs(lcache, exist_ok=True); os.makedirs(lparam, exist_ok=True)
+                for i,f in enumerate(frames):
+                    if i%20==0: self.q.put(("fuse_status","Scan %d/%d: pulling frame %d/%d off the scanner…"%(ni+1,len(nodes),i+1,len(frames))))
+                    try: shutil.copyfile(os.path.join(dcache,f), os.path.join(lcache,f))
+                    except Exception as e: log_error("pull-frame "+f, e)
+                try:
+                    for f in os.listdir(dparam): shutil.copyfile(os.path.join(dparam,f), os.path.join(lparam,f))
+                except Exception as e: log_error("pull-param", e)
+            calib=os.path.join(lparam,"Pl.bin")
+            if not os.path.exists(calib):
+                self.q.put(("fuse_status","Scan %s: no calibration (Pl.bin) - skipping"%node)); continue
+            out=os.path.join(local, "%s_%s_pcfused.ply"%(name,node))
+            self.q.put(("fuse_status","Scan %d/%d: fusing…"%(ni+1,len(nodes))))
+            try:
+                proc=subprocess.Popen([_sys.executable, os.path.join(HERE,"fuse.py"), "--frames", lcache, "--calib", calib,
+                                       "--out", out, "--voxel", str(voxel), "--gpu"],
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                      env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
+                ok=False; devname="GPU"
+                for ln in proc.stdout:
+                    ln=ln.strip()
+                    if not ln.startswith("STAGE "): continue
+                    parts=ln.split(" ",2); stage=parts[1]
+                    try: payload=json.loads(parts[2]) if len(parts)>2 else {}
+                    except Exception: payload={}
+                    if stage=="device": devname="GPU" if "CUDA" in str(payload.get("device","")) else "CPU"
+                    elif stage=="integrate": self.q.put(("fuse_status","Scan %d/%d: %s integrating frame %d/%d…"%(ni+1,len(nodes),devname,payload.get("done",0),payload.get("total",0))))
+                    elif stage=="extract": self.q.put(("fuse_status","Scan %d/%d: extracting mesh…"%(ni+1,len(nodes))))
+                    elif stage=="done": ok=True
+                    elif stage=="error": log_line("fuse %s/%s: %s"%(name,node,payload.get("msg","")))
+                proc.wait()
+                if ok and os.path.exists(out): outs.append(os.path.basename(out))
+                else: log_line("fuse produced no mesh for %s/%s"%(name,node))
+            except Exception as e:
+                log_error("fuse-launch", e)
+        if outs: self.q.put(("fuse_done", ("ok", ", ".join(outs))))
+        else: self.q.put(("fuse_done", ("err", "no scans could be processed - see the log")))
+
+    # ---- live: pose + IMU over TCP 9999 (60-byte packets: 8-byte header + 13 float32) ----
+    def live_find(self):
+        self.set_status("Looking for the scanner on your network…")
+        threading.Thread(target=self._live_find_worker, daemon=True).start()
+    def _live_find_worker(self):
+        import socket, concurrent.futures as cf
+        try:
+            s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("8.8.8.8",80)); me=s.getsockname()[0]; s.close()
+        except Exception: self.q.put(("live_found", None)); return
+        base=".".join(me.split(".")[:3])
+        def probe(i):
+            ip="%s.%d"%(base,i); c=socket.socket(); c.settimeout(0.5)
+            try: c.connect((ip,9999)); return ip
+            except Exception: return None
+            finally: c.close()
+        with cf.ThreadPoolExecutor(120) as ex: hits=[h for h in ex.map(probe, range(1,255)) if h]
+        self.q.put(("live_found", hits[0] if hits else None))
+    def live_toggle(self):
+        if self._live_on:
+            self._live_on=False; self.live_btn.configure(text="▶ Connect", fg_color=AC); self.live_rate.configure(text=""); return
+        ip=self.live_ip.get().strip()
+        if not ip: self.set_banner("Enter the scanner's IP, or hit Find.", WARN); return
+        self.cfg["scanner_ip"]=ip; self._live_on=True; self._live_n=0; self._live_t=time.time(); self._live_trail=[]
+        self.live_btn.configure(text="■ Stop", fg_color="#3a2530")
+        threading.Thread(target=self._live_worker, args=(ip,), daemon=True).start()
+        self._live_draw()
+    def _live_worker(self, ip):
+        import socket, struct
+        try:
+            s=socket.socket(); s.settimeout(3); s.connect((ip,9999)); s.settimeout(2)
+        except Exception as e:
+            self._live_on=False; self.q.put(("live_err", "Couldn't reach %s:9999 (%s)"%(ip,e))); return
+        buf=b""
+        while self._live_on:
+            try: chunk=s.recv(4096)
+            except socket.timeout: continue
+            except Exception: break
+            if not chunk: break
+            buf+=chunk
+            while len(buf)>=60:
+                pkt=buf[:60]; buf=buf[60:]
+                try: self._live_last=struct.unpack_from("<13f", pkt, 8); self._live_n+=1
+                except Exception: pass
+        s.close()
+        if self._live_on: self._live_on=False; self.q.put(("live_err", "Stream ended."))
+    def _live_draw(self):
+        if not self._live_on: return
+        f=self._live_last; cv=self.live_cv
+        if f:
+            qx,qy,qz,qw=f[0],f[1],f[2],f[3]           # quaternion, assumed (x,y,z,w)
+            R=[[1-2*(qy*qy+qz*qz), 2*(qx*qy-qz*qw),   2*(qx*qz+qy*qw)],
+               [2*(qx*qy+qz*qw),   1-2*(qx*qx+qz*qz), 2*(qy*qz-qx*qw)],
+               [2*(qx*qz-qy*qw),   2*(qy*qz+qx*qw),   1-2*(qx*qx+qy*qy)]]
+            W=max(60,cv.winfo_width()); H=max(60,cv.winfo_height()); cx,cy=W*0.33,H*0.52; L=min(W,H)*0.30
+            def proj(v):
+                x=R[0][0]*v[0]+R[0][1]*v[1]+R[0][2]*v[2]; y=R[1][0]*v[0]+R[1][1]*v[1]+R[1][2]*v[2]; z=R[2][0]*v[0]+R[2][1]*v[1]+R[2][2]*v[2]
+                return cx + L*(x - 0.35*z), cy - L*(y - 0.35*z)
+            cv.delete("all")
+            cv.create_text(cx, 16, text="orientation", fill=MUT, font=(WORDMARK, 9))
+            corners=[(sx,sy,sz) for sx in (-.6,.6) for sy in (-.35,.35) for sz in (-.15,.15)]
+            P=[proj(v) for v in corners]
+            for i in range(8):
+                for j in range(i+1,8):
+                    if sum(a!=b for a,b in zip(corners[i],corners[j]))==1: cv.create_line(*P[i],*P[j], fill="#2d3644", width=1)
+            for v,col,lbl in (((1,0,0),"#ff5d6c","X"),((0,1,0),"#3ecf8e","Y"),((0,0,1),"#5ab0ff","Z")):
+                x2,y2=proj(v); cv.create_line(cx,cy,x2,y2, fill=col, width=3, arrow="last"); cv.create_text(x2,y2-11,text=lbl,fill=col,font=(WORDMARK,10,"bold"))
+            self._live_trail.append((f[10],f[12]))
+            if len(self._live_trail)>600: self._live_trail=self._live_trail[-600:]
+            tx0,ty0,tw,th=W*0.66,H*0.12,W*0.31,H*0.76
+            cv.create_rectangle(tx0,ty0,tx0+tw,ty0+th, outline="#2d3644"); cv.create_text(tx0+tw/2,ty0-9,text="path (top-down, mm)",fill=MUT,font=(WORDMARK,9))
+            xs=[q[0] for q in self._live_trail]; zs=[q[1] for q in self._live_trail]
+            rng=max(max(xs)-min(xs), max(zs)-min(zs), 50.0); mx,mz=(max(xs)+min(xs))/2,(max(zs)+min(zs))/2
+            pts=[(tx0+tw/2+(x-mx)/rng*tw*0.9, ty0+th/2-(z-mz)/rng*th*0.9) for x,z in self._live_trail]
+            if len(pts)>1: cv.create_line(*[c for q in pts for c in q], fill=AC, width=2)
+            if pts: cv.create_oval(pts[-1][0]-4,pts[-1][1]-4,pts[-1][0]+4,pts[-1][1]+4, fill="#ffb020", outline="")
+            dt=time.time()-self._live_t
+            self.live_rate.configure(text=("%.0f pkt/s"%(self._live_n/dt)) if dt>0.5 else "")
+            self.live_txt.configure(text=("orientation (quat)\n x %+.3f\n y %+.3f\n z %+.3f\n w %+.3f\n\nposition (mm)\n x %8.1f\n y %8.1f\n z %8.1f\n\ngyro\n %+.3f %+.3f %+.3f\n\naccel (g)\n %+.3f %+.3f %+.3f"
+                                          %(f[0],f[1],f[2],f[3],f[10],f[11],f[12],f[4],f[5],f[6],f[7],f[8],f[9])), text_color=TX)
+        self.after(40, self._live_draw)
+
+    # ---- Live tab sources ----
+    def _live_src_changed(self, v):
+        if "RANGE" in v: self.live_miraco.grid_remove(); self.live_range.grid()
+        else: self.live_range.grid_remove(); self.live_miraco.grid()
+    # ---- RANGE: tethered scanner as a live camera source (range.py) ----
+    def range_toggle(self):
+        if self._range_busy: return
+        if self._range_on: self._range_disconnect(); return
+        self._range_busy=True; self.range_btn.configure(state="disabled")
+        self.range_status.configure(text="Looking for the RANGE…", text_color=MUT); self.set_status("RANGE - connecting…")
+        threading.Thread(target=self._range_connect_worker, daemon=True).start()
+    def _range_connect_worker(self):
+        try:
+            import range as R
+            dev=R.find_device()
+            if not dev or not dev.get("node"):
+                self.q.put(("range_err", "RANGE not detected. Plug it into a direct USB port (not a hub) and try again. If it just disconnected, it's rebooting: give it ~10 s.")); return
+            if dev["on_hub"]:
+                self.q.put(("range_err", "RANGE is on a USB hub port (500 mA). It needs 5V/1A: move it to a rear motherboard port.")); return
+            xu=R.XU(dev["node"]); fw=xu.firmware()
+            if not fw:
+                self.q.put(("range_err", "RANGE is still booting - give it a few seconds and try again.")); return
+            intr=xu.intrinsics()
+            xu.projector(True); time.sleep(2.5)
+            st=R.DepthStream(dev["node"]); st.start()
+            col=None
+            if dev.get("rgb_node"):
+                col=R.ColorStream(dev["rgb_node"]); col.start()
+            self.q.put(("range_ok", (dev, xu, intr, st, col, fw)))
+        except Exception as e:
+            log_error("range-connect", e); self.q.put(("range_err", "RANGE connect failed: %s" % e))
+    def _range_disconnect(self):
+        self._range_on=False; self._range_busy=True; st=self._range_stream; col=self._range_color; xu=self._range
+        self.range_btn.configure(text="▶ Connect", fg_color=AC, state="disabled"); self.set_status("RANGE - stopping…")
+        def _off():
+            try:
+                if xu: xu.projector(False)        # while still streaming; the reboot below would also kill it
+                time.sleep(0.8)
+                if col: col.stop()
+                if st: st.stop()
+            except Exception as e: log_error("range-disconnect", e)
+            self.q.put(("range_off", None))
+        threading.Thread(target=_off, daemon=True).start()
+        self.after(15000, lambda: self._range_busy and self.q.put(("range_off", None)))   # watchdog: never leave the button dead
+    def _range_layout(self):
+        v=self.range_view.get()
+        if v=="All": self.range_single.grid_remove(); self.range_grid.grid()
+        else: self.range_grid.grid_remove(); self.range_single.grid()
+    def _range_rotate(self):
+        self.range_rot=(self.range_rot+90)%360; self.cfg["range_rot"]=self.range_rot
+        self.range_rot_btn.configure(text="↻ %d°" % self.range_rot)
+    def _range_frame(self, key):
+        """PIL image for one view (rotated to taste), or None if that stream has no frame yet."""
+        pil=self._range_raw(key)
+        return pil.rotate(self.range_rot, expand=True) if (pil is not None and self.range_rot) else pil
+    def _range_raw(self, key):
+        import range as R
+        st=self._range_stream; col=self._range_color
+        if key=="Depth":  return Image.fromarray(R.depth_to_image(st.latest)) if st and st.latest is not None else None
+        if key=="IR L":   return Image.fromarray(st.ir_left) if st and st.ir_left is not None else None
+        if key=="IR R":   return Image.fromarray(st.ir_right) if st and st.ir_right is not None else None
+        if key=="Color":  return Image.fromarray(col.latest) if col and col.latest is not None else None
+        if key=="Combined":
+            if st and st.latest is not None and col and col.latest is not None: return Image.fromarray(R.combined_image(st.latest, col.latest))
+            return self._range_raw("Depth")
+        return None
+    def _range_show(self, label, pil, pad=16):
+        if pil is None: return
+        w=max(64, label.winfo_width()-pad); h=max(64, label.winfo_height()-pad); iw,ih=pil.size
+        sc=min(w/float(iw), h/float(ih)); size=(max(32,int(iw*sc)), max(32,int(ih*sc)))
+        key="range_%d" % id(label)
+        self.imgs[key]=ctk.CTkImage(light_image=pil, dark_image=pil, size=size)
+        label.configure(image=self.imgs[key], text="")
+    def _range_draw(self):
+        if not self._range_on: return
+        try:
+            import numpy as np
+            v=self.range_view.get()
+            if v=="All":
+                for key,lab in self.range_tiles.items(): self._range_show(lab, self._range_frame(key), pad=6)
+            else:
+                self._range_show(self.range_single, self._range_frame(v))
+            st=self._range_stream; col=self._range_color
+            if st and st.latest is not None:
+                fr=st.latest; nz=fr[fr>0]
+                self.range_info.configure(text="depth frames %d  ·  color frames %d  ·  valid %.0f%%  ·  depth %.0f-%.0f mm (median %.0f)  ·  sweet spot 300-800 mm" % (
+                    st.count, col.count if col else 0, 100*(fr>0).mean(), (nz.min()*0.1 if nz.size else 0), (nz.max()*0.1 if nz.size else 0), (np.median(nz)*0.1 if nz.size else 0)))
+        except Exception as e: log_error("range-draw", e)
+        self.after(80, self._range_draw)
+    def range_capture(self):
+        st=self._range_stream
+        if not self._range_on or st is None or st.latest is None:
+            self.set_banner("Connect the RANGE first, then Capture.", WARN); return
+        fr=st.latest.copy(); intr=self._range_intr; col=self._range_color
+        rgb=col.latest.copy() if col and col.latest is not None else None
+        dest=os.path.join(self.dest.get() or DEFAULT_DEST, "range"); os.makedirs(dest, exist_ok=True)
+        base=os.path.join(dest, "range_%s" % time.strftime("%Y%m%d_%H%M%S")); rot=self.range_rot
+        def _save():
+            try:
+                import range as R
+                P=R.rotate_cloud(R.backproject(fr, intr), rot)
+                if len(P)<100: self.q.put(("range_err", "Almost no depth in view - point the RANGE at something 30-80 cm away.")); return
+                R.save_cloud(P, base+".ply")
+                if rgb is not None: Image.fromarray(rgb).rotate(rot, expand=True).save(base+".jpg", quality=90)
+                self.q.put(("range_captured", (base+".ply", len(P))))
+            except Exception as e: log_error("range-capture", e); self.q.put(("range_err", "Capture failed: %s" % e))
+        threading.Thread(target=_save, daemon=True).start()
+
+    # ---- WiFi: the scanner's Share to PC > Wi-Fi, received by us (wifi.py) ----
+    def on_wifi(self):
+        if self._wifi: self._wifi_cancel(); return
+        if self.pulling: self.set_banner("Wait for the current import to finish first.", WARN); return
+        import wifi
+        dest=self.dest.get() or DEFAULT_DEST; os.makedirs(dest, exist_ok=True)
+        code=(self.cfg.get("wifi_code") or "").strip() or None
+        try:
+            rx=wifi.Receiver(dest, code, lambda k,i: self.q.put(("wifi", k, i))); rx.start()
+        except OSError as e:
+            log_error("wifi-start", e)
+            self.set_banner("Can't open port 9706 (%s). Is another PointYoink or Revo Scan running?" % getattr(e, "strerror", e), WARN); return
+        self._wifi=rx; self._wifi_projects=None
+        self.wifi_btn.configure(text="Stop", fg_color="#3a2530")
+        self.set_banner("WiFi share open - on the MIRACO: Share to PC > Wi-Fi, enter code %s" % rx.code, AC)
+        self.set_status("WiFi: waiting for the scanner")
+        self._wifi_dialog(rx)
+    def _wifi_dialog(self, rx):
+        t=self._top("Share to PC over WiFi", 480, 330, key="wifi")
+        if t is None: return
+        t.protocol("WM_DELETE_WINDOW", self._wifi_cancel)
+        ctk.CTkLabel(t, text="On the MIRACO, open a project and tap\nShare to PC  ›  Wi-Fi, then enter this code:",
+                     text_color=MUT, font=ctk.CTkFont(size=13), justify="center").pack(pady=(26,6))
+        self.wifi_code_lbl=ctk.CTkLabel(t, text="  ".join(rx.code), text_color=AC, font=ctk.CTkFont(family=WORDMARK, size=54, weight="bold")); self.wifi_code_lbl.pack()
+        self.wifi_state=ctk.CTkLabel(t, text="Waiting for the scanner on %s…" % rx.ip, text_color=MUT, font=ctk.CTkFont(size=12)); self.wifi_state.pack(pady=(8,4))
+        self.wifi_prog=ctk.CTkProgressBar(t, height=8, corner_radius=4, progress_color=AC, fg_color=CARD2); self.wifi_prog.set(0); self.wifi_prog.pack(fill="x", padx=40, pady=(6,4))
+        self.wifi_hint=ctk.CTkLabel(t, text="Both must be on the same network. Nothing after 30 s? Allow port 9706 (UDP and TCP) in your firewall.",
+                                    text_color=MUT, font=ctk.CTkFont(size=10), wraplength=400, justify="center"); self.wifi_hint.pack(pady=(2,0))
+        ctk.CTkButton(t, text="Cancel", width=100, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self._wifi_cancel).pack(pady=(14,0))
+    def _wifi_close_dialog(self):
+        d=getattr(self, "_dialogs", {}).pop("wifi", None)
+        try:
+            if d is not None and d.winfo_exists(): d.destroy()
+        except Exception: pass
+    def _wifi_cancel(self):
+        rx=self._wifi
+        if not rx: self._wifi_close_dialog(); return
+        self._wifi=None; rx.stop(); self._wifi_close_dialog()
+        self.wifi_btn.configure(text="WiFi", fg_color=CARD2)
+        got=rx.bytes
+        try: shutil.rmtree(rx.stage, ignore_errors=True)
+        except Exception: pass
+        self.set_status("")
+        self.set_banner("WiFi share stopped%s." % (" at %.0f MB - share again on the scanner to retry" % (got/1048576) if got else ""), WARN if got else MUT)
+    def _wifi_event(self, kind, info):
+        rx=self._wifi
+        if not rx: return
+        if kind=="searching":
+            self.wifi_state.configure(text="Scanner found at %s - enter the code on it." % info["ip"], text_color=OK); self.set_status("WiFi: scanner found, waiting for the code")
+        elif kind=="badcode":
+            if info["locked"]:
+                self.wifi_state.configure(text="Too many wrong codes - closing this share. Click WiFi for a new code.", text_color=WARN)
+                self.after(2500, self._wifi_cancel)
+            else:
+                self.wifi_state.configure(text="Wrong code entered on the scanner - try again (%d attempts left)." % (5-rx.bad), text_color=WARN)
+        elif kind=="connected":
+            self.wifi_state.configure(text="Code accepted - receiving…", text_color=OK); self.set_status("WiFi: receiving…")
+        elif kind=="progress":
+            tot=info["total"]; frac=(info["bytes"]/tot) if tot else 0
+            self.wifi_prog.set(min(1.0, frac))
+            self.wifi_state.configure(text="Receiving  %.0f of %.0f MB  ·  %d files  ·  %.0f MB/s" % (info["bytes"]/1048576, tot/1048576, info["files"], info["rate"]/1048576), text_color=OK)
+            self.set_status("WiFi: %.0f%%" % (100*frac))
+        elif kind=="done":
+            self._wifi=None; rx.stop(); self._wifi_close_dialog(); self.wifi_btn.configure(text="WiFi", fg_color=CARD2)
+            projects=info["projects"]
+            if not projects:
+                shutil.rmtree(rx.stage, ignore_errors=True); self.set_banner("The scanner finished but sent no project.", WARN); self.set_status(""); return
+            self.set_banner("Received %s over WiFi - choose what to keep." % ", ".join(projects), OK); self.set_status("")
+            self._wifi_picker(rx.stage, projects)
+    def _wifi_picker(self, stage, projects):
+        """After a transfer: show each scan with its sizes, tick what to keep, models-only or full."""
+        rows=[]
+        for name in projects:
+            for nd in sorted(glob.glob(os.path.join(stage, name, "data", "*"))):
+                if not os.path.isdir(nd): continue
+                def sz(pat):
+                    return sum(os.path.getsize(f) for f in glob.glob(os.path.join(nd, pat)) if os.path.isfile(f))
+                raw=sum(os.path.getsize(f) for f in glob.glob(os.path.join(nd, "cache", "*")))
+                rows.append({"project":name, "node":os.path.basename(nd), "mesh":sz("fuse_mesh.ply"), "cloud":sz("fuse.ply"),
+                             "raw":raw, "frames":len(glob.glob(os.path.join(nd, "cache", "*.dph"))), "thumb":os.path.join(nd, "preview.png")})
+        t=self._top("Received over WiFi", 640, min(720, 250+78*max(1,len(rows))), key="wifipick")
+        if t is None: return
+        t.protocol("WM_DELETE_WINDOW", lambda: None)   # decide with the buttons; the data is only in staging
+        ctk.CTkLabel(t, text="%s  ·  %d scan%s" % (", ".join(projects), len(rows), "" if len(rows)==1 else "s"),
+                     font=ctk.CTkFont(family=WORDMARK, size=15, weight="bold"), text_color=TX).pack(anchor="w", padx=20, pady=(18,2))
+        ctk.CTkLabel(t, text="Tick the scans to keep. Formats and clean-up follow the options in the main window.",
+                     font=ctk.CTkFont(size=12), text_color=MUT).pack(anchor="w", padx=20)
+        lst=ctk.CTkScrollableFrame(t, fg_color=CARD, corner_radius=12); lst.pack(fill="both", expand=True, padx=16, pady=10)
+        vars_=[]
+        for r in rows:
+            v=ctk.BooleanVar(value=True); vars_.append(v)
+            row=ctk.CTkFrame(lst, fg_color=CARD2, corner_radius=10); row.pack(fill="x", padx=6, pady=4)
+            ctk.CTkCheckBox(row, text="", variable=v, width=24, fg_color=AC, hover_color=AC_H).pack(side="left", padx=(10,4), pady=10)
+            if os.path.exists(r["thumb"]):
+                try:
+                    key="wifipick_%s_%s" % (r["project"], r["node"]); self.imgs[key]=cimg(r["thumb"], 72)
+                    ctk.CTkLabel(row, image=self.imgs[key], text="").pack(side="left", padx=6)
+                except Exception: pass
+            col=ctk.CTkFrame(row, fg_color="transparent"); col.pack(side="left", fill="x", expand=True, padx=6)
+            ctk.CTkLabel(col, text="scan %s" % r["node"], text_color=TX, font=ctk.CTkFont(size=12, weight="bold"), anchor="w").pack(anchor="w")
+            parts=[]
+            if r["mesh"]: parts.append("mesh %s" % human(r["mesh"]))
+            if r["cloud"]: parts.append("point cloud %s" % human(r["cloud"]))
+            parts.append("%d raw frames %s" % (r["frames"], human(r["raw"])) if r["frames"] else "no raw frames")
+            if not r["mesh"] and not r["cloud"]: parts.insert(0, "unfused (raw only - use Process on PC)")
+            ctk.CTkLabel(col, text="  ·  ".join(parts), text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(anchor="w")
+        mode=ctk.StringVar(value="models" if self.models_only.get() else "full")
+        mr=ctk.CTkFrame(t, fg_color="transparent"); mr.pack(fill="x", padx=20)
+        ctk.CTkRadioButton(mr, text="Models only (meshes + clouds, clean names)", variable=mode, value="models", fg_color=AC, hover_color=AC_H, text_color=TX).pack(side="left", padx=(0,16))
+        ctk.CTkRadioButton(mr, text="Full project (raw frames too)", variable=mode, value="full", fg_color=AC, hover_color=AC_H, text_color=TX).pack(side="left")
+        br=ctk.CTkFrame(t, fg_color="transparent"); br.pack(fill="x", padx=16, pady=14)
+        def close():
+            self._dialogs.pop("wifipick", None); t.destroy()
+        def discard():
+            close(); shutil.rmtree(stage, ignore_errors=True); self.set_banner("Discarded the received project.", MUT)
+        def go():
+            keep={}
+            for r,v in zip(rows, vars_):
+                if v.get(): keep.setdefault(r["project"], []).append(r["node"])
+            if not keep: discard(); return
+            close()
+            self.pulling=True; self.cancel=False; self._pull_list=list(keep); self._export_fails=[]
+            self.import_btn.grid_remove(); self.cancel_btn.grid(row=0,column=3)
+            self.progress.grid(row=1,column=0, columnspan=3, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=3, sticky="w")
+            dest=self.dest.get() or DEFAULT_DEST; cleanup=self.cleanup.get()
+            fmts=[e for e,v in (("stl",self.exp_stl),("obj",self.exp_obj),("glb",self.exp_glb)) if v.get()]
+            self.set_banner("Saving %s…" % ", ".join(keep), AC)
+            threading.Thread(target=self._wifi_finish_worker, args=(stage, keep, dest, mode.get()=="models", fmts, cleanup), daemon=True).start()
+        ctk.CTkButton(br, text="Import", width=110, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=go).pack(side="right", padx=6)
+        ctk.CTkButton(br, text="Discard", width=100, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=discard).pack(side="right", padx=6)
+    def _wifi_finish_worker(self, stage, keep, dest, mo, fmts, cleanup):
+        failed=[]; total=len(keep)
+        for i,(name,nodes) in enumerate(keep.items()):
+            if self.cancel: break
+            try:
+                if mo:
+                    self._import_flat(name, dest, fmts, cleanup, i, total, src_root=stage, nodes=nodes)
+                else:
+                    self.q.put(("prog", i/total, "Saving %s (full project)" % name))
+                    for nd in glob.glob(os.path.join(stage, name, "data", "*")):     # drop the scans that weren't ticked
+                        if os.path.basename(nd) not in nodes: shutil.rmtree(nd, ignore_errors=True)
+                    out=os.path.join(dest, name)
+                    if os.path.isdir(out): shutil.rmtree(out)
+                    shutil.move(os.path.join(stage, name), out)
+                try:   # keep a thumbnail so the project list can show it later
+                    root=os.path.join(stage if mo else dest, name, "data")
+                    for node in sorted(os.listdir(root)):
+                        pv=os.path.join(root, node, "preview.png")
+                        if os.path.exists(pv): os.makedirs(THUMBS, exist_ok=True); shutil.copyfile(pv, os.path.join(THUMBS, name+"__thumb.png")); break
+                except Exception: pass
+            except Exception as e:
+                failed.append(name); log_error("wifi-import", e)
+        shutil.rmtree(stage, ignore_errors=True)
+        self.q.put(("cancelled" if self.cancel else "done", dest, failed))
 
     # ---- screenshots ----
     def refresh_screenshots(self):
@@ -1721,6 +2258,50 @@ class App(ctk.CTk):
                     n, d = rest[0]; self.set_status("")
                     self.set_banner("Pulled %d screenshot%s -> %s" % (n, "" if n==1 else "s", d), OK)
                     if self.auto_open.get(): subprocess.Popen(["xdg-open", d])
+                elif kind=="fuse_status":
+                    self.set_status(rest[0])
+                    if getattr(self,"_loader_msg",None):
+                        try: self._loader_msg.configure(text=rest[0])
+                        except Exception: pass
+                elif kind=="fuse_done":
+                    self._close_loader(); self._fusing=False
+                    try: self.proc_btn.configure(state="normal")
+                    except Exception: pass
+                    status, info = rest[0]
+                    if status=="ok":
+                        self.set_banner("Processed on PC -> %s" % info, OK); self.set_status("Processed on PC -> %s" % info)
+                        self.projects_sig=None
+                        if self.auto_open.get(): self.open_folder()
+                    else:
+                        self.set_banner("Process on PC failed - see Help > Log. %s" % (info or ""), WARN); self.set_status("")
+                elif kind=="live_found":
+                    if rest[0]:
+                        self.live_ip.set(rest[0]); self.set_status("Scanner found at %s"%rest[0])
+                        self.set_banner("Scanner found at %s - hit Connect on the Live tab."%rest[0], OK)
+                    else:
+                        self.set_status(""); self.set_banner("No scanner answering on port 9999 on this network (is its WiFi on?).", WARN)
+                elif kind=="live_err":
+                    self.live_btn.configure(text="▶ Connect", fg_color=AC); self.live_rate.configure(text="")
+                    self.live_txt.configure(text=rest[0], text_color=WARN); self.set_banner(rest[0], WARN)
+                elif kind=="range_ok":
+                    dev,xu,intr,st,col,fw=rest[0]
+                    self._range=xu; self._range_intr=intr; self._range_stream=st; self._range_color=col; self._range_on=True; self._range_busy=False
+                    self.range_btn.configure(text="■ Disconnect", fg_color="#3a2530", state="normal")
+                    self.range_status.configure(text="RANGE connected  ·  usb %s  ·  firmware %s  ·  projector on%s" % (dev["usb_path"], fw, "" if col else "  ·  no color camera found"), text_color=OK)
+                    self.set_status("RANGE live"); self._range_layout(); self._range_draw()
+                elif kind=="range_err":
+                    self._range_busy=False; self.range_btn.configure(state="normal")
+                    self.set_banner(rest[0], WARN); self.set_status(""); self.range_status.configure(text=rest[0], text_color=WARN)
+                elif kind=="range_off":
+                    if self._range_busy or self._range_on:
+                        self._range=None; self._range_stream=None; self._range_color=None; self._range_on=False; self._range_busy=False; self.set_status("")
+                        self.range_btn.configure(text="▶ Connect", fg_color=AC, state="normal")
+                        self.range_status.configure(text="Disconnected. The RANGE reboots itself now (normal after a stream stops) - back in about 10 s.", text_color=MUT)
+                elif kind=="range_captured":
+                    out,n=rest[0]
+                    self.set_banner("Captured %d points -> %s" % (n, os.path.basename(out)), OK); self.set_status("Captured -> %s" % os.path.basename(out))
+                    if self.auto_open.get(): subprocess.Popen(["xdg-open", os.path.dirname(out)])
+                elif kind=="wifi": self._wifi_event(rest[0], rest[1])
                 elif kind=="loader_close":
                     self._close_loader()
                 elif kind=="base_done":

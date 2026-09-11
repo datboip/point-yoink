@@ -27,6 +27,9 @@ cp "$ROOT/pointyoink.py" "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/viewer.py"     "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/process.py"    "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/cutplane.py"   "$PKG/usr/lib/pointyoink/"
+cp "$ROOT/fuse.py"       "$PKG/usr/lib/pointyoink/"
+cp "$ROOT/range.py"      "$PKG/usr/lib/pointyoink/"
+cp "$ROOT/wifi.py"       "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/icon.png"      "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/icon.png"      "$PKG/usr/share/icons/hicolor/512x512/apps/pointyoink.png"
 cp "$ROOT/LICENSE" "$ROOT/README.md" "$ROOT/CHANGELOG.md" "$PKG/usr/share/doc/pointyoink/" 2>/dev/null || true
@@ -61,6 +64,7 @@ Version: ${VER}
 Architecture: amd64
 Maintainer: datboip <datboip@users.noreply.github.com>
 Depends: python3, python3-tk, python3-pil, python3-pil.imagetk, python3-numpy, python3-matplotlib, python3-networkx, jmtpfs, rsync, xdg-utils, fuse3 | fuse
+Recommends: v4l-utils
 Section: graphics
 Priority: optional
 Homepage: https://github.com/datboip/pointyoink

@@ -3,6 +3,43 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.0 (local, unreleased)
+- **WiFi import, no cable.** A WiFi button next to Connect shows a 4-digit code;
+  on the MIRACO choose Share to PC > Wi-Fi and enter it, and the project comes
+  straight into PointYoink (about 20 MB/s, a 1 GB project in under a minute,
+  faster than the cable). It then goes through the same import as USB: models
+  only or full project, cleanup, STL/OBJ/GLB. Set your own code in Settings or
+  get a fresh random one each time. Needs port 9706 (UDP and TCP) open.
+- After a WiFi transfer a picker shows every scan with its mesh, point cloud
+  and raw-frame sizes: tick what to keep, Models only or Full project.
+- **Live tab** now has a source picker: MIRACO (pose and IMU over WiFi) or a
+  tethered **Revopoint RANGE** over USB. The RANGE works natively on Linux with
+  no vendor software: depth, both IR cameras and the color camera live, side by
+  side or one at a time, a Combined depth-over-color view, a rotate control,
+  and Capture, which saves the current frame as a point cloud (.ply) plus a
+  color snapshot into `<save folder>/range/`. Needs `v4l-utils`. Plug the RANGE
+  into a direct USB port, not a hub; it reboots itself whenever the stream
+  stops, which is normal.
+- The app honours `POINTYOINK_CONFIG` so test runs never touch real settings.
+
+## 0.8.0 (local)
+- **Process on PC**: rebuild a scan's mesh on your computer from the raw depth
+  frames, on the GPU when available. Skips the scanner's slow on-device fusion
+  and matches its output to about 0.2 mm. Uses frames already on disk from a
+  full import, otherwise pulls just what it needs. Works on unfused scans too.
+  Needs Open3D (optional, ~400 MB: `pip3 install --user --break-system-packages open3d`).
+- Settings: Process on PC detail (voxel size; 0.4 mm matches the scanner).
+
+## 0.7.0
+- **Remove base**: an interactive cut-plane tool that slices the table/turntable
+  off a scan and keeps the object (saves a cleaned `_clean.ply`, original kept).
+- Optional **Clean up mesh** on import, in a memory-capped process so a huge
+  mesh can never crash your machine.
+- **Captures tab**: browse and pull the scanner's screenshots and screen recordings.
+- A **Tools** row groups View in 3D and Remove base; a **status bar** shows activity.
+- "Imported" now means a real model landed; partial export/ZIP failures are
+  reported; safer device mount cleanup.
+
 ## 0.5.1
 - 3D viewer now opens already-drawn instead of flashing a black window.
 - Preview image scales to fit the window at any size.
