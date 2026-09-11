@@ -316,7 +316,9 @@ def list_local_projects(dest):
         mesh_nodes=set(node_of(x) for x in flat) | set(os.path.basename(os.path.dirname(x)) for x in nested)
         nodes=mesh_nodes | set(os.path.basename(d) for d in glob.glob(os.path.join(pdir, "data", "*")) if os.path.isdir(d))
         if not (flat or nested or clouds or os.path.exists(os.path.join(pdir, name+".revo"))): continue
-        info={"name":name, "local":True, "meshes":len(mesh_nodes), "clouds":len(clouds), "nodes":len(nodes) or None, "date":None, "thumb":None, "edit_time":None}
+        nodes.discard("combined")
+        info={"name":name, "local":True, "meshes":len(mesh_nodes - {"combined"}), "clouds":len(clouds), "nodes":len(nodes) or None, "date":None, "thumb":None, "edit_time":None,
+              "combined": os.path.exists(os.path.join(pdir, name+"_combined_pcfused.ply")), "prepared": bool(glob.glob(os.path.join(pdir, name+"_*_clean.ply")))}
         try:
             d=json.load(open(os.path.join(pdir, name+".revo"))); et=d.get("edit_time")
             if et: info["date"]=time.strftime("%Y-%m-%d %H:%M", time.localtime(int(et))); info["edit_time"]=int(et)
@@ -353,6 +355,15 @@ def gather_gallery(name, local=None):
         for png in sorted(glob.glob(os.path.join(local, name+"_*.png"))): paths.append((os.path.basename(png)[len(name)+1:-4], png))
         if not paths:
             for pv in sorted(glob.glob(os.path.join(local, "data", "*", "preview.png"))): paths.append((os.path.basename(os.path.dirname(pv)), pv))
+        comb=os.path.join(local, name+"_combined_pcfused.ply")
+        if os.path.exists(comb):     # the model built from all lined-up scans gets its own tile (rendered here, cached)
+            tp=os.path.join(THUMBS, "%s__combined__card.png" % name)
+            if not os.path.exists(tp) or os.path.getmtime(tp)<os.path.getmtime(comb):
+                try:
+                    import shade; os.makedirs(THUMBS, exist_ok=True)
+                    v,f=shade.load_oriented(comb, 150000); shade.render(v, f, size=(330, 210), grid=False, gizmo=False).save(tp)
+                except Exception as e: log_error("combined tile", e); tp=None
+            if tp: paths.append(("combined", tp))
         return paths
     for node in nodes:
         prev=os.path.join(PROJECTS,name,"data",node,"preview.png")
@@ -1004,7 +1015,7 @@ class App(ctk.CTk):
         left=ctk.CTkFrame(pm, fg_color="transparent", width=300); left.grid(row=0,column=0, sticky="nsew")
         left.grid_propagate(False); left.grid_rowconfigure(2, weight=1); left.grid_columnconfigure(0, weight=1)
         lh=ctk.CTkFrame(left, fg_color="transparent"); lh.grid(row=0,column=0, sticky="ew", padx=(18,10), pady=(14,8))
-        ctk.CTkLabel(lh, text="On your scanner", font=ctk.CTkFont(size=15,weight="bold"), text_color=TX, anchor="w").pack(side="left")
+        ctk.CTkLabel(lh, text="Projects", font=ctk.CTkFont(size=15,weight="bold"), text_color=TX, anchor="w").pack(side="left")
         ctk.CTkButton(lh, text="none", width=44, height=22, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT,
                       font=ctk.CTkFont(size=10), command=self.select_none).pack(side="right")
         ctk.CTkButton(lh, text="all", width=36, height=22, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT,
@@ -1782,12 +1793,15 @@ class App(ctk.CTk):
             parts=[]
             if p.get("nodes"): parts.append("%d scan%s"%(p["nodes"], "" if p["nodes"]==1 else "s"))
             ml=ctk.CTkFrame(txt, fg_color="transparent"); ml.pack(anchor="w", fill="x", pady=(2,0))
-            badge=None
-            if p.get("local"): badge=("on this PC", AC, "#15304d")
-            elif self.is_imported(name): badge=("↑ updated", WARN, "#3d2f14") if self.changed(name) else ("✓ Imported", OK, "#173a2a")
-            if badge:
+            badges=[]
+            if p.get("local"): badges.append(("on this PC", AC, "#15304d"))
+            elif self.is_imported(name): badges.append(("↑ updated", WARN, "#3d2f14") if self.changed(name) else ("✓ Imported", OK, "#173a2a"))
+            else: badges.append(("on the scanner", MUT, CARD2))
+            if p.get("combined"): badges.append(("⧉ combined", OK, "#173a2a"))
+            if p.get("prepared"): badges.append(("✦ prepared", OK, "#173a2a"))
+            for badge in badges:
                 ctk.CTkLabel(ml, text=badge[0], text_color=badge[1], fg_color=badge[2], corner_radius=6, width=1, height=18,
-                             font=ctk.CTkFont(size=10)).pack(side="left", padx=(0,8), ipadx=6)
+                             font=ctk.CTkFont(size=10)).pack(side="left", padx=(0,6), ipadx=6)
             if parts: ctk.CTkLabel(ml, text=" · ".join(parts), text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left")
             for w in [card, tbox, txt, ml] + tbox.winfo_children() + txt.winfo_children() + ml.winfo_children():
                 w.bind("<Button-1>", lambda e,n=name: self.select_project(n))
@@ -1862,7 +1876,7 @@ class App(ctk.CTk):
                 cell=ctk.CTkFrame(self.film, fg_color="#0a0c10", corner_radius=10, border_width=2, border_color=(AC if node==self._film_sel else STROKE))
                 cell.pack(side="left", padx=(0,10), pady=(6,4))
                 im=ctk.CTkLabel(cell, image=self.imgs["g_"+name+node], text=""); im.pack(padx=8, pady=(8,2))
-                cap=ctk.CTkLabel(cell, text="Scan %02d"%(i+1), text_color=MUT, font=ctk.CTkFont(size=11)); cap.pack(pady=(0,6))
+                cap=ctk.CTkLabel(cell, text=("Combined" if node=="combined" else "Scan %02d"%(1+[n for n,_ in items if n!="combined"].index(node))), text_color=(AC if node=="combined" else MUT), font=ctk.CTkFont(size=11)); cap.pack(pady=(0,6))
                 for w in (cell, im, cap): w.bind("<Button-1>", lambda e,nd=node,pp=path: self._pick_scan(name, nd, pp))
                 self._film_cells[node]=cell
             except Exception: pass
@@ -2302,7 +2316,7 @@ class App(ctk.CTk):
         pr.grid_columnconfigure(0, weight=1); pr.grid_rowconfigure(1, weight=1)
         ph=ctk.CTkFrame(pr, fg_color="transparent"); ph.grid(row=0,column=0, sticky="ew", padx=16, pady=(14,4))
         ctk.CTkLabel(ph, text="Prepare", font=ctk.CTkFont(size=18, weight="bold"), text_color=TX).pack(side="left")
-        self.proc_pick=ctk.CTkOptionMenu(ph, values=["No projects on this PC yet"], width=300, command=self._proc_pick, fg_color="#0d0f14", button_color=CARD2,
+        self.proc_pick=ctk.CTkOptionMenu(ph, values=["No projects on this PC yet"], width=230, command=self._proc_pick, fg_color="#0d0f14", button_color=CARD2,
                                          button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=10)
         self.proc_pick.pack(side="left", padx=(16,8))
         self._tip(self.proc_pick, "Which project to work on. Same selection as the Import tab.")
