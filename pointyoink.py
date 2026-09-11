@@ -314,11 +314,14 @@ def list_local_projects(dest):
         nested=glob.glob(os.path.join(pdir, "data", "*", "fuse_mesh.ply"))
         clouds=glob.glob(os.path.join(pdir, name+"_*_cloud.ply")) or glob.glob(os.path.join(pdir, "data", "*", "fuse.ply"))
         mesh_nodes=set(node_of(x) for x in flat) | set(os.path.basename(os.path.dirname(x)) for x in nested)
+        # meshes the SCANNER made (One-tap Edit / Mesh there): the plain <name>_<node>.ply or data/<node>/fuse_mesh.ply, not our _pcfused/_clean builds
+        dev_meshed=set(node_of(x) for x in flat if not (x.endswith("_pcfused.ply") or x.endswith("_clean.ply"))) | set(os.path.basename(os.path.dirname(x)) for x in nested)
         nodes=mesh_nodes | set(os.path.basename(d) for d in glob.glob(os.path.join(pdir, "data", "*")) if os.path.isdir(d))
         if not (flat or nested or clouds or os.path.exists(os.path.join(pdir, name+".revo"))): continue
         nodes.discard("combined")
         info={"name":name, "local":True, "meshes":len(mesh_nodes - {"combined"}), "clouds":len(clouds), "nodes":len(nodes) or None, "date":None, "thumb":None, "edit_time":None,
-              "combined": os.path.exists(os.path.join(pdir, name+"_combined_pcfused.ply")), "prepared": bool(glob.glob(os.path.join(pdir, name+"_*_clean.ply")))}
+              "combined": os.path.exists(os.path.join(pdir, name+"_combined_pcfused.ply")), "prepared": bool(glob.glob(os.path.join(pdir, name+"_*_clean.ply"))),
+              "dev_meshed": len(dev_meshed - {"combined"})}
         try:
             d=json.load(open(os.path.join(pdir, name+".revo"))); et=d.get("edit_time")
             if et: info["date"]=time.strftime("%Y-%m-%d %H:%M", time.localtime(int(et))); info["edit_time"]=int(et)
@@ -462,6 +465,7 @@ class ActionRow(ctk.CTkFrame):
 ROW="transparent"            # project list row at rest (selected rows use SELB)
 MODE_LABEL={"Projects":"Import","Local":"Projects","Captures":"Captures","Process":"Prepare","Live":"Live view"}
 MODE_KEY={v:k for k,v in MODE_LABEL.items()}
+HEADER_KEY={"Import":"Projects","Projects":"Local","Captures":"Captures","Prepare":"Process","Live view":"Live"}   # header tab label -> page key
 
 class TabStrip(ctk.CTkFrame):
     """Text tabs with an accent underline (the mock's style). add() returns the tab's content frame, or
@@ -947,7 +951,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(wm, text="Point", font=ctk.CTkFont(family=WORDMARK, size=20, weight="bold"), text_color=TX).pack(side="left")
         ctk.CTkLabel(wm, text="Yoink", font=ctk.CTkFont(family=WORDMARK, size=20, weight="bold"), text_color=AC).pack(side="left")
         ctk.CTkLabel(wm, text="v"+VERSION, font=ctk.CTkFont(size=10), text_color=DIM).pack(side="left", padx=(6,0), pady=(6,0))
-        self._modes=TabStrip(h, command=lambda lab: self._set_mode(lab), content=False, base=CARD, size=13)
+        self._modes=TabStrip(h, command=lambda lab: self._set_mode(HEADER_KEY.get(lab, lab)), content=False, base=CARD, size=13)
         self._modes.grid(row=0,column=2, sticky="w", padx=(26,0), pady=(8,0))
         self._modes.add("Import", icon="⬇"); self._modes.add("Projects", icon="▤"); self._modes.add("Captures", icon="▣")
         self._modes.add("Live view", tag="Planned", icon="◉")
@@ -1311,7 +1315,7 @@ class App(ctk.CTk):
     def _set_mode(self, m):
         """Import and Projects share one page (list | preview | right column); the page just changes what it shows:
         Import = what is on the scanner with the import options, Projects = what is on this PC with the project panel."""
-        m=MODE_KEY.get(m, m)
+        if m not in self.mode_frames and m!="Local": m=MODE_KEY.get(m, m)      # a label was passed
         if m=="Local": self.page="projects"; target=self.mode_frames["Projects"]
         elif m=="Projects": self.page="import"; target=self.mode_frames["Projects"]
         elif m in self.mode_frames: target=self.mode_frames[m]
@@ -1832,6 +1836,11 @@ class App(ctk.CTk):
             if p.get("local"): badges.append(("on this PC", AC, "#15304d"))
             elif self.is_imported(name): badges.append(("↑ updated", WARN, "#3d2f14") if self.changed(name) else ("✓ Imported", OK, "#173a2a"))
             else: badges.append(("on the scanner", MUT, CARD2))
+            if p.get("nodes") and p.get("local"):
+                dm=p.get("dev_meshed") or 0
+                if not dm: badges.append(("raw only", WARN, "#3d2f14"))
+                elif dm<p["nodes"]: badges.append(("partly edited on scanner", WARN, "#3d2f14"))
+                else: badges.append(("edited on scanner", OK, "#173a2a"))
             if p.get("combined"): badges.append(("⧉ combined", OK, "#173a2a"))
             if p.get("prepared"): badges.append(("✦ prepared", OK, "#173a2a"))
             b0=badges[0]
@@ -2484,6 +2493,9 @@ class App(ctk.CTk):
             if node=="combined": status="%d version%s · built from the scans you lined up" % (len(vs), "" if len(vs)==1 else "s")
             else: status=("no 3D model yet · %d raw frames" % raw) if not vs else ("%d version%s · %d raw frames" % (len(vs), "" if len(vs)==1 else "s", raw) if raw else "%d version%s · no raw data on this PC" % (len(vs), "" if len(vs)==1 else "s"))
             ctk.CTkLabel(top, text=status, text_color=(WARN if not vs else MUT), font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
+            if node!="combined":
+                stw, stc = self.STAGE_WORDS[self._device_stage(local, node)]
+                if stw: ctk.CTkLabel(top, text="· scanner: "+stw, text_color=stc, font=ctk.CTkFont(size=11)).pack(side="left")
             vr=ctk.CTkFrame(card, fg_color="transparent"); vr.grid(row=1,column=1, sticky="ew", pady=(6,0))
             ctk.CTkLabel(vr, text="Versions:" if vs else "", text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0,6))
             for key,label,path in vs:
@@ -2535,8 +2547,9 @@ class App(ctk.CTk):
         unbuilt=[n for n in scans if not self._proc_versions(name, n) and glob.glob(os.path.join(local,"data",n,"cache","*.dph"))]
         built=[n for n in scans if self._proc_versions(name, n)]
         if unbuilt:
-            return ("Build the 3D model%s" % ("" if len(unbuilt)==1 else "s"), "%d scan%s only %s raw data. Building takes seconds on a graphics card." % (len(unbuilt), "" if len(unbuilt)==1 else "s", "has" if len(unbuilt)==1 else "have"),
-                    "⚙  Build %d model%s" % (len(unbuilt), "" if len(unbuilt)==1 else "s"), lambda: self._proc_build(name, unbuilt), 0)
+            return ("Build the 3D model%s" % ("" if len(unbuilt)==1 else "s"),
+                    "%d scan%s %s raw data only. Easiest is One-tap Edit on the scanner, then share the project again. Or build here now (seconds on a graphics card) and prepare it yourself." % (len(unbuilt), "" if len(unbuilt)==1 else "s", "has" if len(unbuilt)==1 else "have"),
+                    "⚙  Build %d model%s here" % (len(unbuilt), "" if len(unbuilt)==1 else "s"), lambda: self._proc_build(name, unbuilt), 0)
         target="combined" if "combined" in nodes else (built[0] if built else None)
         if len(built)>=2 and "combined" not in nodes:
             return ("Line up the scans and build one model", "You scanned %d sides. Click matching spots on two scans at a time, then build one model from all of them." % len(built),
@@ -2587,6 +2600,9 @@ class App(ctk.CTk):
             self._title(pp, self._scan_label(name, node), size=14, pady=(10,0))
             sub=("built from the scans you lined up" if node=="combined" else ("%d raw frames on this PC" % raw if raw else "no raw data on this PC"))
             ctk.CTkLabel(pp, text=sub, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6)
+            if node!="combined":
+                stw, stc = self.STAGE_WORDS[self._device_stage(local, node)]
+                if stw: ctk.CTkLabel(pp, text="Scanner: "+stw, text_color=stc, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6)
             if vs:
                 ctk.CTkLabel(pp, text="Versions (tick = the one the preview and exports use)", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w").pack(fill="x", padx=6, pady=(8,2))
                 for key,label,path in vs:
@@ -2639,6 +2655,15 @@ class App(ctk.CTk):
         for nd in nodes: self._proc_progress(nd, None, "Starting…")
         self.set_status("Building 3D model%s…" % ("" if len(nodes)==1 else "s"))
         threading.Thread(target=self._fuse_worker, args=(name, nodes), daemon=True).start()
+    def _device_stage(self, local, node):
+        """How far the scanner itself took this scan: 'meshed' (One-tap Edit or Mesh was run there), 'fused'
+        (point cloud only), 'raw' (frames only), or None (nothing on this PC for it)."""
+        d=os.path.join(local, "data", node)
+        if os.path.exists(os.path.join(d, "fuse_mesh.ply")) or os.path.exists(os.path.join(local, "%s_%s.ply" % (os.path.basename(local), node))): return "meshed"
+        if os.path.exists(os.path.join(d, "fuse.ply")) or os.path.exists(os.path.join(local, "%s_%s_cloud.ply" % (os.path.basename(local), node))): return "fused"
+        if glob.glob(os.path.join(d, "cache", "*.dph")): return "raw"
+        return None
+    STAGE_WORDS={"meshed": ("edited on the scanner", OK), "fused": ("fused on the scanner, not meshed", WARN), "raw": ("raw only, not edited on the scanner", WARN), None: ("", MUT)}
     def _scan_label(self, name, node):
         if node=="combined": return "Combined"
         nodes=[n for n in self._proc_nodes(name) if n!="combined"]
