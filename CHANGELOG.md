@@ -3,6 +3,15 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.9 (local)
+- **Build models with the scanner's own registration.** Process on PC now
+  reads the globally registered poses the scanner stores with each scan
+  (cache/global_register_pose.pose) instead of the per-frame odometry. After
+  a Resume Scan the second pass used to sit tens of millimetres off and left
+  ghost surfaces. Measured on three scans against the scanner's One-tap Edit:
+  median distance 0.17 to 0.23 mm (was 0.5 to 0.8), and only 6 to 15% of the
+  scanner's surface is more than 1 mm from ours (was 26 to 45%).
+
 ## 0.9.8 (pre-release, testing)
 - **Process page**: pick a project, see each scan as a card with its versions
   (from the scanner, built here, cleaned), tick which one counts, Build model

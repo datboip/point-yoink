@@ -29,6 +29,25 @@ def read_pose(path):
     import numpy as np
     return np.array(struct.unpack_from("<16d", open(path, "rb").read(), 16)).reshape(4, 4)
 
+def read_global_poses(path):
+    """The scanner's globally registered poses (cache/global_register_pose.pose): int32 count, then per
+    frame an int32 pass number, int32 frame number and a 4x4 float64 camera->world pose (mm). These are
+    the poses the device itself fuses with; after a Resume Scan the second pass sits tens of mm away from
+    its own per-frame odometry, so building from the .inf poses alone leaves ghost surfaces."""
+    import numpy as np
+    b = open(path, "rb").read(); n = struct.unpack_from("<i", b, 0)[0]; out = {}
+    for i in range(n):
+        off = 4 + i * 136
+        if off + 136 > len(b): break
+        seq, frame = struct.unpack_from("<ii", b, off)
+        out[(seq, frame)] = np.array(struct.unpack_from("<16d", b, off + 8)).reshape(4, 4)
+    return out
+
+def frame_key(dph):
+    import re
+    m = re.search(r"frame_(\d+)_(\d+)\.dph$", dph)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--frames", required=True); ap.add_argument("--calib", required=True)
@@ -39,6 +58,7 @@ def main():
     ap.add_argument("--max-depth", type=float, default=600.0, help="mm; ignore farther pixels")
     ap.add_argument("--every", type=int, default=1, help="use every Nth frame")
     ap.add_argument("--gpu", action="store_true")
+    ap.add_argument("--poses", default="auto", help="global pose table: auto (use <frames>/global_register_pose.pose if present), none, or a path")
     ap.add_argument("--min-weight", type=float, default=1.0, help="GPU: drop voxels seen fewer than N times (raise to cut noise)")
     a = ap.parse_args()
     if not a.gpu: apply_mem_cap()
@@ -48,7 +68,12 @@ def main():
     emit("calib", fx=round(fx, 2), fy=round(fy, 2), cx=round(cx, 2), cy=round(cy, 2))
     dphs = sorted(glob.glob(os.path.join(a.frames, "*.dph")))[::max(1, a.every)]
     if not dphs: emit("error", msg="no .dph frames in " + a.frames); return 2
-    emit("frames", count=len(dphs))
+    gp = {}
+    pose_path = os.path.join(a.frames, "global_register_pose.pose") if a.poses == "auto" else a.poses
+    if a.poses != "none" and os.path.exists(pose_path):
+        try: gp = read_global_poses(pose_path)
+        except Exception as e: emit("warn", msg="global poses unreadable: %r" % (e,)); gp = {}
+    emit("frames", count=len(dphs), global_poses=len(gp))
 
     W, H = a.width, a.height
     # depth in meters = raw * depth_scale(mm) / 1000  ->  Open3D divides by depth_scale
@@ -78,7 +103,9 @@ def main():
         if not os.path.exists(inf): continue
         d = np.frombuffer(open(dph, "rb").read(), dtype=np.uint16).reshape(H, W).copy()
         d[d * a.depth_scale > a.max_depth] = 0
-        pose = read_pose(inf)                    # camera->world (scanner frame), translation in mm
+        pose = gp.get(frame_key(dph))            # camera->world (scanner frame), translation in mm
+        if pose is None: pose = read_pose(inf)
+        else: pose = pose.copy()
         pose[:3, 3] /= 1000.0                     # -> meters, to match the depth units
         extr = np.linalg.inv(pose @ F)            # world->camera (OpenCV frame)
         if use_t:

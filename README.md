@@ -124,7 +124,7 @@ The MIRACO builds its 3D models on a phone-class chip, so it is slow and gives y
 
 - Raw scan data comes over WiFi with **Full project** (over USB it is impractically slow, about 4 seconds per file).
 - The result lands next to the project as `<name>_<scan>_pcfused.ply`, ready for the 3D view, Remove base and export.
-- Measured against the scanner's own model of the same scan: the surfaces agree to about 0.5 mm where both exist. What the scanner's One-tap Edit adds on top is clean-up (floaters removed, base cut, holes filled, smoothed); in PointYoink those are separate steps for now, so a freshly built model is noisier than the scanner's until you run them. See `dev/compare.py`.
+- Uses the scanner's own registration (the global pose table it saves with every scan), so multi-pass scans line up the way they do on the device. Measured on three scans against the scanner's One-tap Edit model: median surface distance 0.2 mm, and over 90% of the scanner's surface lies within 1 mm of ours. What One-tap Edit still adds is trimming: it drops floor patches around the object that a fresh build keeps, so run Clean up (drop small pieces) and Remove base on the Process page. See `dev/compare.py`.
 - Detail is set in Settings (voxel size; 0.4 mm matches the scanner, 0.3 is finer and uses more memory).
 - Needs [Open3D](https://www.open3d.org/), which is large and optional: `pip3 install --user --break-system-packages open3d`. PointYoink tells you if it is missing.
 
