@@ -51,7 +51,8 @@ def frame_key(dph):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--frames"); ap.add_argument("--calib")
-    ap.add_argument("--set", action="append", default=[], help="frames_dir,calib,transform.json (repeat to fuse several aligned scans into one model; transform = 4x4 in mm, scan -> base)")
+    ap.add_argument("--set", action="append", default=[], help="frames_dir,calib,transform.json[,plane.json] (repeat to fuse several aligned scans into one model; transform = 4x4 in mm, scan -> base; plane = the scan's saved base cut, everything on its far side is dropped)")
+    ap.add_argument("--plane", default=None, help="base cut for a single --frames run: plane.json from Remove base")
     ap.add_argument("--out", required=True)
     ap.add_argument("--voxel", type=float, default=0.3, help="voxel size in mm (detail; smaller = finer, more RAM)")
     ap.add_argument("--width", type=int, default=800); ap.add_argument("--height", type=int, default=600)
@@ -72,13 +73,14 @@ def main():
             parts = spec.split(","); T = None
             if len(parts) > 2 and parts[2]:
                 T = np.array(json.load(open(parts[2]))["matrix"] if parts[2].endswith(".json") else json.loads(parts[2]), dtype=np.float64).reshape(4, 4)
-            sets.append((parts[0], parts[1], T))
-    elif a.frames and a.calib: sets.append((a.frames, a.calib, None))
+            P = json.load(open(parts[3])) if len(parts) > 3 and parts[3] else None
+            sets.append((parts[0], parts[1], T, P))
+    elif a.frames and a.calib: sets.append((a.frames, a.calib, None, json.load(open(a.plane)) if a.plane else None))
     else: emit("error", msg="give --frames and --calib, or --set"); return 2
     fx, fy, cx, cy = read_calib(sets[0][1])
     emit("calib", fx=round(fx, 2), fy=round(fy, 2), cx=round(cx, 2), cy=round(cy, 2))
-    jobs = []      # (dph, gp dict, T mm, calib tuple)
-    for frames, calib, T in sets:
+    jobs = []      # (dph, gp dict, T mm, calib tuple, plane)
+    for frames, calib, T, P in sets:
         dphs = sorted(glob.glob(os.path.join(frames, "*.dph")))[::max(1, a.every)]
         if not dphs: emit("error", msg="no .dph frames in " + frames); return 2
         gp = {}
@@ -88,7 +90,7 @@ def main():
             except Exception as e: emit("warn", msg="global poses unreadable: %r" % (e,)); gp = {}
         cal = read_calib(calib)
         emit("frames", count=len(dphs), global_poses=len(gp), set=os.path.basename(os.path.dirname(frames)))
-        jobs += [(d, gp, T, cal) for d in dphs]
+        jobs += [(d, gp, T, cal, P) for d in dphs]
     dphs = [j[0] for j in jobs]
 
     W, H = a.width, a.height
@@ -113,8 +115,23 @@ def main():
             voxel_length=voxel_m, sdf_trunc=voxel_m * 4,
             color_type=o3d.pipelines.integration.TSDFVolumeColorType.NoColor)
 
-    n = 0; cur_cal = None
-    for i, (dph, gp, T, cal) in enumerate(jobs):
+    n = 0; cur_cal = None; grid = None
+    def cull_below_plane(d, pose_mm, cal, P):
+        """Zero the depth pixels that sit on the removed side of this scan's base plane (plane in the scan's own mm frame)."""
+        nonlocal grid
+        fx, fy, cx, cy = cal
+        if grid is None:
+            u, v = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32)); grid = (u, v)
+        u, v = grid; z = d.astype(np.float32) * a.depth_scale          # mm, OpenCV camera frame
+        X = (u - cx) * z / fx; Y = (v - cy) * z / fy
+        M = pose_mm @ F                                                # camera(OpenCV) -> scan world, mm
+        h = (M[0, 0] * X + M[0, 1] * Y + M[0, 2] * z + M[0, 3]) * P["n"][0] + (M[1, 0] * X + M[1, 1] * Y + M[1, 2] * z + M[1, 3]) * P["n"][1] \
+            + (M[2, 0] * X + M[2, 1] * Y + M[2, 2] * z + M[2, 3]) * P["n"][2]
+        margin = float(P.get("margin", 1.0))
+        bad = (h < P["d"] + margin) if P.get("keep_above", True) else (h > P["d"] - margin)
+        d[bad & (d > 0)] = 0
+        return d
+    for i, (dph, gp, T, cal, P) in enumerate(jobs):
         inf = dph[:-4] + ".inf"
         if not os.path.exists(inf): continue
         if cal != cur_cal:                        # each scan can carry its own calibration
@@ -126,6 +143,7 @@ def main():
         pose = gp.get(frame_key(dph))            # camera->world (scanner frame), translation in mm
         if pose is None: pose = read_pose(inf)
         else: pose = pose.copy()
+        if P is not None: d = cull_below_plane(d, pose, cal, P)      # drop the table before it ever reaches the volume
         if T is not None: pose = T @ pose         # this scan's frame -> the base scan's frame (mm)
         pose[:3, 3] /= 1000.0                     # -> meters, to match the depth units
         extr = np.linalg.inv(pose @ F)            # world->camera (OpenCV frame)

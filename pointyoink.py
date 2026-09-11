@@ -1847,8 +1847,8 @@ class App(ctk.CTk):
             if p.get("nodes") and p.get("local"):
                 dm=p.get("dev_meshed") or 0
                 if not dm: badges.append(("raw only", WARN, "#3d2f14"))
-                elif dm<p["nodes"]: badges.append(("partly edited on scanner", WARN, "#3d2f14"))
-                else: badges.append(("edited on scanner", OK, "#173a2a"))
+                elif dm<p["nodes"]: badges.append(("partly scanner-edited", WARN, "#3d2f14"))
+                else: badges.append(("scanner-edited", OK, "#173a2a"))
             if p.get("combined"): badges.append(("⧉ combined", OK, "#173a2a"))
             if p.get("prepared"): badges.append(("✦ prepared", OK, "#173a2a"))
             b0=badges[0]
@@ -2328,18 +2328,23 @@ class App(ctk.CTk):
             log_error("view-launch", e); self.q.put(("view_done", str(e)))
 
     # ---- base removal (interactive cut-plane) ----
-    def on_remove_base(self):
+    def on_remove_base(self, node=None):
         if getattr(self, "_basing", False): return
         name=self.selected
         if not name: return
-        src=self._find_mesh(name)
+        node=node or self._film_sel
+        if node and node!="combined":
+            cur=self._proc_current(name, node); src=cur[2] if cur else None
+        else: node=None; src=self._find_mesh(name)
         if not src:
-            self.set_banner("This project has no 3D model yet. Process on PC builds one from the raw scan data.", WARN); return
-        self._basing=True; self.base_btn.configure(state="disabled")
+            self.set_banner("This scan has no 3D model yet. Build it first.", WARN); return
+        self._basing=True
+        try: self.base_btn.configure(state="disabled")
+        except Exception: pass
         self.set_status("Base removal: opening the cut-plane tool…")
-        self._open_loader("Base removal", "Opening the cut-plane tool… large scans take a few seconds.")
-        threading.Thread(target=self._base_worker, args=(name, src), daemon=True).start()
-    def _base_worker(self, name, src):
+        self._open_loader("Base removal", "Opening the cut-plane tool… large scans take a few seconds.\nDrag the line to just above the table, then Apply cut. The cut is remembered for this scan.")
+        threading.Thread(target=self._base_worker, args=(name, src, node), daemon=True).start()
+    def _base_worker(self, name, src, node=None):
         path=src; dest=self.dest.get() or DEFAULT_DEST; outdir=os.path.join(dest, name)
         if src.startswith(PROJECTS):   # on the slow device mount - copy locally first
             try:
@@ -2350,8 +2355,9 @@ class App(ctk.CTk):
                     shutil.copyfile(src, path)
             except Exception as e:
                 log_error("base-copy", e); self.q.put(("base_done", ("err", "copy failed"))); return
-        out=os.path.splitext(path)[0]+"_clean.ply"
+        out=os.path.join(outdir, "%s_%s_clean.ply" % (name, node)) if node else os.path.splitext(path)[0]+"_clean.ply"
         try:
+            os.makedirs(outdir, exist_ok=True)
             tool=os.path.join(HERE, "cutplane.py")
             env=dict(os.environ, OPENBLAS_NUM_THREADS="1",
                      POINTYOINK_MEM_CAP_GB=os.environ.get("POINTYOINK_MEM_CAP_GB", "10"))
@@ -2360,7 +2366,10 @@ class App(ctk.CTk):
             for ln in proc.stdout:
                 ln=ln.strip()
                 if ln.startswith("CUT_READY"): self.q.put(("loader_close", None))
-                elif ln.startswith("CUT_DONE"): self.q.put(("base_done", ("ok", out))); break
+                elif ln.startswith("CUT_DONE"):
+                    try: payload=json.loads(ln[9:])
+                    except Exception: payload={}
+                    self.q.put(("base_done", ("ok", out, node, payload.get("plane")))); break
                 elif ln.startswith("CUT_CANCELLED"): self.q.put(("base_done", ("cancel", None))); break
                 elif ln.startswith("CUT_ERROR"): log_line("cutplane: "+ln); self.q.put(("base_done", ("err", ln))); break
         except Exception as e:
@@ -2549,11 +2558,20 @@ class App(ctk.CTk):
                 self.q.put(("call", put))
             except Exception as e: log_error("card thumb", e)
         threading.Thread(target=work, daemon=True).start()
+    STEPS=("Build", "Cut base", "Combine", "Prepare", "Export")
+    def _base_planes(self, name): return self.records.get(name,{}).get("base_plane",{}) or {}
     def _proc_next(self, name, nodes, local):
-        """What to do now for this project: (title, detail, button text, command, step index 0..3)."""
+        """What to do now for this project: (title, detail, button text, command, step index into STEPS)."""
         scans=[n for n in nodes if n!="combined"]
         unbuilt=[n for n in scans if not self._proc_versions(name, n) and glob.glob(os.path.join(local,"data",n,"cache","*.dph"))]
         built=[n for n in scans if self._proc_versions(name, n)]
+        planes=self._base_planes(name); nobase=[n for n in built if n not in planes]
+        if built and nobase:
+            n0=nobase[0]
+            def go(n=n0): self._pick_scan_by_node(name, n); self.on_remove_base(n)
+            return ("Cut the base off %s" % self._scan_label(name, n0),
+                    "%d of %d scan%s still %s the table under the part. Drag one line above it and apply. The cut is remembered and applied again when the scans are combined, so the base never gets fused in." % (len(nobase), len(built), "" if len(built)==1 else "s", "has" if len(nobase)==1 else "have"),
+                    "✂  Remove base on %s" % self._scan_label(name, n0), go, 1)
         if unbuilt:
             return ("Build the 3D model%s" % ("" if len(unbuilt)==1 else "s"),
                     "%d scan%s %s raw data only. Easiest is One-tap Edit on the scanner, then share the project again. Or build here now (seconds on a graphics card) and prepare it yourself." % (len(unbuilt), "" if len(unbuilt)==1 else "s", "has" if len(unbuilt)==1 else "have"),
@@ -2561,13 +2579,19 @@ class App(ctk.CTk):
         target="combined" if "combined" in nodes else (built[0] if built else None)
         if len(built)>=2 and "combined" not in nodes:
             return ("Line up the scans and build one model", "You scanned %d sides. Click matching spots on two scans at a time, then build one model from all of them." % len(built),
-                    "⧉  Combine scans…", lambda: self._align_dialog(name), 1)
+                    "⧉  Combine scans…", lambda: self._align_dialog(name), 2)
         if not target: return ("Nothing to prepare yet", "Share this project over WiFi as Full project to get its raw data, or plug the scanner in.", None, None, 0)
         vs=self._proc_versions(name, target); lab=self._scan_label(name, target)
         if not any(k=="clean" for k,_,_ in vs):
-            return ("Prepare the %s model" % lab.lower() if target=="combined" else "Prepare %s" % lab, "Remove floating pieces and the base, smooth, fill holes. You see before and after and keep or discard.",
-                    "✦  Prepare…", lambda: self._prepare_dialog(name, target), 2)
-        return ("Export", "%s is prepared. Save it as STL for a slicer, or OBJ, GLB, PLY." % lab, "⬆  Export…", lambda: self._export_dialog(name, target), 3)
+            return ("Prepare the %s model" % lab.lower() if target=="combined" else "Prepare %s" % lab, "Remove floating pieces, smooth, fill holes. You see before and after and keep or discard.",
+                    "✦  Prepare…", lambda: self._prepare_dialog(name, target), 3)
+        return ("Export", "%s is prepared. Save it as STL for a slicer, or OBJ, GLB, PLY." % lab, "⬆  Export…", lambda: self._export_dialog(name, target), 4)
+    def _pick_scan_by_node(self, name, node):
+        """Select a scan tile the way a click on the strip would (so Remove base and the preview follow)."""
+        if self.selected!=name: self.select_project(name)
+        self._film_sel=node; self._mark_scan(node)
+        try: self._request_shaded(name, node)
+        except Exception: pass
     def _proc_next_strip(self, name, nodes, local):
         title, detail, btxt, cmd, step = self._proc_next(name, nodes, local)
         strip=ctk.CTkFrame(self.proc_cards, fg_color="#0f1a2b", corner_radius=14, border_width=1, border_color="#1f3a5f"); strip.grid(row=0, column=0, sticky="ew", padx=6, pady=(4,10))
@@ -2576,10 +2600,10 @@ class App(ctk.CTk):
         ctk.CTkLabel(strip, text=title, text_color=TX, font=ctk.CTkFont(size=15, weight="bold"), anchor="w").grid(row=0,column=1, sticky="w", pady=(12,0))
         ctk.CTkLabel(strip, text=detail, text_color=MUT, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=640).grid(row=1,column=1, sticky="w", pady=(0,4))
         trail=ctk.CTkFrame(strip, fg_color="transparent"); trail.grid(row=2,column=1, sticky="w", pady=(0,12))
-        for i,nm in enumerate(("Build", "Combine", "Prepare", "Export")):
+        for i,nm in enumerate(self.STEPS):
             col=(OK if i<step else (AC if i==step else DIM)); mark=("✓ " if i<step else ("▶ " if i==step else ""))
             ctk.CTkLabel(trail, text=mark+nm, text_color=col, font=ctk.CTkFont(size=11, weight=("bold" if i==step else "normal"))).pack(side="left")
-            if i<3: ctk.CTkLabel(trail, text="  →  ", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left")
+            if i<len(self.STEPS)-1: ctk.CTkLabel(trail, text="  →  ", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left")
         if btxt:
             ctk.CTkButton(strip, text=btxt, width=190, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).grid(row=0,column=2, rowspan=3, padx=16, pady=12)
     def _panel_refresh(self):
@@ -2596,9 +2620,9 @@ class App(ctk.CTk):
         ctk.CTkLabel(nx, text=title, text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w", justify="left", wraplength=200).pack(anchor="w", padx=14)
         ctk.CTkLabel(nx, text=detail, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=200).pack(anchor="w", padx=14, pady=(2,6))
         trail=ctk.CTkFrame(nx, fg_color="transparent"); trail.pack(anchor="w", padx=14, pady=(0,8))
-        for i,nm in enumerate(("Build", "Combine", "Prepare", "Export")):
+        for i,nm in enumerate(self.STEPS):
             col=(OK if i<step else (AC if i==step else DIM)); mark=("✓" if i<step else ("▶" if i==step else "○"))
-            ctk.CTkLabel(trail, text=mark+" "+nm, text_color=col, font=ctk.CTkFont(size=10, weight=("bold" if i==step else "normal"))).pack(side="left", padx=(0,8))
+            ctk.CTkLabel(trail, text=mark+nm, text_color=col, font=ctk.CTkFont(size=9, weight=("bold" if i==step else "normal"))).pack(side="left", padx=(0,5))
         if btxt: ctk.CTkButton(nx, text=btxt, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=12, weight="bold"), command=cmd).pack(fill="x", padx=14, pady=(0,12))
         # the selected scan
         node=self._film_sel if self._film_sel in nodes else (nodes[0] if nodes else None)
@@ -2611,6 +2635,8 @@ class App(ctk.CTk):
             if node!="combined":
                 stw, stc = self.STAGE_WORDS[self._device_stage(local, node)]
                 if stw: ctk.CTkLabel(pp, text="Scanner: "+stw, text_color=stc, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6)
+                hasp=node in self._base_planes(name)
+                ctk.CTkLabel(pp, text=("Base cut saved ✓ (applied when combining)" if hasp else "Base not cut yet"), text_color=(OK if hasp else WARN), font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6)
             if vs:
                 ctk.CTkLabel(pp, text="Versions (tick = the one the preview and exports use)", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w").pack(fill="x", padx=6, pady=(8,2))
                 for key,label,path in vs:
@@ -2622,23 +2648,24 @@ class App(ctk.CTk):
                                     command=lambda n=name,nd=node,k=key,pth=path: self._proc_delete_version(n, nd, k, pth)); x.pack(side="right")
                     self._tip(x, "Delete this version (to the trash)")
             else: ctk.CTkLabel(pp, text="No 3D model yet", text_color=WARN, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6, pady=(6,0))
-            primary="build" if (raw and not vs) else ("prepare" if (vs and not has_prep) else ("export" if vs else None))
+            primary="build" if (raw and not vs) else ("cut" if (vs and node!="combined" and node not in self._base_planes(name)) else ("prepare" if (vs and not has_prep) else ("export" if vs else None)))
             def mk(kind, text, enabled, cmd, tip):
                 filled=(kind==primary and enabled)
                 b=ctk.CTkButton(pp, text=text, height=32, corner_radius=8, fg_color=(AC if filled else "transparent"), hover_color=(AC_H if filled else CARD2), border_width=(0 if filled else 1), border_color=STROKE,
                                 text_color=("#04121f" if filled else (TX if enabled else MUT)), state=("normal" if enabled else "disabled"), anchor="w", command=cmd)
                 b.pack(fill="x", padx=6, pady=(6,0)); self._tip(b, tip); return b
             if node!="combined": mk("build", "⚙  Build model", bool(raw), lambda n=name,nd=node: self._proc_build(n, [nd]), "Build this scan's 3D model from its raw data, on this PC." if raw else "No raw data on this PC for this scan (share the project over WiFi as Full project).")
-            mk("prepare", "✦  Prepare…", bool(vs), lambda n=name,nd=node: self._prepare_dialog(n, nd), "Remove floating pieces or the base, smooth, fill holes, reduce triangles. Before and after, then keep or discard.")
+            if node!="combined": mk("cut", "✂  Remove base…", bool(vs), lambda nd=node: self.on_remove_base(nd), "Drag one line just above the table and apply. Saves a prepared version and remembers the cut for combining.")
+            mk("prepare", "✦  Prepare…", bool(vs), lambda n=name,nd=node: self._prepare_dialog(n, nd), "Remove floating pieces, smooth, fill holes, reduce triangles. Before and after, then keep or discard.")
             mk("export", "⬆  Export…", bool(vs), lambda n=name,nd=node: self._export_dialog(n, nd), "Save as STL, OBJ, GLB or PLY with a size and mesh check.")
         self._hr(pp, pady=(14,6)); self._title(pp, "Whole project", size=13)
         def act(text, cmd, tip=None, danger=False):
             b=ctk.CTkButton(pp, text=text, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=("#3a2530" if danger else CARD2), text_color=(MUT if danger else TX), anchor="w", command=cmd)
             b.pack(fill="x", padx=6, pady=3)
             if tip: self._tip(b, tip)
+        act("⇆  Compare versions…", lambda: self._compare_dialog(name), "Two 3D views side by side, any scan or version in each, turning together.")
         act("⧉  Combine scans…", lambda: self._align_dialog(name), "Scanned each side separately? Line the scans up and build one model from all of them.")
         act("⚙  Build all models", self.on_process_pc, "Build the 3D model of every scan that has raw data.")
-        act("✂  Remove base by hand…", self.on_remove_base, "Slice the table off the current scan with a cut plane you place yourself.")
         act("▤  All scans as cards…", lambda: self._set_mode("Process"), "The detail page: every scan with its versions and actions.")
         act("🗑  Delete project from this PC", self._proc_delete_project, "Everything in its folder goes to the trash. The scanner copy is not touched.", danger=True)
     def _proc_progress(self, node, frac, text):
@@ -2797,6 +2824,52 @@ class App(ctk.CTk):
         ctk.CTkButton(btns, text="Close", width=90, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=close).pack(side="left", padx=6)
         keepb=ctk.CTkButton(btns, text="Keep", width=110, height=34, corner_radius=17, fg_color=OK, hover_color="#35b57c", text_color="#04121f", command=keep)
         discb=ctk.CTkButton(btns, text="Discard", width=100, height=34, corner_radius=17, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=discard)
+    def _link_views(self, views):
+        """Dragging, zooming or panning any of these views moves all of them the same way."""
+        def sync(a):
+            for b in views:
+                if b is a: continue
+                try:
+                    if hasattr(a, "rot") and hasattr(b, "rot"): b.rot=a.rot.copy()
+                    else: b.azim, b.elev=a.azim, a.elev
+                    b.zoom=a.zoom; b.pan=list(a.pan); b.draw()
+                except Exception: pass
+        for a in views:
+            for ev in ("<B1-Motion>","<B2-Motion>","<B3-Motion>","<ButtonRelease-1>","<MouseWheel>","<Button-4>","<Button-5>","<Double-Button-1>"):
+                a.bind(ev, lambda e, a=a: sync(a), add="+")
+    def _compare_dialog(self, name):
+        """Two linked 3D views; pick any scan and version for each side."""
+        nodes=self._proc_nodes(name); choices=[]
+        for nd in nodes:
+            for key,label,path in self._proc_versions(name, nd): choices.append(("%s · %s" % (self._scan_label(name, nd), label), path))
+        if len(choices)<2: self._alert("Compare", "Nothing to compare yet: this project has fewer than two model versions."); return
+        t=self._top("Compare · %s" % self.disp(name), 1180, 760, key="compare")
+        if t is None: return
+        card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
+        card.grid_columnconfigure((0,1), weight=1); card.grid_rowconfigure(1, weight=1)
+        menu=dict(fg_color="#0d0f14", button_color=CARD2, button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=8)
+        lookup=dict(choices); labels=[c[0] for c in choices]
+        cur=self._film_sel if self._film_sel in nodes else nodes[0]
+        left0=next((l for l in labels if l.startswith(self._scan_label(name, cur)+" ·")), labels[0])
+        right0=next((l for l in labels if l.startswith("Combined ·")), None) or next((l for l in labels if l!=left0), labels[-1])
+        sels=[ctk.StringVar(value=left0), ctk.StringVar(value=right0)]
+        views=[]; loads=[]
+        for i in range(2):
+            ctk.CTkOptionMenu(card, values=labels, variable=sels[i], width=360, command=lambda _, i=i: load(i), **menu).grid(row=0,column=i, sticky="w", padx=14, pady=(12,6))
+            box=ctk.CTkFrame(card, fg_color="#0a0c10", corner_radius=10); box.grid(row=1,column=i, sticky="nsew", padx=(14,4) if i==0 else (4,14), pady=(0,12))
+            box.grid_columnconfigure(0, weight=1); box.grid_rowconfigure(0, weight=1)
+            v=self._new_view(box); v.grid(row=0,column=0, sticky="nsew", padx=4, pady=4); views.append(v)
+            l=ctk.CTkLabel(box, text="Loading…", text_color=MUT, font=ctk.CTkFont(size=13), fg_color="#0a0c10"); l.grid(row=0,column=0, sticky="nsew", padx=4, pady=4); loads.append(l)
+        self._link_views(views)
+        def load(i):
+            loads[i].configure(text="Loading…"); loads[i].grid(); loads[i].lift()
+            def cb(ok):
+                if not t.winfo_exists(): return
+                if ok: loads[i].grid_remove()
+                else: loads[i].configure(text="Could not load this model")
+            views[i].load(lookup[sels[i].get()], cb, max_faces=600000)
+        ctk.CTkLabel(card, text="Drag either view: both turn together. Scroll to zoom, right-drag to pan, double-click to reset.", text_color=DIM, font=ctk.CTkFont(size=10)).grid(row=2,column=0, columnspan=2, sticky="w", padx=14, pady=(0,10))
+        load(0); load(1)
     def _export_dialog(self, name, node):
         """Version, format and destination together, with the model's size and a mesh check."""
         vs=self._proc_versions(name, node)
@@ -3062,9 +3135,15 @@ class App(ctk.CTk):
             tj=""
             if node!=base:
                 tj=os.path.join(local, "align_%s.json" % node); json.dump({"base": base, "matrix": rec[node]["matrix"]}, open(tj, "w"))
-            sets.append("%s,%s,%s" % (cache, calib, tj))
+            pj=""
+            plane=self._base_planes(name).get(node)
+            if plane:
+                pj=os.path.join(local, "plane_%s.json" % node); json.dump(plane, open(pj, "w"))
+            sets.append("%s,%s,%s,%s" % (cache, calib, tj, pj))
+        ncut=sum(1 for sp in sets if sp.split(",")[3])
         out=os.path.join(local, "%s_combined_pcfused.ply" % name); voxel=float(self.fuse_voxel.get() or 0.4)
-        self._fusing=True; self.set_status("Building one model from %d scans…" % len(sets))
+        self._fusing=True; self.set_status("Building one model from %d scans%s…" % (len(sets), (", dropping the base of %d" % ncut) if ncut else ""))
+        if ncut<len(sets): self.set_banner("%d of %d scans have no base cut saved: their table will be in the combined model. Remove base on each scan first for a clean result." % (len(sets)-ncut, len(sets)), WARN)
         def say(txt):
             self.q.put(("fuse_status", txt))
             if status is not None: self.q.put(("call", lambda: (status.configure(text=txt) if status.winfo_exists() else None)))
@@ -4104,12 +4183,17 @@ class App(ctk.CTk):
                     self._close_loader(); self._basing=False
                     try: self.base_btn.configure(state="normal")
                     except Exception: pass
-                    status, info = rest[0]
+                    status, info = rest[0][0], rest[0][1]
                     if status=="ok":
-                        self.set_banner("Base removed -> %s" % os.path.basename(info), OK)
-                        self.set_status("Base removed -> %s" % os.path.basename(info))
-                        self.projects_sig=None   # refresh so the _clean file shows
-                        if self.auto_open.get(): self.open_folder()
+                        node=rest[0][2] if len(rest[0])>2 else None; plane=rest[0][3] if len(rest[0])>3 else None
+                        nm=self.selected
+                        if nm and node and plane:
+                            self.records.setdefault(nm,{}).setdefault("base_plane",{})[node]=plane; self._persist()
+                        self.set_banner("Base removed from %s: saved as the prepared version%s." % (self._scan_label(nm, node) if (nm and node) else "the model", ", and the cut is remembered for combining" if plane else ""), OK)
+                        self.set_status("")
+                        self.projects_sig=None; self._mesh_stats={}; self.gallery_cache.pop(nm, None)
+                        if nm and node: self._proc_set_current(nm, node, "clean")
+                        else: self._proc_refresh()
                     elif status=="cancel":
                         self.set_banner("Base removal cancelled.", MUT); self.set_status("")
                     else:

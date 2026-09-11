@@ -131,8 +131,8 @@ def main():
         mask = np.zeros(len(m.faces), bool); mask[largest] = True
         m.update_faces(mask); m.remove_unreferenced_vertices()
     m.export(outfile)
-    print("CUT_DONE " + json.dumps({"faces": len(m.faces),
-          "mb": round(os.path.getsize(outfile) / 1048576, 1)}), flush=True)
+    print("CUT_DONE " + json.dumps({"faces": len(m.faces), "mb": round(os.path.getsize(outfile) / 1048576, 1),
+          "plane": {"n": [float(x) for x in normal], "d": float(state["cut"]), "keep_above": bool(state["keep_above"])}}), flush=True)
     return 0
 
 if __name__ == "__main__":
