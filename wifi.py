@@ -23,6 +23,7 @@ STAGE = ".wifi-incoming"          # projects land here first, then the app moves
 
 def random_code(): return "%04d" % secrets.randbelow(10000)
 MAX_BAD_CODES = 5              # a 4-digit code is small; lock the session after a few wrong guesses
+MAX_BODY = 64 * 1024 * 1024    # request body cap (the scanner sends 4 MiB parts)
 
 def lan_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -60,7 +61,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         rx = self.server.rx; route = self.path.split("?")[0]
         if not self._allowed(route): self._deny(); return
-        n = int(self.headers.get("Content-Length") or 0); body = self.rfile.read(n) if n else b""
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > MAX_BODY: self._deny(413); return            # parts are 4 MiB; anything huge is not the scanner
+        body = self.rfile.read(n) if n else b""
         if route == "/file": rx._file(self.headers, body)
         elif route == "/close": rx._closed()
         self._ok()
@@ -141,7 +144,8 @@ class Receiver:
             os.makedirs(out, exist_ok=True); return           # a folder entry (the project dir comes last)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with self._lock:
-            with open(out, "r+b" if os.path.exists(out) else "wb") as f:
+            fresh = rel not in self.files                    # first part of this file in this transfer
+            with open(out, "wb" if (fresh or not os.path.exists(out)) else "r+b") as f:
                 f.seek((idx - 1) * PART); f.write(body)
             self.files.setdefault(rel, set()).add(idx); self.bytes += len(body)
             self.total = int(h.get("totalsize") or self.total or 0)

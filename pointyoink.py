@@ -1903,11 +1903,15 @@ class App(ctk.CTk):
         """Show a preview that scales to fill the box and re-fits on window resize."""
         try:
             self._big_src=Image.open(path).convert("RGBA")
-            self.imgs["big"]=ctk.CTkImage(light_image=self._big_src, dark_image=self._big_src, size=(320,240))
-            self.big.configure(image=self.imgs["big"], text="")
+            new=ctk.CTkImage(light_image=self._big_src, dark_image=self._big_src, size=(320,240))
+            try: self.big._label.configure(image="")      # drop a stale image name first (Tk refuses any configure while one is dead)
+            except Exception: pass
+            self.big.configure(image=new, text=""); self.imgs["big"]=new
             self._fit_big()
-        except Exception:
-            self._big_src=None; self.big.configure(image=None, text="(preview unavailable)")
+        except Exception as e:
+            log_error("preview-image", e); self._big_src=None
+            try: self.big._label.configure(image=""); self.big.configure(image=None, text="(preview unavailable)")
+            except Exception: pass
     def _on_big_resize(self, e):
         if getattr(self,"_fit_job",None):
             try: self.after_cancel(self._fit_job)
@@ -2015,8 +2019,8 @@ class App(ctk.CTk):
             src=getattr(self, "_big_src", None)
             if src is None: return
             dim=ImageEnhance.Brightness(src).enhance(0.35)
-            self.imgs["big"]=ctk.CTkImage(light_image=dim, dark_image=dim, size=self.imgs["big"].cget("size") if "big" in self.imgs else (320,240))
-            self.big.configure(image=self.imgs["big"], text="")
+            self.imgs["big_dim"]=ctk.CTkImage(light_image=dim, dark_image=dim, size=self.imgs["big"].cget("size") if "big" in self.imgs else (320,240))
+            self.big.configure(image=self.imgs["big_dim"], text="")
         except Exception: pass
     def _show_shaded(self, out):
         self._set_big_image(out); self._preview_idle()
@@ -2750,10 +2754,15 @@ class App(ctk.CTk):
             parts.append("%d raw frames %s" % (r["frames"], human(r["raw"])) if r["frames"] else "no raw frames")
             if not r["mesh"] and not r["cloud"]: parts.insert(0, "raw scan data only, no 3D model yet (Process on PC builds it)")
             ctk.CTkLabel(col, text="  ·  ".join(parts), text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(anchor="w")
-        mode=ctk.StringVar(value="models" if self.models_only.get() else "full")
+        any_model=any(r["mesh"] or r["cloud"] for r in rows)
+        mode=ctk.StringVar(value=("models" if (self.models_only.get() and any_model) else "full"))
         mr=ctk.CTkFrame(t, fg_color="transparent"); mr.pack(fill="x", padx=20)
-        ctk.CTkRadioButton(mr, text="Models only (meshes + clouds, clean names)", variable=mode, value="models", fg_color=AC, hover_color=AC_H, text_color=TX).pack(side="left", padx=(0,16))
-        ctk.CTkRadioButton(mr, text="Full project (raw frames too)", variable=mode, value="full", fg_color=AC, hover_color=AC_H, text_color=TX).pack(side="left")
+        rb=ctk.CTkRadioButton(mr, text="Models only (3D models + points, clean names)", variable=mode, value="models", fg_color=AC, hover_color=AC_H, text_color=TX); rb.pack(side="left", padx=(0,16))
+        ctk.CTkRadioButton(mr, text="Full project (raw scan data too)", variable=mode, value="full", fg_color=AC, hover_color=AC_H, text_color=TX).pack(side="left")
+        if not any_model:
+            rb.configure(state="disabled")
+            ctk.CTkLabel(t, text="Raw scan data only: there are no 3D models to save yet, so the full project is kept. Process on PC builds the models.",
+                         text_color=WARN, font=ctk.CTkFont(size=11), wraplength=580, justify="left").pack(anchor="w", padx=22, pady=(6,0))
         br=ctk.CTkFrame(t, fg_color="transparent"); br.pack(fill="x", padx=16, pady=14)
         def close():
             self._dialogs.pop("wifipick", None); t.destroy()
@@ -2764,6 +2773,8 @@ class App(ctk.CTk):
             for r,v in zip(rows, vars_):
                 if v.get(): keep.setdefault(r["project"], []).append(r["node"])
             if not keep: discard(); return
+            if mode.get()=="models" and not any((r["mesh"] or r["cloud"]) for r,v in zip(rows, vars_) if v.get()):
+                self.set_banner("The ticked scans have no 3D models yet: choose Full project to keep their raw data.", WARN); return
             dest=self.dest.get() or DEFAULT_DEST
             self._wifi_confirm(keep, dest, lambda names, replace: start(keep, dest, names, replace))
         def start(keep, dest, names, replace):
@@ -2842,7 +2853,10 @@ class App(ctk.CTk):
                 except Exception: pass
             except Exception as e:
                 failed.append(name); log_error("wifi-import", e)
-        shutil.rmtree(stage, ignore_errors=True)
+        if failed or self.cancel:
+            log_line("WiFi import %s: received data kept in %s and offered again at the next start" % ("cancelled" if self.cancel else "failed", stage))
+        else:
+            shutil.rmtree(stage, ignore_errors=True)
         self.q.put(("cancelled" if self.cancel else "done", dest, failed))
 
     # ---- screenshots ----
