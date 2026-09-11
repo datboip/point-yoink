@@ -1060,6 +1060,11 @@ class App(ctk.CTk):
         self._mv_wrap=bigwrap; self.mv=self._make_mv(); self._mv_key=None; self._mv_want=None
         self.big_hint=ctk.CTkLabel(bigwrap, text="", text_color=MUT, font=ctk.CTkFont(size=11), fg_color="#0a0c10", corner_radius=6)
         self.big_hint.place(relx=0.5, rely=1.0, y=-10, anchor="s")
+        # loading overlay: a spinning ring + the current step, centred on the preview while it works
+        self.big_loader=ctk.CTkFrame(bigwrap, fg_color="#11151c", corner_radius=14, border_width=1, border_color=STROKE)
+        self._spin_cv=tk.Canvas(self.big_loader, width=44, height=44, bg="#11151c", highlightthickness=0); self._spin_cv.pack(padx=18, pady=(16,6))
+        self.big_loader_lbl=ctk.CTkLabel(self.big_loader, text="", text_color=TX, font=ctk.CTkFont(size=12)); self.big_loader_lbl.pack(padx=22, pady=(0,16))
+        self._spin_job=None; self._spin_ang=0
         self.renders_lbl=ctk.CTkLabel(bigwrap, text="", text_color=MUT, font=ctk.CTkFont(size=11), fg_color="#0a0c10", corner_radius=6)
         # nothing selected: an empty state sits over the box (inset so the rounded border stays visible); select_project hides it
         self.big_empty=self._empty_state(bigwrap, "preview"); self.big_empty.grid(row=0,column=0, sticky="nsew", padx=6, pady=6)
@@ -1940,7 +1945,7 @@ class App(ctk.CTk):
         """Show the cached shaded render for this scan, or queue one. Never blocks the UI thread."""
         mesh=self._mesh_for_node(name, node) if node else self._find_mesh(name)
         if not mesh:
-            self.big_hint.configure(text="No 3D model yet: this scan is raw data. Process on PC builds it."); return
+            self.big_hint.configure(text="No 3D model yet: this scan is raw data. Process on PC builds it."); self._preview_idle(); return
         node=node or self._node_of(name, mesh)
         if node and node!=self._film_sel: self._film_sel=node; self._mark_scan(node)
         key="%s__%s"%(name, node) if node else name; mode=self.shade_mode
@@ -1962,7 +1967,7 @@ class App(ctk.CTk):
             self.big_hint.configure(text="Scanner's own preview · could not draw the 3D model"); return
         if mesh.startswith(PROJECTS) and self.pulling:
             self.big_hint.configure(text="Scanner preview · the 3D render waits for the import to finish"); return
-        self.big_hint.configure(text="Drawing the 3D model…"); self._dim_preview()
+        self.big_hint.configure(text="Drawing the 3D model…"); self._dim_preview(); self._preview_busy("Drawing the 3D model")
         with self._shade_lock:
             self._shade_want=(key, mode, name, mesh, out); start=not self._shade_running; self._shade_running=True
         if start: threading.Thread(target=self._shade_thread, daemon=True).start()
@@ -1985,6 +1990,24 @@ class App(ctk.CTk):
                 self.q.put(("shaded", key, mode, out))
             except Exception as e:
                 log_error("shaded-preview "+key, e); self.q.put(("shaded", key, mode, None))
+    def _preview_busy(self, text):
+        """Show the spinner overlay with a step name (call again to change the text)."""
+        try:
+            self.big_loader_lbl.configure(text=text)
+            if not self.big_loader.winfo_ismapped(): self.big_loader.place(relx=0.5, rely=0.5, anchor="center")
+            self.big_loader.lift()
+            if self._spin_job is None: self._spin_tick()
+        except Exception: pass
+    def _preview_idle(self):
+        try:
+            self.big_loader.place_forget()
+            if self._spin_job: self.after_cancel(self._spin_job); self._spin_job=None
+        except Exception: pass
+    def _spin_tick(self):
+        cv=self._spin_cv; cv.delete("all"); self._spin_ang=(self._spin_ang+14)%360
+        cv.create_oval(6,6,38,38, outline="#1d222c", width=4)
+        cv.create_arc(6,6,38,38, start=-self._spin_ang, extent=90, style="arc", outline=AC, width=4)
+        self._spin_job=self.after(40, self._spin_tick)
     def _dim_preview(self):
         """Darken whatever the preview box shows while a render is in flight, so the wait is obvious."""
         try:
@@ -1996,7 +2019,7 @@ class App(ctk.CTk):
             self.big.configure(image=self.imgs["big"], text="")
         except Exception: pass
     def _show_shaded(self, out):
-        self._set_big_image(out)
+        self._set_big_image(out); self._preview_idle()
         self.big_hint.configure(text="Still image · View in 3D to rotate and zoom")
         self._mv_start()
     def _make_mv(self, software=False):
@@ -2013,7 +2036,7 @@ class App(ctk.CTk):
         want=self._mv_want
         if not want or self._mv_key==want[0] or not os.path.exists(want[1]): return
         key,path=want; self._mv_key=key; self.mv.wire=(self.shade_mode=="wire")
-        self.big_hint.configure(text="Static render · loading the interactive view…")
+        self.big_hint.configure(text="Still image · loading the live 3D view…"); self._preview_busy("Loading the live 3D view")
         def ready(ok, k=key):
             if k!=self._mv_key: return
             if not ok and getattr(self.mv, "failed", False) and not isinstance(self.mv, __import__("meshview").MeshView):
@@ -2021,6 +2044,7 @@ class App(ctk.CTk):
                 try: self.mv.destroy()
                 except Exception: pass
                 self.mv=self._make_mv(software=True); self.mv.wire=(self.shade_mode=="wire"); self.mv.load(path, ready); return
+            self._preview_idle()
             if ok:
                 self.big.grid_remove(); self.mv.grid()
                 self.big_hint.configure(text="Drag to rotate · scroll to zoom · right-drag to pan · double-click to reset")
@@ -3082,7 +3106,7 @@ class App(ctk.CTk):
                     if out is None: self._shade_failed.add((key,mode))
                     if (key,mode)==self._shade_key:
                         if out: self._show_shaded(out)
-                        else: self.big_hint.configure(text="Scanner's own preview · could not draw the 3D model (see Help > Log)")
+                        else: self.big_hint.configure(text="Scanner's own preview · could not draw the 3D model (see Help > Log)"); self._preview_idle()
                 elif kind=="shade_msg":
                     if self._shade_key and rest[0]==self._shade_key[0]: self.big_hint.configure(text=rest[1])
                 elif kind=="mesh_stats":
