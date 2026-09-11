@@ -49,3 +49,19 @@ Derived from the reference mock (dev/design/mock.png, when present) and the layo
 - No em dashes in UI text. Plain language, no jargon in labels.
 - Keep every widget attribute name that other code uses (see the comment at the top of `_body` in
   pointyoink.py) so behaviour does not change with the look.
+
+## Second reference (dev/design/mock2.png)
+
+Same family, simpler: two columns only. Header = logo, Settings, Help. Device bar = green dot +
+"MIRACO Pro connected", a Wi-Fi | USB segmented pair, "Refresh projects" on the right. Left =
+"Projects", search field, Select all / Clear, rows with a large (~100 px) thumbnail, bold friendly
+name, "date  size", and "Imported" at the right; selected rows tinted with an accent outline.
+Right = project title, Preview | Files tabs, a big shaded render on a dark grid, then a row with
+"Open 3D viewer" (outlined, external-link icon) and "2 meshes · 4 scans", then "Scans in this
+project (3)" with framed thumbnails labelled "Scan 1" + size. Bottom strip = "Import content"
+radio Models only / Full project | "Open folder when finished" | "Save to" entry + Browse.
+Footer = "2 projects selected · 86 MB" and the single primary "Import 2 projects".
+
+What makes both mocks feel rich: the shaded grey-material mesh render on a grid floor (not the
+scanner's flat preview), large thumbnails, generous spacing, one accent. Shaded renders are the
+priority visual feature: decimate, light, grid, cache to THUMBS, render in a worker thread.
