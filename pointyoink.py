@@ -2764,30 +2764,76 @@ class App(ctk.CTk):
             for r,v in zip(rows, vars_):
                 if v.get(): keep.setdefault(r["project"], []).append(r["node"])
             if not keep: discard(); return
+            dest=self.dest.get() or DEFAULT_DEST
+            self._wifi_confirm(keep, dest, lambda names, replace: start(keep, dest, names, replace))
+        def start(keep, dest, names, replace):
             close()
+            for n,label in names.items():
+                if label.strip(): self.records.setdefault(n, {})["label"]=label.strip()
             self.pulling=True; self.cancel=False; self._pull_list=list(keep); self._export_fails=[]
             self.import_btn.grid_remove(); self.cancel_btn.grid(row=0,column=3)
             self.progress.grid(row=1,column=0, columnspan=3, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=3, sticky="w")
-            dest=self.dest.get() or DEFAULT_DEST; cleanup=self.cleanup.get()
+            cleanup=self.cleanup.get()
             fmts=[e for e,v in (("stl",self.exp_stl),("obj",self.exp_obj),("glb",self.exp_glb)) if v.get()]
-            self.set_banner("Saving %s…" % ", ".join(keep), AC)
-            threading.Thread(target=self._wifi_finish_worker, args=(stage, keep, dest, mode.get()=="models", fmts, cleanup), daemon=True).start()
+            self.set_banner("Saving %s…" % ", ".join(self.disp(n) for n in keep), AC)
+            threading.Thread(target=self._wifi_finish_worker, args=(stage, keep, dest, mode.get()=="models", fmts, cleanup, replace), daemon=True).start()
         ctk.CTkButton(br, text="Import", width=110, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=go).pack(side="right", padx=6)
         ctk.CTkButton(br, text="Discard", width=100, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=discard).pack(side="right", padx=6)
-    def _wifi_finish_worker(self, stage, keep, dest, mo, fmts, cleanup):
+    def _wifi_confirm(self, keep, dest, then):
+        """Name the incoming project(s) and, when one is already on this PC, choose keep-and-add or replace."""
+        existing=[n for n in keep if os.path.isdir(os.path.join(dest, n))]
+        t=self._top("Before importing", 520, 300+60*len(keep)+(70 if existing else 0), key="wifiname")
+        if t is None: return
+        t.protocol("WM_DELETE_WINDOW", lambda: (self._dialogs.pop("wifiname", None), t.destroy()))
+        ctk.CTkLabel(t, text="Name it (optional)", font=ctk.CTkFont(family=WORDMARK, size=15, weight="bold"), text_color=TX).pack(anchor="w", padx=22, pady=(20,2))
+        ctk.CTkLabel(t, text="A name you will recognise, like \"headrest front\". The scanner's id stays as the folder name.",
+                     text_color=MUT, font=ctk.CTkFont(size=11), wraplength=460, justify="left").pack(anchor="w", padx=22)
+        vars_={}
+        for n in keep:
+            row=ctk.CTkFrame(t, fg_color="transparent"); row.pack(fill="x", padx=22, pady=(10,0))
+            ctk.CTkLabel(row, text=n, text_color=MUT, font=ctk.CTkFont(size=11), width=190, anchor="w").pack(side="left")
+            v=ctk.StringVar(value=self.records.get(n, {}).get("label") or ""); vars_[n]=v
+            ctk.CTkEntry(row, textvariable=v, placeholder_text="name (optional)", fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=10).pack(side="left", fill="x", expand=True, padx=(8,0))
+        mode=ctk.StringVar(value="merge")
+        if existing:
+            box=ctk.CTkFrame(t, fg_color="#3d2f14", corner_radius=10); box.pack(fill="x", padx=22, pady=(16,0))
+            ctk.CTkLabel(box, text="%s already on this PC" % ("These projects are" if len(existing)>1 else self.disp(existing[0])+" is"),
+                         text_color=WARN, font=ctk.CTkFont(size=12, weight="bold"), anchor="w").pack(anchor="w", padx=12, pady=(8,2))
+            ctk.CTkRadioButton(box, text="Keep what's there, add the scanner's files (models built on this PC stay)", variable=mode, value="merge",
+                               fg_color=AC, hover_color=AC_H, text_color=TX, font=ctk.CTkFont(size=11)).pack(anchor="w", padx=12, pady=2)
+            ctk.CTkRadioButton(box, text="Replace everything in that folder", variable=mode, value="replace",
+                               fg_color=AC, hover_color=AC_H, text_color=TX, font=ctk.CTkFont(size=11)).pack(anchor="w", padx=12, pady=(2,10))
+        br=ctk.CTkFrame(t, fg_color="transparent"); br.pack(fill="x", padx=18, pady=16)
+        def ok():
+            self._dialogs.pop("wifiname", None); t.destroy(); then({n: v.get() for n,v in vars_.items()}, mode.get()=="replace")
+        ctk.CTkButton(br, text="Import", width=110, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=ok).pack(side="right", padx=6)
+        ctk.CTkButton(br, text="Back", width=90, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX,
+                      command=lambda: (self._dialogs.pop("wifiname", None), t.destroy())).pack(side="right", padx=6)
+    def _wifi_finish_worker(self, stage, keep, dest, mo, fmts, cleanup, replace=False):
         failed=[]; total=len(keep)
         for i,(name,nodes) in enumerate(keep.items()):
             if self.cancel: break
             try:
                 if mo:
+                    if replace and os.path.isdir(os.path.join(dest, name)): shutil.rmtree(os.path.join(dest, name), ignore_errors=True)
                     self._import_flat(name, dest, fmts, cleanup, i, total, src_root=stage, nodes=nodes)
                 else:
                     self.q.put(("prog", i/total, "Saving %s (full project)" % name))
                     for nd in glob.glob(os.path.join(stage, name, "data", "*")):     # drop the scans that weren't ticked
                         if os.path.basename(nd) not in nodes: shutil.rmtree(nd, ignore_errors=True)
-                    out=os.path.join(dest, name)
-                    if os.path.isdir(out): shutil.rmtree(out)
-                    shutil.move(os.path.join(stage, name), out)
+                    out=os.path.join(dest, name); src=os.path.join(stage, name)
+                    if os.path.isdir(out) and replace: shutil.rmtree(out)
+                    if os.path.isdir(out):        # keep-and-add: swap in the scanner's version of each ticked scan, keep everything else
+                        for nd in glob.glob(os.path.join(src, "data", "*")):
+                            tgt=os.path.join(out, "data", os.path.basename(nd)); os.makedirs(os.path.dirname(tgt), exist_ok=True)
+                            if os.path.isdir(tgt): shutil.rmtree(tgt)
+                            shutil.move(nd, tgt)
+                        for f in os.listdir(src):
+                            fp=os.path.join(src, f)
+                            if os.path.isfile(fp): shutil.copyfile(fp, os.path.join(out, f))
+                        shutil.rmtree(src, ignore_errors=True)
+                    else:
+                        shutil.move(src, out)
                 try:   # keep a thumbnail so the project list can show it later
                     root=os.path.join(stage if mo else dest, name, "data")
                     for node in sorted(os.listdir(root)):
