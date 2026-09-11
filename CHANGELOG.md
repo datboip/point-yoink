@@ -3,7 +3,12 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
-## 0.9.6 (local, unreleased)
+## 0.9.7 (pre-release, testing)
+- First public pre-release of the new PointYoink: see 0.9.x below. Marked
+  unstable on GitHub; 0.7.0 stays the latest release until 1.0.0.
+- Loading overlay on the preview; View in 3D button retired; short clean-up line.
+
+## 0.9.6 (local)
 - **GPU 3D view**: the preview draws the full model on the graphics card (smooth,
   full detail, drag to rotate); the software view stays as the fallback and can
   be forced in Settings. Wireframe draws a lighter copy so edges are visible.
