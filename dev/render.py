@@ -28,6 +28,7 @@ json.dump({"dest": a.dest, "models_only": True, "geometry": a.geometry, "side": 
            "exp_stl": True, "ui_scale": 1.0}, open(cfg, "w"))
 os.environ["POINTYOINK_CONFIG"] = cfg
 os.environ["POINTYOINK_SCALE"] = "1.0"
+os.environ.setdefault("POINTYOINK_NO_GL", "1")   # a virtual X server has no GL drawable for the GPU view
 sys.path.insert(0, os.path.abspath(a.src))
 import pointyoink as P
 

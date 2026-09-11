@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.5"
+APP = "PointYoink"; VERSION = "0.9.6"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -523,6 +523,115 @@ class SplitButton(ctk.CTkFrame):
             st=kw.pop("state"); self.main.configure(state=st); self.more.configure(state=st)
         if kw: super().configure(require_redraw=require_redraw, **kw)
 
+# ---- empty states: a faint ring backsplash, a line illustration, a headline, one line, up to two buttons ----
+ES_BG="#0a0c10"; ES_RING="#1e2634"; ES_LINE="#3a4556"; ES_MESH="#2a3140"
+ES_COPY={   # kind -> (headline, one line of explanation)
+    "captures": ("No captures yet", "Screenshots come over USB only. WiFi sends just the project you share."),
+    "projects": ("No projects yet", "Connect over USB for all of them, or share one over WiFi."),
+    "preview":  ("Nothing to preview", "Pick a project: its scans show here as a 3D model you can turn and zoom."),
+    "live":     ("Live view is not connected", "Turn on the scanner's WiFi, then find it on your network."),
+}
+def _mix(a, b, t):
+    """Blend two #rrggbb colours (t=0 -> a, t=1 -> b)."""
+    a=[int(a[i:i+2],16) for i in (1,3,5)]; b=[int(b[i:i+2],16) for i in (1,3,5)]
+    return "#%02x%02x%02x" % tuple(int(round(x+(y-x)*t)) for x,y in zip(a,b))
+def _rrect(cv, x0, y0, x1, y1, r, tag, color=ES_LINE, width=3):
+    """Outline-only rounded rectangle drawn with four arcs and four lines."""
+    for box,start in (((x0,y0,x0+2*r,y0+2*r),90), ((x1-2*r,y0,x1,y0+2*r),0), ((x1-2*r,y1-2*r,x1,y1),270), ((x0,y1-2*r,x0+2*r,y1),180)):
+        cv.create_arc(*box, start=start, extent=90, style="arc", outline=color, width=width, tags=tag)
+    for seg in ((x0+r,y0,x1-r,y0), (x1,y0+r,x1,y1-r), (x0+r,y1,x1-r,y1), (x0,y0+r,x0,y1-r)):
+        cv.create_line(*seg, fill=color, width=width, tags=tag)
+def _illustration(cv, kind, cx, cy, s, tag):
+    """Simple line drawing for an empty state, in a 130x110 box (times s) centred on (cx, cy).
+    Muted 3 px strokes with one accent detail."""
+    ox,oy=cx-65*s, cy-55*s
+    def p(x,y): return (ox+x*s, oy+y*s)
+    w=max(2, round(3*s)); L=dict(fill=ES_LINE, width=w, capstyle="round", joinstyle="round", tags=tag)
+    if kind=="captures":            # scanner (screen side) with a USB cable running down to a plug
+        _rrect(cv, *p(20,4), *p(110,60), 9*s, tag, width=w); _rrect(cv, *p(30,13), *p(100,51), 4*s, tag, width=w)
+        cv.create_line(*p(74,17), *p(90,17), **L); cv.create_line(*p(74,25), *p(84,25), **L)   # a couple of UI lines on the screen
+        cv.create_line(*p(65,60), *p(65,67), *p(72,73), *p(72,80), smooth=True, **L)
+        _rrect(cv, *p(63,80), *p(81,98), 3*s, tag, width=w)
+        cv.create_rectangle(*p(68,98), *p(76,108), fill=AC, outline="", tags=tag)                  # accent: the plug's tip
+    elif kind=="projects":          # scanner outline with a small radio wave above its corner
+        _rrect(cv, *p(16,36), *p(96,92), 9*s, tag, width=w); _rrect(cv, *p(26,45), *p(86,83), 4*s, tag, width=w)
+        cv.create_line(*p(40,53), *p(72,53), **L)
+        for r in (11, 21):
+            cv.create_arc(*p(100-r,34-r), *p(100+r,34+r), start=35, extent=110, style="arc", outline=ES_LINE, width=w, tags=tag)
+        cv.create_oval(*p(96,30), *p(104,38), fill=AC, outline="", tags=tag)                       # accent: the wave's origin
+    elif kind=="preview":           # isometric cube with light mesh lines and a lit front vertex
+        T,UR,LR,B,LL,UL,C=p(65,9),p(105,32),p(105,78),p(65,101),p(25,78),p(25,32),p(65,55)
+        m=lambda a,b: ((a[0]+b[0])/2, (a[1]+b[1])/2)
+        thin=dict(fill=ES_MESH, width=1, tags=tag)
+        cv.create_line(*m(T,UL), *m(UR,C), **thin); cv.create_line(*m(T,UR), *m(UL,C), **thin)  # top face
+        cv.create_line(*m(UL,LL), *m(C,B), **thin); cv.create_line(*m(UL,C), *m(LL,B), **thin)  # left face
+        cv.create_line(*m(UR,LR), *m(C,B), **thin); cv.create_line(*m(UR,C), *m(LR,B), **thin)  # right face
+        cv.create_line(*T, *UR, *LR, *B, *LL, *UL, *T, **L)
+        for v in (UL, UR, B): cv.create_line(*C, *v, **L)
+        r=4.5*s; cv.create_oval(C[0]-r, C[1]-r, C[0]+r, C[1]+r, fill=AC, outline="", tags=tag)   # accent: the front vertex
+    elif kind=="live":              # camera lens: outer barrel, inner ring, an accent iris and a highlight
+        for r in (46, 32):
+            cv.create_oval(*p(65-r,55-r), *p(65+r,55+r), outline=ES_LINE, width=w, tags=tag)
+        cv.create_arc(*p(45,35), *p(85,75), start=40, extent=250, style="arc", outline=AC, width=w, tags=tag)  # accent: the iris
+        cv.create_oval(*p(48,36), *p(56,44), fill=ES_LINE, outline="", tags=tag)
+def draw_empty_state(cv, kind, buttons=(), scale=1.0, tag="empty"):
+    """Draw an empty state on a canvas: a ring backsplash that fades toward the edges, the illustration,
+    a headline, one line of text and the given CTkButtons (placed as canvas windows). Everything is
+    vertically centred in the canvas; call again on <Configure> to re-centre. Existing items with the
+    tag are replaced, so it is safe to call repeatedly."""
+    cv.delete(tag)
+    W=max(40, cv.winfo_width()); H=max(40, cv.winfo_height()); s=scale
+    head,line=ES_COPY[kind]
+    fh=ctk.CTkFont(size=18, weight="bold"); fl=ctk.CTkFont(size=13)
+    k=s*min(1.5, max(1.0, 1+(min(W,H)/s-420)/700))          # a bigger drawing (and wider rings) in a big area
+    illus=110*k; gap1=22*s; hh=fh.metrics("linespace"); gap2=8*s; gap3=20*s
+    bw=[b.winfo_reqwidth() for b in buttons]; bh=max([b.winfo_reqheight() for b in buttons] or [0])
+    stack=bool(buttons) and (sum(bw)+12*s*(len(buttons)-1) > W-24)     # narrow column: one button under the other
+    btn_h=(bh*len(buttons)+8*s*(len(buttons)-1)) if stack else bh
+    # the text wraps inside the width it has; measure it before laying the block out
+    tw=int(min(W-32, 460*s)); tid=cv.create_text(0,0, text=line, fill=MUT, font=fl, width=tw, justify="center", anchor="n", tags=tag)
+    x0,y0,x1,y1=cv.bbox(tid); th=y1-y0
+    total=illus+gap1+hh+gap2+th+(gap3+btn_h if buttons else 0)
+    if total+16 > H: illus=0; gap1=0; total=hh+gap2+th+(gap3+btn_h if buttons else 0)   # short area: drop the drawing
+    cx=W/2; y=max(8, (H-total)*0.46)
+    ccx,ccy=(cx, y+illus/2) if illus else (cx, y+hh/2)
+    # backsplash: concentric rings around the drawing, fading to the background at the edges
+    rmax=max(((cx-x)**2+(ccy-yy)**2)**0.5 for x in (0,W) for yy in (0,H)); step=26*k; r=step*0.9
+    while r<rmax:
+        col=_mix(ES_BG, ES_RING, max(0.0, 1-r/rmax)**1.8)
+        if col!=ES_BG: cv.create_oval(ccx-r, ccy-r, ccx+r, ccy+r, outline=col, width=1, tags=tag)
+        r+=step
+    if illus: _illustration(cv, kind, ccx, ccy, k, tag); y+=illus+gap1
+    cv.create_text(cx, y, text=head, fill=TX, font=fh, anchor="n", tags=tag); y+=hh+gap2
+    cv.coords(tid, cx, y); cv.tag_raise(tid); y+=th
+    if buttons:
+        y+=gap3
+        if stack:
+            for b,w in zip(buttons,bw): cv.create_window(cx, y, window=b, anchor="n", tags=tag); y+=bh+8*s
+        else:
+            x=cx-(sum(bw)+12*s*(len(buttons)-1))/2
+            for b,w in zip(buttons,bw): cv.create_window(x, y, window=b, anchor="nw", tags=tag); x+=w+12*s
+
+class EmptyState(ctk.CTkFrame):
+    """An empty-state panel (see draw_empty_state) that fills whatever cell it is gridded into and
+    redraws itself centred whenever that cell changes size. .buttons holds the CTkButtons in order."""
+    def __init__(self, master, kind, buttons=(), scale=1.0, **kw):
+        super().__init__(master, fg_color=ES_BG, corner_radius=0, **kw)
+        self.kind=kind; self.scale=scale
+        self.cv=tk.Canvas(self, bg=ES_BG, highlightthickness=0, bd=0); self.cv.pack(fill="both", expand=True)
+        self.buttons=[]
+        for i,(text,cmd) in enumerate(buttons):
+            if i==0: b=ctk.CTkButton(self.cv, text=text, width=150, height=34, corner_radius=8, fg_color="transparent", border_width=1,
+                                     border_color=AC, hover_color=CARD2, text_color=AC, font=ctk.CTkFont(size=13, weight="bold"), command=cmd)
+            else: b=ctk.CTkButton(self.cv, text=text, width=130, height=34, corner_radius=8, fg_color="transparent",
+                                  hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=13), command=cmd)
+            self.buttons.append(b)
+        self.pack_propagate(False)
+        self.cv.bind("<Configure>", lambda e: self.redraw())
+    def redraw(self):
+        try: draw_empty_state(self.cv, self.kind, self.buttons, self.scale)
+        except Exception as e: log_error("empty-state", e)
+
 def _kfmt(n):
     n=int(n or 0)
     if n>=1000000: return "%.1fM"%(n/1e6)
@@ -903,6 +1012,8 @@ class App(ctk.CTk):
         se.bind("<KeyRelease>", lambda e: self.search.set(se.get()))
         self.llist=ctk.CTkScrollableFrame(left, fg_color="transparent"); self.llist.grid(row=2,column=0, sticky="nsew", padx=(8,2), pady=0)
         self.llist.grid_columnconfigure(0, weight=1)
+        self.list_empty=None   # the "No projects yet" panel, created by render_list; kept as tall as the list's visible area
+        self.llist._parent_canvas.bind("<Configure>", lambda e: self._fit_empty("list_empty", self.llist), add="+")
         self.sel_lbl=ctk.CTkLabel(left, text="No projects selected", text_color=MUT, anchor="w", font=ctk.CTkFont(size=12))
         self.sel_lbl.grid(row=3,column=0, sticky="ew", padx=18, pady=(8,12))
         tk.Frame(pm, bg=STROKE, width=1, bd=0, highlightthickness=0).grid(row=0,column=1, sticky="ns")
@@ -950,6 +1061,8 @@ class App(ctk.CTk):
         self.big_hint=ctk.CTkLabel(bigwrap, text="", text_color=MUT, font=ctk.CTkFont(size=11), fg_color="#0a0c10", corner_radius=6)
         self.big_hint.place(relx=0.5, rely=1.0, y=-10, anchor="s")
         self.renders_lbl=ctk.CTkLabel(bigwrap, text="", text_color=MUT, font=ctk.CTkFont(size=11), fg_color="#0a0c10", corner_radius=6)
+        # nothing selected: an empty state sits over the box (inset so the rounded border stays visible); select_project hides it
+        self.big_empty=self._empty_state(bigwrap, "preview"); self.big_empty.grid(row=0,column=0, sticky="nsew", padx=6, pady=6)
         self.film=ctk.CTkScrollableFrame(pv, orientation="horizontal", fg_color="transparent", height=128)
         self.film.grid(row=1,column=0, sticky="ew"); self.film.grid_remove()
         self.film.bind("<Configure>", lambda e: self.after(80, self._film_fit))
@@ -1010,11 +1123,10 @@ class App(ctk.CTk):
         self.shots.grid(row=1,column=0, sticky="nsew", padx=10, pady=(0,10))
         for c in range(4): self.shots.grid_columnconfigure(c, weight=1)
         self._shots_items=[]
-        self.shots_empty=ctk.CTkLabel(self.shots, justify="left", anchor="w", text_color=MUT, font=ctk.CTkFont(size=12), wraplength=560,
-            text="Screenshots and screen recordings only come over the USB cable.\n\n"
-                 "Plug the scanner in, tap File Transfer on it, then click USB above. "
-                 "WiFi only ever sends the project you share from the scanner, never its screenshots.")
-        self.shots_empty.grid(row=0,column=0, padx=20, pady=20, sticky="w")
+        # no scanner yet: the empty state fills the visible area (the scrollable frame only grows with content)
+        self.shots_empty=self._empty_state(self.shots, "captures")
+        self.shots_empty.grid(row=0,column=0,columnspan=4, sticky="nsew")
+        self.shots._parent_canvas.bind("<Configure>", lambda e: self._fit_empty("shots_empty", self.shots), add="+")
         # Live tab: two live sources. MIRACO streams pose + IMU over WiFi (TCP 9999, 120 Hz);
         # a tethered RANGE streams its cameras over USB (range.py).
         lv=self.mode_frames["Live"]
@@ -1038,6 +1150,12 @@ class App(ctk.CTk):
         self.live_btn.pack(side="right")
         self.live_rate=ctk.CTkLabel(top, text="", text_color=MUT, font=ctk.CTkFont(size=11)); self.live_rate.pack(side="right", padx=12)
         self.live_cv=tk.Canvas(mf, bg="#0a0c10", highlightthickness=0); self.live_cv.grid(row=1,column=0, sticky="nsew", padx=(10,4), pady=(0,10))
+        # backsplash + "Find the scanner" on the empty canvas; cleared when a stream starts (see _live_empty)
+        self.live_find_btn=ctk.CTkButton(self.live_cv, text="Find the scanner", width=150, height=34, corner_radius=8, fg_color="transparent",
+                                         border_width=1, border_color=AC, hover_color=CARD2, text_color=AC, font=ctk.CTkFont(size=13, weight="bold"),
+                                         command=self.live_find)
+        self._tip(self.live_find_btn, "Scan your local network for the scanner (it answers on port 9999 whenever its WiFi is on).")
+        self.live_cv.bind("<Configure>", lambda e: self._live_empty())
         side=ctk.CTkFrame(mf, fg_color=CARD2, corner_radius=10, width=200); side.grid(row=1,column=1, sticky="ns", padx=(4,10), pady=(0,10)); side.grid_propagate(False)
         self.live_txt=ctk.CTkLabel(side, text="not connected\n\nHit Find, then Connect.", text_color=MUT, justify="left", anchor="nw", font=ctk.CTkFont(family="monospace", size=11))
         self.live_txt.pack(fill="both", expand=True, padx=12, pady=12)
@@ -1090,6 +1208,35 @@ class App(ctk.CTk):
         if sub: ctk.CTkLabel(row, text=sub, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(anchor="w", padx=(30,0))
         if tip: self._tip(w, tip)
         return w
+    # ---- empty states ----
+    def _empty_state(self, parent, kind):
+        """The empty-state panel for one area (captures / projects / preview), with its buttons wired to the
+        real handlers. Grid it with sticky='nsew'; it centres its content and re-centres on resize."""
+        btns={"captures": [("Connect over USB", self.on_mount), ("Share over WiFi", self.on_wifi)],
+              "projects": [("Connect over USB", self.on_mount), ("Share over WiFi", self.on_wifi)],
+              "preview":  []}[kind]
+        es=EmptyState(parent, kind, btns, scale=self._ui_scale)
+        tips={"captures": "Plug in the USB-C cable and tap File Transfer on the scanner first.",
+              "projects": "USB lists every project on the scanner (it must be in File Transfer mode)."}
+        if es.buttons and kind in tips: self._tip(es.buttons[0], tips[kind])
+        if len(es.buttons)>1: self._tip(es.buttons[1], "No cable: the scanner's Share to PC > Wi-Fi sends one project straight here.")
+        return es
+    def _fit_empty(self, attr, sf):
+        """Keep the empty-state frame stored as self.<attr> as tall as the scrollable frame's visible area
+        (a scrollable frame only grows with its content, so the panel would otherwise sit in a strip)."""
+        w=getattr(self, attr, None)
+        try:
+            if w is None or not w.winfo_exists() or not w.winfo_manager(): return
+            h=sf._parent_canvas.winfo_height()
+            if h>1 and abs(h-w.winfo_height())>2: w.configure(height=h)
+        except Exception: pass
+    def _live_empty(self):
+        """Backsplash on the Live canvas until a stream arrives (the trail drawing takes over from there)."""
+        try:
+            if not self._live_on and self._live_last is None: draw_empty_state(self.live_cv, "live", [self.live_find_btn], self._ui_scale)
+            else: self.live_cv.delete("empty")
+        except Exception as e: log_error("live-empty", e)
+
     def _hr(self, parent, pady=(12,6)):
         tk.Frame(parent, bg=STROKE, height=1, bd=0, highlightthickness=0).pack(fill="x", padx=6, pady=pady)
     def _title(self, parent, text, size=13, pady=(0,4)):
@@ -1398,7 +1545,7 @@ class App(ctk.CTk):
         box=ctk.CTkTextbox(t, fg_color=CARD, text_color=TX, corner_radius=12, wrap="word", height=150)
         box.pack(fill="both", expand=True, padx=24, pady=(4,20)); box.insert("1.0", CHANGELOG); box.configure(state="disabled")
     def dlg_settings(self):
-        t=self._top("Settings", 560, 520)
+        t=self._top("Settings", 560, 610)
         if t is None: return
         ctk.CTkLabel(t, text="Default save folder", text_color=TX, anchor="w").pack(fill="x", padx=20, pady=(20,4))
         dv=ctk.StringVar(value=self.dest.get()); row=ctk.CTkFrame(t, fg_color="transparent"); row.pack(fill="x", padx=20)
@@ -1418,6 +1565,18 @@ class App(ctk.CTk):
         wv=ctk.StringVar(value=str(self.cfg.get("wifi_code","")))
         ctk.CTkEntry(wr, textvariable=wv, width=64, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=10).pack(side="left", padx=8)
         ctk.CTkLabel(wr, text="4 digits you'll always use, or leave blank for a fresh random one each time", text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left")
+        gr=ctk.CTkFrame(t, fg_color="transparent"); gr.pack(fill="x", padx=20, pady=(14,0))
+        ctk.CTkLabel(gr, text="3D view", text_color=TX).pack(side="left")
+        glv=ctk.StringVar(value={"software":"Software view"}.get(self.cfg.get("gl_view","auto"), "Graphics card when available"))
+        ctk.CTkOptionMenu(gr, variable=glv, values=["Graphics card when available","Software view"], width=230, fg_color="#0d0f14", button_color=CARD2,
+                          button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=10).pack(side="left", padx=8)
+        ctk.CTkLabel(gr, text="any OpenGL graphics works; the software view is the fallback", text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left")
+        pr=ctk.CTkFrame(t, fg_color="transparent"); pr.pack(fill="x", padx=20, pady=(10,0))
+        ctk.CTkLabel(pr, text="Build 3D models on", text_color=TX).pack(side="left")
+        fdv=ctk.StringVar(value={"cpu":"CPU only"}.get(self.cfg.get("fuse_device","auto"), "NVIDIA GPU when available"))
+        ctk.CTkOptionMenu(pr, variable=fdv, values=["NVIDIA GPU when available","CPU only"], width=230, fg_color="#0d0f14", button_color=CARD2,
+                          button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=10).pack(side="left", padx=8)
+        ctk.CTkLabel(pr, text="GPU: seconds per scan (needs ~2 GB VRAM) · CPU: minutes", text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left")
         # UI scale (for HiDPI / tiny-window fix)
         sr=ctk.CTkFrame(t, fg_color="transparent"); sr.pack(fill="x", padx=20, pady=(18,0))
         cur=getattr(self,"_ui_scale",1.0)
@@ -1433,6 +1592,8 @@ class App(ctk.CTk):
             except Exception: pass
             code="".join(ch for ch in wv.get() if ch.isdigit())[:4]
             self.cfg["wifi_code"]=code.zfill(4) if code else ""
+            self.cfg["gl_view"]="software" if glv.get().startswith("Software") else "auto"
+            self.cfg["fuse_device"]="cpu" if fdv.get().startswith("CPU") else "auto"
             self.cfg["ui_scale"]=round(float(sv.get()),2); self._persist(); t.destroy()
             if abs(float(sv.get())-cur)>0.02:
                 self._alert("UI scale changed", "The new UI scale takes effect next time you open PointYoink.")
@@ -1478,6 +1639,7 @@ class App(ctk.CTk):
                         fuse_voxel=round(float(self.fuse_voxel.get() or 0.4),2),
                         scanner_ip=self.live_ip.get().strip(),
                         cleanup=self.cleanup.get(), side=self.cfg.get("side","project"),
+                        gl_view=self.cfg.get("gl_view","auto"), fuse_device=self.cfg.get("fuse_device","auto"),
                         records=self.records); save_cfg(self.cfg)
 
     # per-project records (rename + imported memory), keyed by ORIGINAL id
@@ -1597,8 +1759,11 @@ class App(ctk.CTk):
         for w in self.llist.winfo_children(): w.destroy()
         old=self.pull_sel; self.pull_sel={}; self.rows={}
         if not projs:
-            ctk.CTkLabel(self.llist, text="No projects yet.\n\nPlug in the scanner, tap File Transfer\nand click USB, or share one over WiFi.",
-                         text_color=MUT, font=ctk.CTkFont(size=12), justify="left").grid(row=0,column=0, sticky="w", padx=12, pady=16)
+            self.list_empty=self._empty_state(self.llist, "projects"); self.list_empty.grid(row=0,column=0, sticky="nsew")
+            self._fit_empty("list_empty", self.llist)
+            # nothing to preview either: cover the preview box (and park the 3D view so it cannot draw over the panel)
+            self._mv_key=None; self.mv.grid_remove(); self.big.grid(); self.big_empty.grid(); self.big_empty.lift()
+        else: self.list_empty=None
         shown=0
         for p in projs:
             name=p["name"]; var=old.get(name)
@@ -1655,6 +1820,7 @@ class App(ctk.CTk):
             card.configure(fg_color=(SELB if n==name else ROW))
         p=next((x for x in self.projects if x["name"]==name), None)
         if not p: return
+        self.big_empty.grid_remove()
         self._film_sel=None; self._film_cells={}
         if p.get("thumb"): self._set_big_image(p["thumb"])
         else: self._big_src=None; self.big.configure(image=None, text="No preview for this project yet")
@@ -1783,6 +1949,7 @@ class App(ctk.CTk):
         if self._mv_key!=key:                       # a different scan: back to the flat image until its 3D view is ready
             self._mv_key=None; self.mv.grid_remove(); self.big.grid()
         self._mv_want=(key, mesh if not mesh.startswith(PROJECTS) else os.path.join(THUMBS, "view", key+"_fuse_mesh.ply"))
+        self._mv_start()                            # a local model: start the live view now, don't wait for the still image
         st=self._mesh_stats.get(key)
         if st: self._show_stats(st)
         try: fresh=os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh)
@@ -1834,7 +2001,7 @@ class App(ctk.CTk):
         self._mv_start()
     def _make_mv(self, software=False):
         w=None
-        if not software and os.environ.get("POINTYOINK_NO_GL")!="1":
+        if not software and os.environ.get("POINTYOINK_NO_GL")!="1" and self.cfg.get("gl_view","auto")!="software":
             try:
                 import glview; w=glview.GLView(self._mv_wrap)
             except Exception as e: log_line("GL view unavailable, using the software view: %s" % e); w=None
@@ -2135,7 +2302,7 @@ class App(ctk.CTk):
             self.q.put(("fuse_status","Scan %d/%d: fusing…"%(ni+1,len(nodes))))
             try:
                 proc=subprocess.Popen([_sys.executable, os.path.join(HERE,"fuse.py"), "--frames", lcache, "--calib", calib,
-                                       "--out", out, "--voxel", str(voxel), "--gpu"],
+                                       "--out", out, "--voxel", str(voxel)] + ([] if self.cfg.get("fuse_device","auto")=="cpu" else ["--gpu"]),
                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
                                       env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
                 ok=False; devname="GPU"
@@ -2182,6 +2349,7 @@ class App(ctk.CTk):
         if not ip: self.set_banner("Enter the scanner's IP, or hit Find.", WARN); return
         self.cfg["scanner_ip"]=ip; self._live_on=True; self._live_n=0; self._live_t=time.time(); self._live_trail=[]
         self.live_btn.configure(text="■ Stop", fg_color="#3a2530")
+        self._live_empty()   # clears the backsplash; the trail drawing takes over
         threading.Thread(target=self._live_worker, args=(ip,), daemon=True).start()
         self._live_draw()
     def _live_worker(self, ip):
@@ -2994,7 +3162,7 @@ class App(ctk.CTk):
                         self.set_status(""); self.set_banner("No scanner answering on port 9999 on this network (is its WiFi on?).", WARN)
                 elif kind=="live_err":
                     self.live_btn.configure(text="▶ Connect", fg_color=AC); self.live_rate.configure(text="")
-                    self.live_txt.configure(text=rest[0], text_color=WARN); self.set_banner(rest[0], WARN)
+                    self.live_txt.configure(text=rest[0], text_color=WARN); self.set_banner(rest[0], WARN); self._live_empty()
                 elif kind=="range_ok":
                     dev,xu,intr,st,col,fw=rest[0]
                     self._range=xu; self._range_intr=intr; self._range_stream=st; self._range_color=col; self._range_on=True; self._range_busy=False

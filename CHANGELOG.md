@@ -3,7 +3,21 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
-## 0.9.5 (local, unreleased)
+## 0.9.6 (local, unreleased)
+- **GPU 3D view**: the preview draws the full model on the graphics card (smooth,
+  full detail, drag to rotate); the software view stays as the fallback and can
+  be forced in Settings. Wireframe draws a lighter copy so edges are visible.
+- Empty states with an illustration and a button instead of blank panels
+  (Captures, empty project list, empty preview, Live view).
+- Plain words everywhere: "3D model" and "raw scan data" instead of mesh and
+  frames. The preview finds models built on this PC and refreshes when
+  Process on PC finishes; the list re-scans after any import.
+- Settings: 3D view (graphics card / software), build models on GPU or CPU.
+- WiFi: the speed graph works on raw-data transfers; the picker no longer
+  freezes when a transfer ends; New code releases the port. Captures explains
+  that screenshots are USB only. Tooltips no longer flash.
+
+## 0.9.5 (local)
 - New window layout, built to the reference concept: mode tabs in the header
   (Import, Captures, Process, Live view), a device bar with the connection
   state and the WiFi / USB / Refresh buttons, a searchable project list with

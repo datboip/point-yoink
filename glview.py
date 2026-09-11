@@ -53,16 +53,13 @@ class GLView(OpenGLFrame):
         def work():
             try:
                 v, f = shade.load_oriented(path, MAX_FACES)
+                if gen != self._gen: return                       # a newer load superseded this one: stop early
                 import trimesh
                 nrm = np.asarray(trimesh.Trimesh(v, f, process=False).vertex_normals, dtype=np.float32)
-                # wireframe on the full mesh is a solid blob: draw it from a decimated copy instead
-                try:
-                    import fast_simplification
-                    wv, wf = fast_simplification.simplify(v, f, target_count=min(len(f), 80000))
-                    wire = (np.ascontiguousarray(wv, dtype=np.float32), np.ascontiguousarray(wf, dtype=np.uint32))
-                except Exception:
-                    wire = (np.ascontiguousarray(v, dtype=np.float32), np.ascontiguousarray(f[::max(1, len(f) // 80000)], dtype=np.uint32))
-                res = (np.ascontiguousarray(v, dtype=np.float32), nrm, np.ascontiguousarray(f, dtype=np.uint32), wire)
+                if gen != self._gen: return
+                # wireframe on the full mesh is a solid blob: it is drawn from a decimated copy, made lazily
+                # (see _wire_data) so the solid view shows sooner
+                res = (np.ascontiguousarray(v, dtype=np.float32), nrm, np.ascontiguousarray(f, dtype=np.uint32), None)
             except Exception as e:
                 res = e
             self.after(0, lambda: self._loaded(gen, res, on_ready))
@@ -75,22 +72,37 @@ class GLView(OpenGLFrame):
         self.reset(draw=False)
         if self.ready: self._upload(v, n, f, wire)
         else: self._pending = (v, n, f, wire)
-        (on_ready and on_ready(True))
+        (on_ready and on_ready(not self.failed))
     def _upload(self, v, n, f, wire):
         try:
             self.tkMakeCurrent()
-            if self._vbo: GL.glDeleteBuffers(5, self._vbo)
+            if self._vbo is not None: GL.glDeleteBuffers(5, self._vbo)   # (a numpy array: never test it for truth)
             self._vbo = GL.glGenBuffers(5)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[0]); GL.glBufferData(GL.GL_ARRAY_BUFFER, v.nbytes, v, GL.GL_STATIC_DRAW)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[1]); GL.glBufferData(GL.GL_ARRAY_BUFFER, n.nbytes, n, GL.GL_STATIC_DRAW)
             GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[2]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, f.nbytes, f, GL.GL_STATIC_DRAW)
-            wv, wf = wire
-            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[3]); GL.glBufferData(GL.GL_ARRAY_BUFFER, wv.nbytes, wv, GL.GL_STATIC_DRAW)
-            GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[4]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, wf.nbytes, wf, GL.GL_STATIC_DRAW)
-            self._n = int(f.size); self._nw = int(wf.size); self._zmax = float(v[:, 2].max())
+            self._n = int(f.size); self._nw = 0; self._zmax = float(v[:, 2].max()); self._src = (v, f); self._wire_gen = None
+            if wire: self._upload_wire(*wire)
             self._display()
         except Exception as e:
             self.failed = True; self._err = e
+    def _upload_wire(self, wv, wf):
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[3]); GL.glBufferData(GL.GL_ARRAY_BUFFER, wv.nbytes, wv, GL.GL_STATIC_DRAW)
+        GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[4]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, wf.nbytes, wf, GL.GL_STATIC_DRAW)
+        self._nw = int(wf.size)
+    def _wire_data(self):
+        """Decimated copy for wireframe, made in a thread the first time it is needed."""
+        if self._nw or getattr(self, "_wire_gen", None) == self._gen or not getattr(self, "_src", None): return
+        self._wire_gen = gen = self._gen; v, f = self._src
+        def work():
+            try:
+                import fast_simplification
+                wv, wf = fast_simplification.simplify(v, f, target_count=min(len(f), 80000))
+                res = (np.ascontiguousarray(wv, dtype=np.float32), np.ascontiguousarray(wf, dtype=np.uint32))
+            except Exception:
+                res = (v, np.ascontiguousarray(f[::max(1, len(f) // 80000)], dtype=np.uint32))
+            if gen == self._gen: self.after(0, lambda: (self.tkMakeCurrent(), self._upload_wire(*res), self.draw()))
+        threading.Thread(target=work, daemon=True).start()
     # ---- drawing ----
     def redraw(self):
         w, h = max(1, self.winfo_width()), max(1, self.winfo_height())
@@ -108,7 +120,7 @@ class GLView(OpenGLFrame):
             GL.glVertex3f(t, -1.5, 0); GL.glVertex3f(t, 1.5, 0); GL.glVertex3f(-1.5, t, 0); GL.glVertex3f(1.5, t, 0)
         GL.glEnd()
         if self._n:
-            if self.wire:
+            if self.wire and self._nw:
                 GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_LINE); GL.glColor3f(110 / 255.0, 170 / 255.0, 1.0); GL.glLineWidth(1.0)
                 GL.glEnableClientState(GL.GL_VERTEX_ARRAY)
                 GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[3]); GL.glVertexPointer(3, GL.GL_FLOAT, 0, None)
@@ -136,7 +148,10 @@ class GLView(OpenGLFrame):
         if self.ready and not self.failed:
             try: self._display()
             except Exception as e: self.failed = True; self._err = e
-    def set_wire(self, on): self.wire = bool(on); self.draw()
+    def set_wire(self, on):
+        self.wire = bool(on)
+        if self.wire: self._wire_data()
+        self.draw()
     def reset(self, draw=True):
         self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 1.0, [0.0, 0.0]
         if draw: self.draw()
