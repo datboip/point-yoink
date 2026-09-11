@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.3"
+APP = "PointYoink"; VERSION = "0.9.4"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -362,6 +362,77 @@ def human(n):
 
 def cimg(path, w):
     im=Image.open(path); r=w/im.width; return ctk.CTkImage(light_image=im, dark_image=im, size=(w, int(im.height*r)))
+
+# ---- side-panel "inspector" building blocks ----
+DIM="#5a6474"; DIM2="#414b5a"; CHIP="#232a36"; CHIP_TX="#c8d0db"
+def hairline(master, padx=16):
+    """1px separator between inspector rows (instead of bordered buttons)."""
+    tk.Frame(master, bg=STROKE, height=1, bd=0, highlightthickness=0).pack(fill="x", padx=padx)   # a 1px CTkFrame draws nothing
+def group_label(master, text, top=14):
+    """Small-caps group header inside a side-panel section."""
+    ctk.CTkLabel(master, text=text.upper(), text_color=MUT, font=ctk.CTkFont(size=10, weight="bold"), anchor="w").pack(fill="x", padx=16, pady=(top,2))
+
+class ActionRow(ctk.CTkFrame):
+    """Full-width inspector row: a leading icon (or a checkbox), a bold title and a one-line muted subtitle.
+    Acts like a button: hover tint, click runs the command, configure(state=...) dims and disables it."""
+    def __init__(self, master, title, sub, icon="", command=None, icon_color=None, check=None, **kw):
+        super().__init__(master, fg_color="transparent", corner_radius=10, **kw)
+        self._cmd=command; self._state="normal"; self._icol=icon_color or TX; self._var=check
+        self.grid_columnconfigure(1, weight=1)
+        if check is not None:
+            self.lead=ctk.CTkCheckBox(self, text="", width=24, height=24, checkbox_width=20, checkbox_height=20, corner_radius=6,
+                                      variable=check, onvalue=True, offvalue=False, fg_color=AC, hover_color=AC_H, border_color=DIM,
+                                      command=self._checked)
+            self.lead.grid(row=0,column=0, rowspan=2, padx=(12,4), pady=8)
+        else:
+            self.lead=ctk.CTkLabel(self, text=icon, width=28, text_color=self._icol, font=ctk.CTkFont(size=16))
+            self.lead.grid(row=0,column=0, rowspan=2, padx=(10,4), pady=8)
+        self.ti=ctk.CTkLabel(self, text=title, text_color=TX, anchor="w", height=18, font=ctk.CTkFont(size=12, weight="bold"))
+        self.ti.grid(row=0,column=1, sticky="ew", padx=(0,12), pady=(8,0))
+        self.su=ctk.CTkLabel(self, text=sub, text_color=MUT, anchor="w", height=15, font=ctk.CTkFont(size=10))
+        self.su.grid(row=1,column=1, sticky="ew", padx=(0,12), pady=(1,8))
+        for w in (self, self.ti, self.su) + (() if check is not None else (self.lead,)):
+            w.bind("<Button-1>", self._click)
+        self.bind("<Enter>", self._enter); self.bind("<Leave>", self._leave)
+    def _inside(self, e):
+        try: w=self.winfo_containing(e.x_root, e.y_root)
+        except Exception: return False
+        return w is not None and (str(w)==str(self) or str(w).startswith(str(self)+"."))
+    def bind(self, sequence=None, command=None, add=True):
+        # hover bindings (ours and tooltips) cover the whole row: children included, and a move between
+        # the row's own children does not count as leaving it
+        if sequence=="<Leave>":
+            cmd=command
+            def guarded(e):
+                if not self._inside(e): cmd(e)
+            command=guarded
+        super().bind(sequence, command, add)
+        if sequence in ("<Enter>","<Leave>") and getattr(self, "su", None) is not None:
+            for w in (self.lead, self.ti, self.su):
+                try: w.bind(sequence, command, add)
+                except Exception: pass
+    def _enter(self, _=None):
+        if self._state=="normal": super().configure(fg_color=CARD2)
+    def _leave(self, _=None): super().configure(fg_color="transparent")
+    def _click(self, _=None):
+        if self._state!="normal": return
+        if self._var is not None: self._var.set(not self._var.get())
+        if self._cmd: self._cmd()
+    def _checked(self):
+        if self._cmd: self._cmd()
+    def configure(self, require_redraw=False, **kw):
+        if "state" in kw:
+            self._state=kw.pop("state"); dim=(self._state=="disabled")
+            self.ti.configure(text_color=(DIM if dim else TX)); self.su.configure(text_color=(DIM2 if dim else MUT))
+            if self._var is None: self.lead.configure(text_color=(DIM if dim else self._icol))
+            else: self.lead.configure(state=self._state)
+            if dim: super().configure(fg_color="transparent")
+        if "command" in kw: self._cmd=kw.pop("command")
+        if "text" in kw: self.ti.configure(text=kw.pop("text"))
+        if kw: super().configure(require_redraw=require_redraw, **kw)
+    def cget(self, attribute_name):
+        if attribute_name=="state": return self._state
+        return super().cget(attribute_name)
 
 WORDMARK="Ubuntu"   # clean lowercase 'i' (the default bold font renders it like 'I')
 def _has_imagetk():
@@ -723,46 +794,65 @@ class App(ctk.CTk):
         self.sections={}
         for key in ("project","edit","import","folder"):
             f=ctk.CTkFrame(self.side, fg_color="transparent"); f.grid(row=1,column=0, sticky="nsew"); f.grid_remove(); self.sections[key]=f
+        # rail: one row per section. Active = filled accent circle + a 3px accent bar on the rail's left edge; inactive = muted icon.
         rail=ctk.CTkFrame(pm, fg_color=CARD, corner_radius=14, width=46); rail.grid(row=0,column=3, sticky="ns", padx=(8,0)); rail.grid_propagate(False)
-        self.rail_btns={}
+        self.rail_btns={}; self.rail_bars={}
         for key,icon,tip in (("project","🧰","Selected project: details and tools"),("edit","✂","Edit: remove the base, clean up"),
                              ("import","⬇","Import options: what to copy, formats, save folder"),("folder","📁","Browse the save folder")):
-            b=ctk.CTkButton(rail, text=icon, width=34, height=34, corner_radius=17, fg_color="transparent", hover_color=STROKE, text_color=TX,
-                            font=ctk.CTkFont(size=15), command=lambda k=key: self.set_side(k)); b.pack(pady=(8 if key=="project" else 4,0), padx=6)
-            self._tip(b, tip); self.rail_btns[key]=b
-        # project section: info + tools (projbar/detail/tools names kept: select_project drives them)
+            row=ctk.CTkFrame(rail, fg_color="transparent", width=46, height=38); row.pack(fill="x", pady=(10 if key=="project" else 2,0)); row.pack_propagate(False)
+            bar=ctk.CTkFrame(row, fg_color=CARD, width=3, height=22, corner_radius=0); bar.place(x=0, y=8)
+            b=ctk.CTkButton(row, text=icon, width=34, height=34, corner_radius=17, fg_color="transparent", hover_color=STROKE, text_color=MUT,
+                            font=ctk.CTkFont(size=15), command=lambda k=key: self.set_side(k))
+            b.grid_columnconfigure((0,4), minsize=8)   # CTkButton pads the glyph by corner_radius on each side; trim it so a true 34px circle fits
+            b.pack(pady=2)
+            self._tip(b, tip); self.rail_btns[key]=b; self.rail_bars[key]=bar
+        # project section: an inspector card (thumb, name, meta chips, date) above a list of action rows.
+        # projbar/detail/tools names kept: select_project drives them; detail is the plain-text fallback and stays un-gridded.
         ps=self.sections["project"]; ps.grid_columnconfigure(0, weight=1)
         self.proj_empty=ctk.CTkLabel(ps, text="Click a project in the list.", text_color=MUT, font=ctk.CTkFont(size=12), anchor="w", justify="left")
         self.proj_empty.grid(row=0,column=0, sticky="ew", padx=16, pady=(6,0))
         self.projbar=ctk.CTkFrame(ps, fg_color="transparent"); self.projbar.grid(row=1,column=0, sticky="nsew"); self.projbar.grid_remove()
         self.projbar.grid_columnconfigure(0, weight=1)
+        hdr=ctk.CTkFrame(self.projbar, fg_color=CARD2, corner_radius=12); hdr.grid(row=0,column=0, sticky="ew", padx=12, pady=(2,0))
+        hdr.grid_columnconfigure(0, weight=1)
+        thumb_box=ctk.CTkFrame(hdr, fg_color="#0a0c10", corner_radius=10); thumb_box.grid(row=0,column=0, sticky="ew", padx=6, pady=(6,0))
+        self.hdr_img=ctk.CTkLabel(thumb_box, text="no preview", text_color=DIM, font=ctk.CTkFont(size=11), fg_color="transparent", corner_radius=0, height=100)
+        self.hdr_img.pack(pady=4)
+        self.hdr_name=ctk.CTkLabel(hdr, text="", text_color=TX, anchor="w", justify="left", font=ctk.CTkFont(size=15, weight="bold"), wraplength=238)
+        self.hdr_name.grid(row=1,column=0, sticky="ew", padx=12, pady=(10,0))
+        self.hdr_id=ctk.CTkLabel(hdr, text="", text_color=MUT, anchor="w", font=ctk.CTkFont(size=10))
+        self.hdr_id.grid(row=2,column=0, sticky="ew", padx=12); self.hdr_id.grid_remove()
+        self.chips=ctk.CTkFrame(hdr, fg_color="transparent"); self.chips.grid(row=3,column=0, sticky="ew", padx=12, pady=(8,0))
+        meta=ctk.CTkFrame(hdr, fg_color="transparent"); meta.grid(row=4,column=0, sticky="ew", padx=(12,6), pady=(2,6))
+        self.hdr_date=ctk.CTkLabel(meta, text="", text_color=MUT, anchor="w", font=ctk.CTkFont(size=10)); self.hdr_date.pack(side="left", fill="x", expand=True)
+        rn=ctk.CTkButton(meta, text="✎ rename", width=70, height=22, corner_radius=11, fg_color="transparent", hover_color=STROKE, text_color=MUT,
+                         font=ctk.CTkFont(size=10), command=lambda: self.selected and self.rename_project(self.selected)); rn.pack(side="right")
         self.detail=ctk.CTkLabel(self.projbar, text="", text_color=TX, anchor="w", justify="left", font=ctk.CTkFont(size=12), wraplength=260)
-        self.detail.grid(row=0,column=0, sticky="ew", padx=16, pady=(4,4))
-        rn=ctk.CTkButton(self.projbar, text="✎ rename", width=70, height=22, corner_radius=11, fg_color="transparent", hover_color=STROKE, text_color=MUT,
-                         font=ctk.CTkFont(size=10), command=lambda: self.selected and self.rename_project(self.selected)); rn.grid(row=0,column=1, sticky="ne", padx=(0,12), pady=(6,0))
-        self.tools=ctk.CTkFrame(self.projbar, fg_color="transparent"); self.tools.grid(row=1,column=0, columnspan=2, sticky="ew", padx=12, pady=(6,0)); self.tools.grid_remove()
-        self.view_btn=ctk.CTkButton(self.tools, text="⟳  View in 3D", height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX,
-                                    border_width=1, border_color=STROKE, font=ctk.CTkFont(size=12,weight="bold"), anchor="w", command=self.on_view_3d)
-        self.view_btn.pack(fill="x", pady=3)
-        self.proc_btn=ctk.CTkButton(self.tools, text="⚙  Process on PC", height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX,
-                                    border_width=1, border_color=STROKE, font=ctk.CTkFont(size=12,weight="bold"), anchor="w", command=self.on_process_pc)
-        self.proc_btn.pack(fill="x", pady=3)
+        self.tools=ctk.CTkFrame(self.projbar, fg_color="transparent"); self.tools.grid(row=2,column=0, sticky="ew", pady=(6,0)); self.tools.grid_remove()
+        group_label(self.tools, "Actions", top=6)
+        self.view_btn=ActionRow(self.tools, "View in 3D", "interactive viewer, drag to rotate", icon="⟳", icon_color=AC, command=self.on_view_3d)
+        self.view_btn.pack(fill="x", padx=6)
+        hairline(self.tools)
+        self.proc_btn=ActionRow(self.tools, "Process on PC", "rebuild the mesh from the raw frames", icon="⚙", icon_color=AC, command=self.on_process_pc)
+        self.proc_btn.pack(fill="x", padx=6)
         self._tip(self.proc_btn, "Rebuild this scan's mesh on your PC from the raw depth frames (GPU when available). "
                                  "Uses local frames if a full import already has them, otherwise pulls just what it needs. "
                                  "Saves <name>_<scan>_pcfused.ply. Needs Open3D.")
-        ctk.CTkButton(self.tools, text="✂  Edit…", height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX,
-                      border_width=1, border_color=STROKE, font=ctk.CTkFont(size=12,weight="bold"), anchor="w", command=lambda: self.set_side("edit", True)).pack(fill="x", pady=3)
+        hairline(self.tools)
+        ActionRow(self.tools, "Edit", "remove the base, clean up the mesh", icon="✂", icon_color=AC, command=lambda: self.set_side("edit", True)).pack(fill="x", padx=6)
         # edit section
         es=self.sections["edit"]
         ctk.CTkLabel(es, text="Tools that change a mesh on this PC. The original file is always kept.", text_color=MUT,
-                     font=ctk.CTkFont(size=11), wraplength=260, justify="left", anchor="w").pack(fill="x", padx=16, pady=(4,10))
-        self.base_btn=ctk.CTkButton(es, text="✂  Remove base", height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX,
-                                    border_width=1, border_color=STROKE, font=ctk.CTkFont(size=12,weight="bold"), anchor="w", command=self.on_remove_base)
-        self.base_btn.pack(fill="x", padx=12, pady=3)
+                     font=ctk.CTkFont(size=11), wraplength=258, justify="left", anchor="w").pack(fill="x", padx=16, pady=(4,4))
+        group_label(es, "Mesh tools")
+        self.base_btn=ActionRow(es, "Remove base", "slice the table or turntable off with a cut plane", icon="✂", icon_color=AC, command=self.on_remove_base)
+        self.base_btn.pack(fill="x", padx=6)
         self._tip(self.base_btn, "Interactively slice the table/turntable off the scan. Opens a cut-plane "
                                  "tool; saves a cleaned copy as <name>_clean.ply. Original is kept.")
-        ctk.CTkLabel(es, text="Coming here next: the cut-plane tool inside this panel, and mesh clean-up you can preview before saving.",
-                     text_color="#5a6474", font=ctk.CTkFont(size=10), wraplength=260, justify="left", anchor="w").pack(fill="x", padx=16, pady=(14,0))
+        hairline(es)
+        group_label(es, "Coming next")
+        ctk.CTkLabel(es, text="The cut-plane tool inside this panel, and mesh clean-up you can preview before saving.",
+                     text_color=DIM, font=ctk.CTkFont(size=10), wraplength=258, justify="left", anchor="w").pack(fill="x", padx=16, pady=(2,0))
         self.files_box=ctk.CTkTextbox(fl, fg_color="#0a0c10", text_color=TX, corner_radius=10, font=ctk.CTkFont(family="monospace", size=12))
         self.files_box.pack(fill="both", expand=True, padx=10, pady=10)
 
@@ -852,27 +942,29 @@ class App(ctk.CTk):
         self.exp_glb=ctk.BooleanVar(value=self.cfg.get("exp_glb",False))
         self.dest=ctk.StringVar(value=self.cfg.get("dest",DEFAULT_DEST))
         op=self.sections["import"]
-        mo=ctk.CTkCheckBox(op, text="Models only (skip raw frames)", variable=self.models_only, onvalue=True, offvalue=False,
-                           command=self.update_summary, fg_color=AC, hover_color=AC_H, text_color=TX); mo.pack(anchor="w", padx=16, pady=(4,6))
+        group_label(op, "What to copy", top=4)
+        mo=ActionRow(op, "Models only", "skip the raw depth frames: faster, much smaller", check=self.models_only, command=self.update_summary); mo.pack(fill="x", padx=6)
         self._tip(mo, "Copies only the finished meshes and point clouds (.ply) and skips the "
                       "thousands of raw depth frames. Much faster and smaller. Turn off only if you "
                       "want the raw frames to re-process a scan later.")
-        cu=ctk.CTkCheckBox(op, text="Clean up mesh", variable=self.cleanup, fg_color=AC, hover_color=AC_H, text_color=TX); cu.pack(anchor="w", padx=16, pady=6)
+        hairline(op)
+        cu=ActionRow(op, "Clean up mesh", "remove floaters, fill holes, smooth", check=self.cleanup); cu.pack(fill="x", padx=6)
         self._tip(cu, "Tidy the mesh on your PC during import: keep the main object (remove floating bits), "
                       "fill small holes, and lightly smooth. Off = raw mesh, untouched.")
-        ao=ctk.CTkCheckBox(op, text="Open folder when done", variable=self.auto_open, fg_color=AC, hover_color=AC_H, text_color=TX); ao.pack(anchor="w", padx=16, pady=6)
-        ctk.CTkLabel(op, text="SAVE MESHES AS", text_color=MUT, font=ctk.CTkFont(size=10,weight="bold"), anchor="w").pack(fill="x", padx=16, pady=(14,4))
-        ex=ctk.CTkFrame(op, fg_color="transparent"); ex.pack(fill="x", padx=12)
+        hairline(op)
+        ActionRow(op, "Open folder when done", "show the imported files in your file manager", check=self.auto_open).pack(fill="x", padx=6)
+        group_label(op, "Save meshes as")
+        ex=ctk.CTkFrame(op, fg_color="transparent"); ex.pack(fill="x", padx=13, pady=(4,0))
         ctk.CTkLabel(ex, text="PLY", fg_color=AC, text_color="#04121f", corner_radius=13, width=54, height=26,
                      font=ctk.CTkFont(size=12,weight="bold")).pack(side="left", padx=3)
         self._fmt_chip(ex,"STL",self.exp_stl).pack(side="left", padx=3)
         self._fmt_chip(ex,"OBJ",self.exp_obj).pack(side="left", padx=3)
         self._fmt_chip(ex,"GLB",self.exp_glb).pack(side="left", padx=3)
-        ctk.CTkLabel(op, text="PLY is always kept · STL for printing · OBJ / GLB for editing", text_color="#5a6474",
-                     font=ctk.CTkFont(size=10), wraplength=260, justify="left", anchor="w").pack(fill="x", padx=16, pady=(4,0))
-        ctk.CTkLabel(op, text="SAVE TO", text_color=MUT, font=ctk.CTkFont(size=10,weight="bold"), anchor="w").pack(fill="x", padx=16, pady=(14,4))
-        ctk.CTkEntry(op, textvariable=self.dest, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=10, height=32).pack(fill="x", padx=14)
-        ctk.CTkButton(op, text="Browse…", width=90, height=28, corner_radius=14, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self.browse).pack(anchor="e", padx=14, pady=(6,0))
+        ctk.CTkLabel(op, text="PLY is always kept · STL for printing · OBJ / GLB for editing", text_color=DIM,
+                     font=ctk.CTkFont(size=10), wraplength=258, justify="left", anchor="w").pack(fill="x", padx=16, pady=(6,0))
+        group_label(op, "Save to")
+        ctk.CTkEntry(op, textvariable=self.dest, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=10, height=32).pack(fill="x", padx=16, pady=(4,0))
+        ctk.CTkButton(op, text="Browse…", width=90, height=28, corner_radius=14, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self.browse).pack(anchor="e", padx=16, pady=(6,0))
         # folder section: a tree of the save folder
         fp=self.sections["folder"]; fp.grid_columnconfigure(0, weight=1); fp.grid_rowconfigure(1, weight=1)
         from tkinter import ttk
@@ -901,7 +993,9 @@ class App(ctk.CTk):
         """Open a side-panel section; clicking the open one folds the panel to the rail."""
         new=key if (open_only or key!=self.side_mode) else None
         for k,b in self.rail_btns.items():
-            b.configure(fg_color=(AC if k==new else "transparent"), text_color=("#04121f" if k==new else TX))
+            on=(k==new)
+            b.configure(fg_color=(AC if on else "transparent"), hover_color=(AC_H if on else STROKE), text_color=("#04121f" if on else MUT))
+            self.rail_bars[k].configure(fg_color=(AC if on else CARD))
         for f in self.sections.values(): f.grid_remove()
         if new:
             self.sections[new].grid(); self.side.grid()
@@ -1395,7 +1489,8 @@ class App(ctk.CTk):
         if p.get("clouds") and p.get("clouds")!=p.get("meshes"): counts.append("%d cloud%s" % (p["clouds"], "" if p["clouds"]==1 else "s"))
         where="on this PC" if p.get("local") else ("imported" if self.is_imported(name) else "on the scanner")
         self.detail.configure(text="%s\n%s\n%s · %s" % (self.disp(name), ("edited "+p["date"]) if p.get("date") else "", " · ".join(counts), where))
-        self.proj_empty.grid_remove(); self.projbar.grid(); self.detail.grid(); self.renders_lbl.grid(); self.film.grid()
+        self._fill_header(p, name, counts)
+        self.proj_empty.grid_remove(); self.projbar.grid(); self.renders_lbl.grid(); self.film.grid()
         if p.get("meshes") or p.get("nodes"): self.tools.grid()   # Process on PC works on unfused scans too
         else: self.tools.grid_remove()
         for w in self.film.winfo_children(): w.destroy()
@@ -1408,6 +1503,29 @@ class App(ctk.CTk):
         self.files_box.insert("end","computing model files…\n"); self.files_box.configure(state="disabled")
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
         threading.Thread(target=lambda n=name, l=local: self.q.put(("files",n,project_model_size(n, l))), daemon=True).start()
+    def _fill_header(self, p, name, counts):
+        """Inspector card for the selected project: thumb, name, meta chips, edited date."""
+        try:
+            im=Image.open(p["thumb"]); w=max(60, min(240, int(150*im.width/max(1, im.height))))
+            self.imgs["hdr"]=cimg(p["thumb"], w); self.hdr_img.configure(image=self.imgs["hdr"], text="", height=0)
+        except Exception:
+            self.hdr_img.configure(image=None, text="no preview", height=100)
+        self.hdr_name.configure(text=self.disp(name))
+        if self.records.get(name,{}).get("label"): self.hdr_id.configure(text=name); self.hdr_id.grid()
+        else: self.hdr_id.grid_remove()
+        self.hdr_date.configure(text=("edited "+p["date"]) if p.get("date") else "")
+        chips=[(c, CHIP_TX, CHIP) for c in counts]
+        if p.get("local"): chips.append(("on this PC", AC, "#15304d"))
+        elif self.is_imported(name): chips.append(("updated", WARN, "#3d2f14") if self.changed(name) else ("imported", OK, "#173a2a"))
+        else: chips.append(("on the scanner", MUT, CHIP))
+        for w in self.chips.winfo_children(): w.destroy()
+        f=ctk.CTkFont(size=10); row=None; x=0
+        for text,fg,bg in chips:                       # simple flow layout: wrap to a new line when the card is full
+            w=f.measure(text)+28
+            if row is None or x+w>238:
+                row=ctk.CTkFrame(self.chips, fg_color="transparent"); row.pack(anchor="w", fill="x", pady=(0,4)); x=0
+            ctk.CTkLabel(row, text=text, text_color=fg, fg_color=bg, corner_radius=8, width=1, height=20, font=f).pack(side="left", padx=(0,6), ipadx=6)
+            x+=w+6
     def render_gallery(self, name, items):
         if self.selected!=name: return
         for w in self.film.winfo_children(): w.destroy()

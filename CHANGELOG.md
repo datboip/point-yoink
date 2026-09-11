@@ -3,7 +3,19 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
-## 0.9.3 (local, unreleased)
+## 0.9.4 (local, unreleased)
+- New arrangement: Projects / Captures / Live are modes in the header; WiFi and
+  USB sit next to Settings; all status lives in the bottom bar. In Projects the
+  list is on the left, Preview / Files in the centre, and a side panel on the
+  right chosen from an icon rail: project (thumbnail, chips, actions with short
+  explanations), edit, import options, and a folder browser. Click the lit icon
+  to fold the panel away. Import selected is the only filled button.
+- Empty list explains what to do; status badges are tinted chips; long project
+  ids wrap; rename moved into the project panel.
+- dev/render.py renders the app off-screen (Xvfb) for design work; dev/design
+  holds the layout spec and reference mock.
+
+## 0.9.3 (local)
 - Layout rearranged: a project bar above the tabs shows the selected project
   (name, date, scans, meshes, where it lives) with its tools (View in 3D,
   Remove base, Process on PC) on every tab. The Preview tab is just the image
