@@ -50,7 +50,8 @@ def frame_key(dph):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--frames", required=True); ap.add_argument("--calib", required=True)
+    ap.add_argument("--frames"); ap.add_argument("--calib")
+    ap.add_argument("--set", action="append", default=[], help="frames_dir,calib,transform.json (repeat to fuse several aligned scans into one model; transform = 4x4 in mm, scan -> base)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--voxel", type=float, default=0.3, help="voxel size in mm (detail; smaller = finer, more RAM)")
     ap.add_argument("--width", type=int, default=800); ap.add_argument("--height", type=int, default=600)
@@ -64,16 +65,31 @@ def main():
     if not a.gpu: apply_mem_cap()
 
     import numpy as np, open3d as o3d
-    fx, fy, cx, cy = read_calib(a.calib)
+    # one or more frame sets: (frames dir, calib, 4x4 transform in mm or None)
+    sets = []
+    if a.set:
+        for spec in a.set:
+            parts = spec.split(","); T = None
+            if len(parts) > 2 and parts[2]:
+                T = np.array(json.load(open(parts[2]))["matrix"] if parts[2].endswith(".json") else json.loads(parts[2]), dtype=np.float64).reshape(4, 4)
+            sets.append((parts[0], parts[1], T))
+    elif a.frames and a.calib: sets.append((a.frames, a.calib, None))
+    else: emit("error", msg="give --frames and --calib, or --set"); return 2
+    fx, fy, cx, cy = read_calib(sets[0][1])
     emit("calib", fx=round(fx, 2), fy=round(fy, 2), cx=round(cx, 2), cy=round(cy, 2))
-    dphs = sorted(glob.glob(os.path.join(a.frames, "*.dph")))[::max(1, a.every)]
-    if not dphs: emit("error", msg="no .dph frames in " + a.frames); return 2
-    gp = {}
-    pose_path = os.path.join(a.frames, "global_register_pose.pose") if a.poses == "auto" else a.poses
-    if a.poses != "none" and os.path.exists(pose_path):
-        try: gp = read_global_poses(pose_path)
-        except Exception as e: emit("warn", msg="global poses unreadable: %r" % (e,)); gp = {}
-    emit("frames", count=len(dphs), global_poses=len(gp))
+    jobs = []      # (dph, gp dict, T mm, calib tuple)
+    for frames, calib, T in sets:
+        dphs = sorted(glob.glob(os.path.join(frames, "*.dph")))[::max(1, a.every)]
+        if not dphs: emit("error", msg="no .dph frames in " + frames); return 2
+        gp = {}
+        pose_path = os.path.join(frames, "global_register_pose.pose") if a.poses == "auto" else a.poses
+        if a.poses != "none" and os.path.exists(pose_path):
+            try: gp = read_global_poses(pose_path)
+            except Exception as e: emit("warn", msg="global poses unreadable: %r" % (e,)); gp = {}
+        cal = read_calib(calib)
+        emit("frames", count=len(dphs), global_poses=len(gp), set=os.path.basename(os.path.dirname(frames)))
+        jobs += [(d, gp, T, cal) for d in dphs]
+    dphs = [j[0] for j in jobs]
 
     W, H = a.width, a.height
     # depth in meters = raw * depth_scale(mm) / 1000  ->  Open3D divides by depth_scale
@@ -97,15 +113,20 @@ def main():
             voxel_length=voxel_m, sdf_trunc=voxel_m * 4,
             color_type=o3d.pipelines.integration.TSDFVolumeColorType.NoColor)
 
-    n = 0
-    for i, dph in enumerate(dphs):
+    n = 0; cur_cal = None
+    for i, (dph, gp, T, cal) in enumerate(jobs):
         inf = dph[:-4] + ".inf"
         if not os.path.exists(inf): continue
+        if cal != cur_cal:                        # each scan can carry its own calibration
+            cur_cal = cal; fx, fy, cx, cy = cal
+            if use_t: K = o3d.core.Tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], o3d.core.float64)
+            else: intr = o3d.camera.PinholeCameraIntrinsic(W, H, fx, fy, cx, cy)
         d = np.frombuffer(open(dph, "rb").read(), dtype=np.uint16).reshape(H, W).copy()
         d[d * a.depth_scale > a.max_depth] = 0
         pose = gp.get(frame_key(dph))            # camera->world (scanner frame), translation in mm
         if pose is None: pose = read_pose(inf)
         else: pose = pose.copy()
+        if T is not None: pose = T @ pose         # this scan's frame -> the base scan's frame (mm)
         pose[:3, 3] /= 1000.0                     # -> meters, to match the depth units
         extr = np.linalg.inv(pose @ F)            # world->camera (OpenCV frame)
         if use_t:

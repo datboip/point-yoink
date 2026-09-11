@@ -2310,6 +2310,9 @@ class App(ctk.CTk):
         self.base_btn=ctk.CTkButton(ph, text="✂  Remove base", width=130, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
                                     hover_color=CARD2, text_color=TX, command=self.on_remove_base); self.base_btn.pack(side="right", padx=8)
         self._tip(self.base_btn, "Slice the table or turntable off the current scan with a cut plane. Saves a cleaned copy; the original is kept.")
+        self.align_btn=ctk.CTkButton(ph, text="⧉  Combine scans…", width=150, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
+                                     hover_color=CARD2, text_color=TX, command=lambda: self._align_dialog(self.selected)); self.align_btn.pack(side="right", padx=8)
+        self._tip(self.align_btn, "Scanned each side separately? Line the scans up on matching points (or automatically) and build one model from all of them.")
         self.proc_btn=ctk.CTkButton(ph, text="⚙  Build all models", width=150, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=AC,
                                     hover_color=CARD2, text_color=AC, command=self.on_process_pc); self.proc_btn.pack(side="right", padx=8)
         self._tip(self.proc_btn, "Build the 3D model of every scan that has raw scan data, on this PC.")
@@ -2416,8 +2419,8 @@ class App(ctk.CTk):
                 try: self.imgs["proc_"+node]=cimg(thumb, 110); ctk.CTkLabel(card, image=self.imgs["proc_"+node], text="", fg_color="#0a0c10", corner_radius=8).grid(row=0,column=0, rowspan=3, padx=(14,12), pady=12)
                 except Exception: pass
             top=ctk.CTkFrame(card, fg_color="transparent"); top.grid(row=0,column=1, sticky="ew", pady=(12,0))
-            ctk.CTkLabel(top, text="Scan %02d" % (i+1), font=ctk.CTkFont(size=14, weight="bold"), text_color=TX).pack(side="left")
-            ctk.CTkLabel(top, text=node, text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=10)
+            ctk.CTkLabel(top, text=self._scan_label(name, node), font=ctk.CTkFont(size=14, weight="bold"), text_color=TX).pack(side="left")
+            ctk.CTkLabel(top, text=(node if node!="combined" else "all aligned scans in one model"), text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=10)
             status=("no 3D model yet · %d raw frames" % raw) if not vs else ("%d version%s · %d raw frames" % (len(vs), "" if len(vs)==1 else "s", raw) if raw else "%d version%s · no raw data on this PC" % (len(vs), "" if len(vs)==1 else "s"))
             ctk.CTkLabel(top, text=status, text_color=(WARN if not vs else MUT), font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
             vr=ctk.CTkFrame(card, fg_color="transparent"); vr.grid(row=1,column=1, sticky="ew", pady=(6,0))
@@ -2472,7 +2475,8 @@ class App(ctk.CTk):
         self.set_status("Building 3D model%s…" % ("" if len(nodes)==1 else "s"))
         threading.Thread(target=self._fuse_worker, args=(name, nodes), daemon=True).start()
     def _scan_label(self, name, node):
-        nodes=self._proc_nodes(name)
+        if node=="combined": return "Combined"
+        nodes=[n for n in self._proc_nodes(name) if n!="combined"]
         return "Scan %02d" % (nodes.index(node)+1) if node in nodes else node
     def _mesh_info(self, path, cb):
         """Size, counts, pieces and open edges of a model, measured in a memory-capped child; cb(dict or None) on the UI thread."""
@@ -2634,6 +2638,192 @@ class App(ctk.CTk):
         gob=ctk.CTkButton(btns, text="Export", width=120, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=go); gob.pack(side="right", padx=6)
         ctk.CTkButton(btns, text="Close", width=90, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=close).pack(side="right", padx=6)
         refresh()
+
+    # ---- combine: align scans on matching points (or automatically), then fuse every scan's frames into one model ----
+    def _new_view(self, parent):
+        w=None
+        if os.environ.get("POINTYOINK_NO_GL")!="1" and self.cfg.get("gl_view","auto")!="software":
+            try:
+                import glview; w=glview.GLView(parent)
+            except Exception as e: log_line("GL view unavailable for the align window: %s" % e); w=None
+        if w is None:
+            import meshview; w=meshview.MeshView(parent)
+        return w
+    PAIR_COLOURS=((1.0,0.36,0.42),(0.24,0.81,0.56),(0.35,0.69,1.0),(1.0,0.75,0.3),(0.85,0.5,1.0),(0.4,0.9,0.9),(1.0,0.55,0.25),(0.7,0.9,0.3))
+    def _align_dialog(self, name):
+        if not name: return
+        nodes=[n for n in self._proc_nodes(name) if n!="combined" and self._proc_current(name, n)]
+        if len(nodes)<2: self._alert("Combine scans", "This project needs at least two scans with a 3D model.\nBuild them first (Build model on each scan)."); return
+        t=self._top("Combine scans · %s" % self.disp(name), 1180, 820, key="align")
+        if t is None: return
+        rec=self.records.setdefault(name,{}).setdefault("align",{})
+        st={"base": rec.get("_base") if rec.get("_base") in nodes else nodes[0], "moving": None, "pairs": [], "pending": None, "result": None, "busy": False}
+        st["moving"]=next((n for n in nodes if n!=st["base"]), None)
+        lab=lambda n: self._scan_label(name, n)
+        card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
+        card.grid_columnconfigure((0,1), weight=1); card.grid_rowconfigure(2, weight=1)
+        menu=dict(fg_color="#0d0f14", button_color=CARD2, button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=8)
+        bar=ctk.CTkFrame(card, fg_color="transparent"); bar.grid(row=0,column=0, columnspan=2, sticky="ew", padx=14, pady=(12,4))
+        ctk.CTkLabel(bar, text="Base scan", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
+        bsel=ctk.StringVar(value=lab(st["base"])); msel=ctk.StringVar(value=lab(st["moving"]) if st["moving"] else "")
+        bmenu=ctk.CTkOptionMenu(bar, values=[lab(n) for n in nodes], variable=bsel, width=130, command=lambda _: pick_base(), **menu); bmenu.pack(side="left", padx=(8,18))
+        ctk.CTkLabel(bar, text="Scan to line up", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
+        mmenu=ctk.CTkOptionMenu(bar, values=[lab(n) for n in nodes if n!=st["base"]], variable=msel, width=130, command=lambda _: pick_moving(), **menu); mmenu.pack(side="left", padx=(8,18))
+        chips=ctk.CTkLabel(bar, text="", text_color=OK, font=ctk.CTkFont(size=12)); chips.pack(side="left", padx=6)
+        hint=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=12), justify="left", wraplength=1100, anchor="w"); hint.grid(row=1,column=0, columnspan=2, sticky="ew", padx=16, pady=(0,6))
+        frames=[ctk.CTkFrame(card, fg_color="#0a0c10", corner_radius=10) for _ in range(2)]
+        frames[0].grid(row=2,column=0, sticky="nsew", padx=(14,4), pady=4); frames[1].grid(row=2,column=1, sticky="nsew", padx=(4,14), pady=4)
+        caps=[ctk.CTkLabel(f, text="", text_color=MUT, font=ctk.CTkFont(size=11)) for f in frames]
+        views=[self._new_view(f) for f in frames]
+        for f,c,v in zip(frames, caps, views):
+            f.grid_columnconfigure(0, weight=1); f.grid_rowconfigure(1, weight=1); c.grid(row=0,column=0, sticky="w", padx=10, pady=(6,0)); v.grid(row=1,column=0, sticky="nsew", padx=6, pady=6)
+        can_pick=all(hasattr(v, "pick") for v in views)
+        status=ctk.CTkLabel(card, text="", text_color=TX, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=1100); status.grid(row=3,column=0, columnspan=2, sticky="ew", padx=16, pady=(6,0))
+        btns=ctk.CTkFrame(card, fg_color="transparent"); btns.grid(row=4,column=0, columnspan=2, sticky="ew", padx=12, pady=(6,12))
+        def refresh_chips():
+            done=[n for n in nodes if n in rec and isinstance(rec[n], dict) and rec[n].get("base")==st["base"]]
+            chips.configure(text=("Lined up so far: "+", ".join(lab(n) for n in done)) if done else "Nothing lined up yet")
+            comb.configure(state=("normal" if done else "disabled"), text="⧉  Build one model from %d scan%s" % (len(done)+1, "" if not done else "s"))
+        def load_views():
+            st["pairs"]=[]; st["pending"]=None; st["result"]=None
+            for v in views:
+                v.markers=[] if hasattr(v, "markers") else None
+                if hasattr(v, "clear_layers"): v.clear_layers(draw=False)
+            caps[0].configure(text="Base · %s · click a recognisable spot" % lab(st["base"]))
+            caps[1].configure(text="%s · then click the same spot here" % (lab(st["moving"]) if st["moving"] else "no scan"))
+            views[0].load(self._proc_current(name, st["base"])[2])
+            if st["moving"]: views[1].load(self._proc_current(name, st["moving"])[2])
+            keepb.pack_forget(); status.configure(text="")
+            hint.configure(text=("Click a spot you can recognise on the base scan, then the same spot on the other scan. Three pairs are enough; five spread-out ones are better. Then press Line up from points. "
+                                 "Or press Auto if the two scans overlap a lot.") if can_pick else
+                                "Point picking needs the graphics-card 3D view (Settings). Auto still works when the scans overlap a lot.")
+            pairs_lbl.configure(text="0 pairs")
+        def pick_base():
+            newb=next(n for n in nodes if lab(n)==bsel.get())
+            if newb==st["base"]: return
+            others=[n for n in nodes if n in rec and isinstance(rec[n], dict) and rec[n].get("base")!=newb]
+            if others and not self._confirm("Change the base scan?", "Scans already lined up were lined up to %s. Changing the base drops those." % lab(st["base"])): bsel.set(lab(st["base"])); return
+            for n in others: rec.pop(n, None)
+            st["base"]=newb; rec["_base"]=newb; self._persist()
+            mmenu.configure(values=[lab(n) for n in nodes if n!=newb]); st["moving"]=next((n for n in nodes if n!=newb), None); msel.set(lab(st["moving"]) if st["moving"] else "")
+            load_views(); refresh_chips()
+        def pick_moving():
+            st["moving"]=next(n for n in nodes if lab(n)==msel.get()); load_views()
+        def on_pick(which, world, view):
+            if st["busy"] or not can_pick: return
+            i=len(st["pairs"]); col=self.PAIR_COLOURS[i % len(self.PAIR_COLOURS)]
+            if which==0:
+                if st["pending"] is not None: views[0].markers.pop()      # re-pick the base point
+                st["pending"]=world; views[0].markers.append((view, col)); views[0].draw()
+                status.configure(text="Point %d on the base. Now click the same spot on %s." % (i+1, lab(st["moving"])))
+            else:
+                if st["pending"] is None: status.configure(text="Click the base scan first."); return
+                st["pairs"].append([list(map(float, st["pending"])), list(map(float, world))]); st["pending"]=None
+                views[1].markers.append((view, col)); views[1].draw()
+                pairs_lbl.configure(text="%d pair%s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s"))
+                status.configure(text="%d pair%s. %s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s", "Press Line up from points, or add more." if len(st["pairs"])>=3 else "Add %d more." % (3-len(st["pairs"]))))
+            alignb.configure(state=("normal" if len(st["pairs"])>=3 else "disabled"))
+        if can_pick:
+            views[0].on_pick=lambda w,v: on_pick(0, w, v); views[1].on_pick=lambda w,v: on_pick(1, w, v)
+        def undo():
+            if st["pending"] is not None: st["pending"]=None; views[0].markers.pop(); views[0].draw()
+            elif st["pairs"]: st["pairs"].pop(); views[0].markers.pop(); views[1].markers.pop(); views[0].draw(); views[1].draw()
+            pairs_lbl.configure(text="%d pair%s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s")); alignb.configure(state=("normal" if len(st["pairs"])>=3 else "disabled"))
+        def run_align(auto):
+            if st["busy"] or not st["moving"]: return
+            if not _has_open3d() and auto: self._alert("Open3D needed", "Auto and the fine adjustment need Open3D.\n  pip3 install --user --break-system-packages open3d"); return
+            st["busy"]=True; keepb.pack_forget(); status.configure(text="Lining up… (auto takes a minute or two)" if auto else "Lining up…", text_color=MUT)
+            base_p=self._proc_current(name, st["base"])[2]; mov_p=self._proc_current(name, st["moving"])[2]
+            os.makedirs(THUMBS, exist_ok=True); pj=os.path.join(THUMBS, "align_pairs.json"); oj=os.path.join(THUMBS, "align_result.json")
+            json.dump({"pairs": st["pairs"]}, open(pj, "w"))
+            def work():
+                res=None; err=""
+                try:
+                    env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "8")
+                    cmd=[_sys.executable, os.path.join(HERE, "align.py"), "--base", base_p, "--moving", mov_p, "--out", oj]
+                    if st["pairs"]: cmd+=["--pairs", pj]
+                    if auto: cmd.append("--auto")
+                    r=subprocess.run(cmd, capture_output=True, text=True, timeout=1800, env=env)
+                    for ln in r.stdout.splitlines():
+                        if ln.startswith("STAGE error "): err=ln[12:]
+                    if r.returncode==0 and os.path.exists(oj): res=json.load(open(oj))
+                    else: log_line("align failed: %s %s" % (err, (r.stdout+r.stderr)[-300:]))
+                except Exception as e: log_error("align", e)
+                def done():
+                    st["busy"]=False
+                    if not t.winfo_exists(): return
+                    if not res: status.configure(text="Could not line these up%s. Try more spread-out points, or pick a scan with more overlap." % ((": "+err) if err else ""), text_color=WARN); return
+                    st["result"]=res; fit=res.get("fitness"); rmse=res.get("rmse"); pe=res.get("pair_error_after")
+                    words=("%.0f%% of %s overlaps the base, typical gap %.2f mm" % (fit*100, lab(st["moving"]), rmse)) if fit is not None else "rough fit from your points only (no Open3D)"
+                    if pe is not None: words+="; your points land %.1f mm apart" % pe
+                    verdict="Looks good." if (fit is None or (fit>=0.3 and (rmse or 0)<1.5)) else "Weak fit: check the overlay before keeping it."
+                    status.configure(text="%s %s" % (words, verdict), text_color=(TX if verdict.startswith("Looks") else WARN))
+                    if hasattr(views[0], "add_layer"):
+                        views[0].clear_layers(draw=False); views[0].add_layer(mov_p, res["matrix"], colour=(1.0,0.55,0.25))
+                        caps[0].configure(text="Base · %s (grey) with %s lined up (orange)" % (lab(st["base"]), lab(st["moving"])))
+                    keepb.pack(side="right", padx=6)
+                self.q.put(("call", done))
+            threading.Thread(target=work, daemon=True).start()
+        def keep():
+            if not st["result"]: return
+            rec[st["moving"]]={"base": st["base"], "matrix": st["result"]["matrix"], "fitness": st["result"].get("fitness"), "rmse": st["result"].get("rmse"), "when": time.strftime("%Y-%m-%d %H:%M")}
+            rec["_base"]=st["base"]; self._persist(); refresh_chips(); keepb.pack_forget()
+            self.set_banner("%s lined up to %s. Saved with the project." % (lab(st["moving"]), lab(st["base"])), OK)
+            nxt=next((n for n in nodes if n!=st["base"] and n not in rec), None)
+            if nxt: st["moving"]=nxt; msel.set(lab(nxt)); load_views(); status.configure(text="Now line up %s." % lab(nxt))
+            else: status.configure(text="Every scan is lined up. Build one model from all of them below.")
+        def combine():
+            done=[n for n in nodes if n in rec and isinstance(rec[n], dict) and rec[n].get("base")==st["base"]]
+            self._combine(name, st["base"], done, status); comb.configure(state="disabled")
+        pairs_lbl=ctk.CTkLabel(btns, text="0 pairs", text_color=MUT, font=ctk.CTkFont(size=12)); pairs_lbl.pack(side="left", padx=(6,10))
+        ctk.CTkButton(btns, text="Undo point", width=100, height=32, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=undo).pack(side="left", padx=4)
+        alignb=ctk.CTkButton(btns, text="Line up from points", width=160, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", state="disabled", command=lambda: run_align(False)); alignb.pack(side="left", padx=4)
+        autob=ctk.CTkButton(btns, text="Auto", width=80, height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: run_align(True)); autob.pack(side="left", padx=4)
+        self._tip(autob, "Finds the fit by itself. Works when the two scans share a lot of surface; otherwise use points.")
+        comb=ctk.CTkButton(btns, text="⧉  Build one model", width=230, height=32, corner_radius=16, fg_color=OK, hover_color="#35b57c", text_color="#04121f", state="disabled", command=combine); comb.pack(side="right", padx=6)
+        self._tip(comb, "Fuses the raw frames of the base scan and every lined-up scan into one model, in the base scan's position. Needs the raw data of each scan on this PC.")
+        keepb=ctk.CTkButton(btns, text="Keep this alignment", width=160, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=keep)
+        load_views(); refresh_chips()
+    def _combine(self, name, base, aligned, status=None):
+        """Fuse the base scan's frames and every aligned scan's frames (moved by its saved transform) into <name>_combined_pcfused.ply."""
+        if getattr(self, "_fusing", False): self.set_banner("A build is already running.", WARN); return
+        if not _has_open3d(): self._alert("Open3D needed", "Building models needs Open3D.\n  pip3 install --user --break-system-packages open3d"); return
+        local=os.path.join(self.dest.get() or DEFAULT_DEST, name); rec=self.records.get(name,{}).get("align",{})
+        sets=[]
+        for node in [base]+list(aligned):
+            cache=os.path.join(local,"data",node,"cache"); calib=os.path.join(local,"data",node,"param","Pl.bin")
+            if not glob.glob(os.path.join(cache,"*.dph")) or not os.path.exists(calib):
+                self._alert("Raw data needed", "%s has no raw scan data on this PC. Share the project over WiFi as Full project, then build again." % self._scan_label(name, node)); return
+            tj=""
+            if node!=base:
+                tj=os.path.join(local, "align_%s.json" % node); json.dump({"base": base, "matrix": rec[node]["matrix"]}, open(tj, "w"))
+            sets.append("%s,%s,%s" % (cache, calib, tj))
+        out=os.path.join(local, "%s_combined_pcfused.ply" % name); voxel=float(self.fuse_voxel.get() or 0.4)
+        self._fusing=True; self.set_status("Building one model from %d scans…" % len(sets))
+        def say(txt):
+            self.q.put(("fuse_status", txt))
+            if status is not None: self.q.put(("call", lambda: (status.configure(text=txt) if status.winfo_exists() else None)))
+        def work():
+            ok=False
+            try:
+                cmd=[_sys.executable, os.path.join(HERE,"fuse.py"), "--out", out, "--voxel", str(voxel)] + ([] if self.cfg.get("fuse_device","auto")=="cpu" else ["--gpu"])
+                for sp in sets: cmd+=["--set", sp]
+                proc=subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
+                for ln in proc.stdout:
+                    ln=ln.strip()
+                    if not ln.startswith("STAGE "): continue
+                    parts=ln.split(" ",2); stage=parts[1]
+                    try: payload=json.loads(parts[2]) if len(parts)>2 else {}
+                    except Exception: payload={}
+                    if stage=="integrate": say("Combining: frame %d of %d…" % (payload.get("done",0), payload.get("total",0)))
+                    elif stage=="extract": say("Building the combined 3D model…")
+                    elif stage=="done": ok=True
+                    elif stage=="error": log_line("combine %s: %s" % (name, payload.get("msg","")))
+                proc.wait()
+            except Exception as e: log_error("combine", e)
+            self.q.put(("fuse_done", ("ok", os.path.basename(out)) if (ok and os.path.exists(out)) else ("err", "the combined model could not be built - see the log")))
+            if ok: say("Done: %s. It shows on the Prepare page as Combined." % os.path.basename(out))
+        threading.Thread(target=work, daemon=True).start()
 
     def on_process_pc(self):
         if getattr(self, "_fusing", False): return

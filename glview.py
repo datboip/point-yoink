@@ -20,6 +20,12 @@ class GLView(OpenGLFrame):
         self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 1.0, [0.0, 0.0]
         self._drag = None; self._gen = 0; self._pending = None; self._n = 0; self._vbo = None
         self.animate = 0
+        self.tf = None                         # orientation transform of the loaded mesh (shade.load_oriented_tf)
+        self.markers = []                      # [(xyz in view coords, (r,g,b))] drawn as dots
+        self.layers = []                       # extra meshes drawn tinted: [{"vbo","n","colour"}]
+        self.tint = None                       # (r,g,b) for the main mesh, None = default material
+        self.on_pick = None                    # callback(world_xyz_mm, view_xyz) for a plain left click
+        self._press_at = None
         self.bind("<ButtonPress-1>", self._press); self.bind("<B1-Motion>", self._rotate)
         self.bind("<ButtonPress-3>", self._press); self.bind("<B3-Motion>", self._pan)
         self.bind("<ButtonPress-2>", self._press); self.bind("<B2-Motion>", self._pan)
@@ -52,8 +58,9 @@ class GLView(OpenGLFrame):
         self._gen += 1; gen = self._gen; self._n = 0
         def work():
             try:
-                v, f = shade.load_oriented(path, MAX_FACES)
+                v, f, tf = shade.load_oriented_tf(path, MAX_FACES)
                 if gen != self._gen: return                       # a newer load superseded this one: stop early
+                self.tf = tf
                 import trimesh
                 nrm = np.asarray(trimesh.Trimesh(v, f, process=False).vertex_normals, dtype=np.float32)
                 if gen != self._gen: return
@@ -69,7 +76,7 @@ class GLView(OpenGLFrame):
         if isinstance(res, Exception) or self.failed:
             (on_ready and on_ready(False)); return
         v, n, f, wire = res
-        self.reset(draw=False)
+        self.markers = []; self.clear_layers(draw=False); self.reset(draw=False)
         if self.ready: self._upload(v, n, f, wire)
         else: self._pending = (v, n, f, wire)
         (on_ready and on_ready(not self.failed))
@@ -114,6 +121,7 @@ class GLView(OpenGLFrame):
         GL.glLightfv(GL.GL_LIGHT0, GL.GL_POSITION, (-0.5, 0.8, 1.0, 0.0)); GL.glLightfv(GL.GL_LIGHT1, GL.GL_POSITION, (0.8, -0.3, 0.4, 0.0))
         GL.glRotatef(self.elev - 90.0, 1, 0, 0); GL.glRotatef(self.azim, 0, 0, 1)
         GL.glTranslatef(0, 0, -0.5 * getattr(self, "_zmax", 0.0))
+        self._mv_m = GL.glGetDoublev(GL.GL_MODELVIEW_MATRIX); self._pj_m = GL.glGetDoublev(GL.GL_PROJECTION_MATRIX); self._vp = (0, 0, w, h)
         # floor grid
         GL.glDisable(GL.GL_LIGHTING); GL.glColor3f(26 / 255.0, 33 / 255.0, 48 / 255.0); GL.glBegin(GL.GL_LINES)
         for t in np.linspace(-1.5, 1.5, 13):
@@ -128,6 +136,7 @@ class GLView(OpenGLFrame):
                 GL.glDisableClientState(GL.GL_VERTEX_ARRAY)
             else:
                 GL.glEnable(GL.GL_LIGHTING); GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
+                GL.glMaterialfv(GL.GL_FRONT_AND_BACK, GL.GL_AMBIENT_AND_DIFFUSE, (self.tint + (1.0,)) if self.tint else (0.74, 0.76, 0.80, 1.0))
                 GL.glEnableClientState(GL.GL_VERTEX_ARRAY); GL.glEnableClientState(GL.GL_NORMAL_ARRAY)
                 GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[0]); GL.glVertexPointer(3, GL.GL_FLOAT, 0, None)
                 GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[1]); GL.glNormalPointer(GL.GL_FLOAT, 0, None)
@@ -135,6 +144,20 @@ class GLView(OpenGLFrame):
                 GL.glDisableClientState(GL.GL_VERTEX_ARRAY); GL.glDisableClientState(GL.GL_NORMAL_ARRAY)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0); GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
             GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
+        for L in self.layers:                  # tinted overlays (another scan, for alignment checks)
+            GL.glEnable(GL.GL_LIGHTING); GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
+            GL.glMaterialfv(GL.GL_FRONT_AND_BACK, GL.GL_AMBIENT_AND_DIFFUSE, L["colour"] + (1.0,))
+            GL.glEnableClientState(GL.GL_VERTEX_ARRAY); GL.glEnableClientState(GL.GL_NORMAL_ARRAY)
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, L["vbo"][0]); GL.glVertexPointer(3, GL.GL_FLOAT, 0, None)
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, L["vbo"][1]); GL.glNormalPointer(GL.GL_FLOAT, 0, None)
+            GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, L["vbo"][2]); GL.glDrawElements(GL.GL_TRIANGLES, L["n"], GL.GL_UNSIGNED_INT, None)
+            GL.glDisableClientState(GL.GL_VERTEX_ARRAY); GL.glDisableClientState(GL.GL_NORMAL_ARRAY)
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0); GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
+        GL.glMaterialfv(GL.GL_FRONT_AND_BACK, GL.GL_AMBIENT_AND_DIFFUSE, (0.74, 0.76, 0.80, 1.0))
+        if self.markers:                       # numbered pick points, always on top
+            GL.glDisable(GL.GL_LIGHTING); GL.glDisable(GL.GL_DEPTH_TEST); GL.glPointSize(11.0); GL.glBegin(GL.GL_POINTS)
+            for xyz, col in self.markers: GL.glColor3f(*col); GL.glVertex3f(*xyz)
+            GL.glEnd(); GL.glPointSize(1.0); GL.glEnable(GL.GL_DEPTH_TEST)
         # axis gizmo, bottom-left, rotating with the view: X red, Y green, Z blue
         GL.glDisable(GL.GL_LIGHTING); GL.glDisable(GL.GL_DEPTH_TEST)
         g = int(min(w, h) * 0.22); GL.glViewport(10, 10, g, g)
@@ -167,9 +190,63 @@ class GLView(OpenGLFrame):
             img.save(path); return path
         except Exception:
             return None
+    # ---- picking and overlays ----
+    def pick(self, x, y):
+        """The 3D point under window pixel (x, y): (world_xyz_mm, view_xyz), or None off the mesh."""
+        if not self.ready or self.failed or not self._n or self.tf is None: return None
+        try:
+            self.tkMakeCurrent(); self.redraw()
+            h = max(1, self.winfo_height()); yy = h - 1 - y
+            z = float(GL.glReadPixels(x, yy, 1, 1, GL.GL_DEPTH_COMPONENT, GL.GL_FLOAT)[0][0])
+            if z >= 0.9999: return None
+            vx, vy, vz = GLU.gluUnProject(x, yy, z, self._mv_m, self._pj_m, self._vp)
+            view = np.array([vx, vy, vz]); return shade.view_to_world(view, self.tf), view
+        except Exception:
+            return None
+    def add_layer(self, path, matrix=None, colour=(1.0, 0.55, 0.25), on_ready=None):
+        """Draw another mesh in this view, tinted, optionally moved by a 4x4 (in mm, world coords) first."""
+        gen = self._gen
+        def work():
+            try:
+                import trimesh
+                v, f, _ = shade.load_oriented_tf(path, MAX_FACES // 2, tf={"mean": np.zeros(3), "scale": 1.0, "R": np.eye(3), "zshift": 0.0})
+                if matrix is not None:
+                    M = np.asarray(matrix, dtype=np.float64); v = (v @ M[:3, :3].T) + M[:3, 3]
+                vv = np.ascontiguousarray(shade.world_to_view(v, self.tf), dtype=np.float32) if self.tf else np.ascontiguousarray(v, dtype=np.float32)
+                nrm = np.asarray(trimesh.Trimesh(vv, f, process=False).vertex_normals, dtype=np.float32)
+                res = (vv, nrm, np.ascontiguousarray(f, dtype=np.uint32))
+            except Exception as e:
+                res = e
+            def up():
+                if gen != self._gen: return
+                if isinstance(res, Exception): (on_ready and on_ready(False)); return
+                try:
+                    self.tkMakeCurrent(); vbo = GL.glGenBuffers(3); v, n, f = res
+                    GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo[0]); GL.glBufferData(GL.GL_ARRAY_BUFFER, v.nbytes, v, GL.GL_STATIC_DRAW)
+                    GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo[1]); GL.glBufferData(GL.GL_ARRAY_BUFFER, n.nbytes, n, GL.GL_STATIC_DRAW)
+                    GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, vbo[2]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, f.nbytes, f, GL.GL_STATIC_DRAW)
+                    self.layers.append({"vbo": vbo, "n": int(f.size), "colour": tuple(colour)}); self.draw(); (on_ready and on_ready(True))
+                except Exception:
+                    (on_ready and on_ready(False))
+            self.after(0, up)
+        threading.Thread(target=work, daemon=True).start()
+    def clear_layers(self, draw=True):
+        try:
+            if self.layers and self.ready: self.tkMakeCurrent()
+            for L in self.layers: GL.glDeleteBuffers(3, L["vbo"])
+        except Exception: pass
+        self.layers = []
+        if draw: self.draw()
     # ---- mouse ----
-    def _press(self, e): self._drag = (e.x, e.y)
-    def _release(self, e): self._drag = None
+    def _press(self, e): self._drag = (e.x, e.y); self._press_at = (e.x, e.y)
+    def _release(self, e):
+        self._drag = None
+        if self.on_pick and self._press_at and abs(e.x - self._press_at[0]) < 3 and abs(e.y - self._press_at[1]) < 3 and e.num == 1:
+            r = self.pick(e.x, e.y)
+            if r is not None:
+                try: self.on_pick(*r)
+                except Exception: pass
+        self._press_at = None
     def _rotate(self, e):
         if not self._drag: return
         dx, dy = e.x - self._drag[0], e.y - self._drag[1]; self._drag = (e.x, e.y)

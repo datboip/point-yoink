@@ -16,6 +16,13 @@ MAX_FACES = 40000
 
 def load_oriented(path, max_faces=MAX_FACES):
     """Mesh -> (vertices, faces) decimated, centred, unit-scaled, with the scan's table plane as the floor."""
+    v, f, _ = load_oriented_tf(path, max_faces)
+    return v, f
+
+def load_oriented_tf(path, max_faces=MAX_FACES, tf=None):
+    """Like load_oriented but also returns the transform, so a point picked in the view can be mapped back
+    to the scan's own millimetre coordinates (view_to_world). Pass tf= to orient a second mesh exactly like
+    the first (needed to draw two scans in one view)."""
     import trimesh
     m = trimesh.load(path, force="mesh")
     v = np.asarray(m.vertices, dtype=np.float32); f = np.asarray(m.faces, dtype=np.int32)
@@ -26,17 +33,31 @@ def load_oriented(path, max_faces=MAX_FACES):
             v = np.asarray(v, dtype=np.float32); f = np.asarray(f, dtype=np.int32)
         except Exception:
             f = f[np.random.RandomState(0).choice(len(f), max_faces, replace=False)]   # crude fallback
-    v = v - v.mean(0); v /= (np.abs(v).max() + 1e-9)
-    # scans lie on a table: the axis of least spread is "up"
-    w, e = np.linalg.eigh(np.cov(v.T)); up = e[:, 0]
-    if up[2] < 0: up = -up
-    a = np.cross(up, [0, 0, 1.0]); s = np.linalg.norm(a)
-    if s > 1e-6:
-        a /= s; ang = np.arccos(np.clip(up[2], -1, 1))
-        K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
-        v = v @ (np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * K @ K).T
-    v[:, 2] -= v[:, 2].min()
-    return v.astype(np.float32), f
+    if tf is None:
+        mean = v.mean(0); vc = v - mean; scale = float(np.abs(vc).max() + 1e-9); vc = vc / scale
+        # scans lie on a table: the axis of least spread is "up"
+        w, e = np.linalg.eigh(np.cov(vc.T)); up = e[:, 0]
+        if up[2] < 0: up = -up
+        a = np.cross(up, [0, 0, 1.0]); s = np.linalg.norm(a); R = np.eye(3)
+        if s > 1e-6:
+            a /= s; ang = np.arccos(np.clip(up[2], -1, 1))
+            K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
+            R = np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * K @ K
+        vr = vc @ R.T; zshift = float(vr[:, 2].min())
+        tf = {"mean": mean.astype(np.float64), "scale": scale, "R": R, "zshift": zshift}
+    vv = world_to_view(v, tf)
+    return vv.astype(np.float32), f, tf
+
+def world_to_view(p, tf):
+    p = np.asarray(p, dtype=np.float64)
+    out = ((p - tf["mean"]) / tf["scale"]) @ tf["R"].T
+    out[..., 2] -= tf["zshift"]
+    return out
+
+def view_to_world(p, tf):
+    p = np.array(p, dtype=np.float64, copy=True)
+    p[..., 2] += tf["zshift"]
+    return (p @ tf["R"]) * tf["scale"] + tf["mean"]
 
 def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0, zoom=1.0, pan=(0.0, 0.0), grid=True, gizmo=True):
     """Draw the mesh with flat shading (painter's algorithm) on a grid floor. Returns a PIL image.
