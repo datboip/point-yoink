@@ -15,7 +15,7 @@ HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
 PROJECTS = os.path.join(MOUNT, "Internal shared storage", "Projects")
 SCREENSHOTS = os.path.join(MOUNT, "Internal shared storage", "Screenshots")
-THUMBS = "/tmp/pointyoink-thumbs"
+THUMBS = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(HOME, ".cache"), "pointyoink", "thumbs")   # private, per user
 CFG_DIR = os.path.join(HOME, ".config", "pointyoink"); CFG = os.path.join(CFG_DIR, "config.json")
 # tests and scratch runs point POINTYOINK_CONFIG somewhere else so they never overwrite real settings
 if os.environ.get("POINTYOINK_CONFIG"):
@@ -1305,7 +1305,7 @@ class App(ctk.CTk):
         box=ctk.CTkTextbox(t, fg_color=CARD, text_color=TX, corner_radius=12, wrap="none",
                            font=ctk.CTkFont(family="monospace", size=11))
         box.pack(fill="both", expand=True, padx=20, pady=6)
-        try: content=open(LOGFILE).read()
+        try: content=open(LOGFILE).read().replace(HOME, "~")     # no home paths in what gets pasted into issues
         except Exception: content=""
         box.insert("1.0", content or "No errors logged. Nice.")
         box.configure(state="disabled")
@@ -1343,8 +1343,8 @@ class App(ctk.CTk):
         d=os.path.join(self.dest.get() or DEFAULT_DEST, name)
         if not os.path.isdir(d): return False
         try:
-            if glob.glob(os.path.join(d, "*.ply")): return True          # flat layout
-            if glob.glob(os.path.join(d, "data", "*", "*.ply")): return True  # full/nested layout
+            for pat in (os.path.join(d, "*.ply"), os.path.join(d, "data", "*", "*.ply")):   # flat, then nested
+                if any(os.path.getsize(f) > 1024 for f in glob.glob(pat)): return True
         except Exception: pass
         return False
     def _proj(self, name):
@@ -1608,18 +1608,23 @@ class App(ctk.CTk):
         if self.exp_glb.get(): fmts.append("glb")
         threading.Thread(target=self._pull_worker, args=(sel,dest,mo,fmts,cleanup), daemon=True).start()
     def _pull_worker(self, sel, dest, mo, fmts, cleanup):
-        os.makedirs(dest, exist_ok=True); total=len(sel); failed=[]
-        for i,name in enumerate(sel):
-            if self.cancel: break
-            try:
-                if mo:
-                    self._import_flat(name, dest, fmts, cleanup, i, total)   # clean flat layout: <name>/<name>_<node>.ply (+.stl)
-                else:
-                    self._import_full(name, dest, i, total)         # full project incl. raw frames (nested mirror)
-            except Exception as e:
-                failed.append(name); log_error("import", e)
-        self.proc=None
-        self.q.put(("cancelled" if self.cancel else "done", dest, failed))
+        total=len(sel); failed=[]
+        try:
+            os.makedirs(dest, exist_ok=True)
+            for i,name in enumerate(sel):
+                if self.cancel: break
+                try:
+                    if mo:
+                        self._import_flat(name, dest, fmts, cleanup, i, total)   # clean flat layout: <name>/<name>_<node>.ply (+.stl)
+                    else:
+                        self._import_full(name, dest, i, total)         # full project incl. raw frames (nested mirror)
+                except Exception as e:
+                    failed.append(name); log_error("import", e)
+        except Exception as e:                       # e.g. the destination cannot be created
+            log_error("import-setup", e); failed=list(sel)
+        finally:
+            self.proc=None
+            self.q.put(("cancelled" if self.cancel else "done", dest, failed))
 
     def _import_flat(self, name, dest, fmts, cleanup, i, total, src_root=None, nodes=None):
         """Copy just the finished models into <dest>/<name>/ with clean unique names.
@@ -1650,46 +1655,40 @@ class App(ctk.CTk):
         if (fmts or cleanup) and not self.cancel:
             self._process_meshes(meshes, name, fmts, cleanup, i, total)
 
-    def _clean_mesh(self, m):
-        """Tidy a mesh: dedupe, keep the largest connected piece, fill small holes, light smooth."""
-        import trimesh
-        try: m.merge_vertices()
-        except Exception: pass
+    def _clean_subprocess(self, src, out):
+        """Run process.py --clean in a memory-capped child so a huge mesh cannot take the app down."""
         try:
-            m.update_faces(m.nondegenerate_faces()); m.update_faces(m.unique_faces()); m.remove_unreferenced_vertices()
-        except Exception: pass
-        try:
-            comps=m.split(only_watertight=False)
-            if len(comps)>1: m=max(comps, key=lambda c: len(c.faces))
-        except Exception: pass
-        try: m.fill_holes()
-        except Exception: pass
-        try: trimesh.smoothing.filter_humphrey(m, iterations=5)
-        except Exception: pass
-        return m
+            env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "10")
+            r=subprocess.run([_sys.executable, os.path.join(HERE, "process.py"), src, out, "--clean"],
+                             capture_output=True, text=True, timeout=1800, env=env)
+            if r.returncode==0 and os.path.exists(out) and os.path.getsize(out)>1024: return True
+            log_line("clean %s failed (rc=%s): %s" % (os.path.basename(src), r.returncode, (r.stdout+r.stderr)[-400:]))
+        except Exception as e: log_error("clean "+os.path.basename(src), e)
+        return False
 
     def _process_meshes(self, plys, name, fmts, cleanup, i, total):
-        """Optionally clean each mesh (overwrite its .ply), then export the requested formats.
-        Records any failures in self._export_fails so _finish can surface them to the user."""
+        """Optionally clean each mesh into <stem>_clean.ply (the imported original is kept), then export
+        the requested formats from the cleaned copy when there is one. Failures land in self._export_fails."""
         import trimesh
         for ply in plys:
             if self.cancel: return
-            try:
-                m=trimesh.load(ply, force="mesh")
-                if cleanup:
-                    self.q.put(("prog", (i+1)/total, "Cleaning up %s…"%name))
-                    m=self._clean_mesh(m)
-                    m.export(ply)   # replace the imported .ply with the cleaned mesh
+            src=ply
+            if cleanup:
+                self.q.put(("prog", (i+1)/total, "Cleaning up %s…"%name))
+                out=ply[:-4]+"_clean.ply"
+                if self._clean_subprocess(ply, out): src=out
+                else: self._export_fails.append(os.path.basename(out))
+            if not fmts: continue
+            try: m=trimesh.load(src, force="mesh")
             except Exception as e:
-                log_error("process "+os.path.basename(ply), e)
-                self._export_fails.append(os.path.basename(ply)); continue
-            for ext in (fmts or []):
+                log_error("load "+os.path.basename(src), e); self._export_fails.append(os.path.basename(src)); continue
+            for ext in fmts:
                 if self.cancel: return
                 self.q.put(("prog", (i+1)/total, "Converting %s to %s"%(name, ext.upper())))
-                try: m.export(ply[:-4]+"."+ext)
+                try: m.export(src[:-4]+"."+ext)
                 except Exception as e:
-                    log_error("convert %s -> %s"%(os.path.basename(ply), ext), e)
-                    self._export_fails.append(os.path.basename(ply)[:-4]+"."+ext)
+                    log_error("convert %s -> %s"%(os.path.basename(src), ext), e)
+                    self._export_fails.append(os.path.basename(src)[:-4]+"."+ext)
 
     def _import_full(self, name, dest, i, total):
         """Full project including raw frames - kept in the device's nested layout (needed to re-process)."""
@@ -1752,9 +1751,14 @@ class App(ctk.CTk):
             viewer=os.path.join(HERE, "viewer.py")
             proc=subprocess.Popen([_sys.executable, viewer, path, name],
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            got=False; tail=[]
             for ln in proc.stdout:
-                if "PYVIEW_READY" in ln: self.q.put(("view_done", None)); break
-                if "PYVIEW_ERROR" in ln: log_line("viewer: "+ln.strip()); self.q.put(("view_done", ln.strip())); break
+                tail=(tail+[ln.strip()])[-5:]
+                if "PYVIEW_READY" in ln: got=True; self.q.put(("view_done", None)); break
+                if "PYVIEW_ERROR" in ln: got=True; log_line("viewer: "+ln.strip()); self.q.put(("view_done", ln.strip())); break
+            if not got:
+                log_line("viewer exited before drawing: %s" % " | ".join(tail))
+                self.q.put(("view_done", "The 3D viewer closed before it drew anything (see Help > Log)."))
         except Exception as e:
             log_error("view-launch", e); self.q.put(("view_done", str(e)))
 
@@ -2530,7 +2534,7 @@ class App(ctk.CTk):
         else:
             zpath=os.path.join(dest, "pointyoink-%s-%s.zip"%(tag, time.strftime("%Y%m%d-%H%M%S")))
         # build the file list (src, arcname). flat for models/format modes; nested for 'all'
-        files=[]
+        files=[]; zfails=0
         try:
             for name in sel:
                 base=os.path.join(dest, name)
@@ -2544,20 +2548,24 @@ class App(ctk.CTk):
                             self.q.put(("prog", 0.0, "Converting %s to %s…"%(name, mode.upper())))
                             try:
                                 import trimesh; trimesh.load(ply, force="mesh").export(target)
-                            except Exception as e: log_error("zip-convert "+os.path.basename(ply), e); continue
+                            except Exception as e: zfails+=1; log_error("zip-convert "+os.path.basename(ply), e); continue
                         files.append((target, os.path.basename(target)))
                 elif mode=="models":
                     for f in glob.glob(os.path.join(base,"*")):
                         if f.lower().endswith((".ply",".stl",".obj",".glb")): files.append((f, os.path.basename(f)))
                     for f in glob.glob(os.path.join(base,"data","*","*")):
-                        if f.lower().endswith((".ply",".stl",".obj",".glb")): files.append((f, os.path.basename(f)))
+                        # nested scans all have the same file names (fuse_mesh.ply): make each entry unique
+                        if f.lower().endswith((".ply",".stl",".obj",".glb")):
+                            node=os.path.basename(os.path.dirname(f)); stem,ext=os.path.splitext(os.path.basename(f))
+                            files.append((f, "%s_%s_%s%s" % (name, node, stem, ext)))
                 else:  # all
                     for root,dirs,fs in os.walk(base):
                         dirs[:]=[d for d in dirs if d!="cache"]
                         for f in fs: fp=os.path.join(root,f); files.append((fp, os.path.join(name, os.path.relpath(fp, base))))
             if not files:
-                self.q.put(("zipfail", "no matching files (try importing with that format first)")); return
-            total=len(files); zfails=0
+                self.q.put(("zipfail", ("%d conversion(s) failed, nothing to zip - see Help > Log" % zfails) if zfails
+                            else "no matching files (try importing with that format first)")); return
+            total=len(files)
             with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
                 for i,(fp,arc) in enumerate(files):
                     self.q.put(("prog", i/total, "Zipping %d/%d - %s"%(i+1,total,os.path.basename(fp))))

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Memory-safe mesh processor for PointYoink. Runs as a SUBPROCESS with a hard
 # address-space cap so a pathological mesh dies alone instead of OOM-ing the box.
-#   python3 process.py <in.ply> <out.ply> [--decimate N] [--base-remove] [--isolate]
+#   python3 process.py <in.ply> <out.ply> [--decimate N] [--base-remove] [--isolate] [--clean]
 # Order matters: DECIMATE FIRST (cheap), then topology ops on the small mesh.
 import sys, os, argparse, resource, json
 
@@ -23,6 +23,7 @@ def main():
     ap.add_argument("--base-remove", action="store_true")
     ap.add_argument("--isolate", action="store_true")
     ap.add_argument("--plane-thresh", type=float, default=0, help="mm; 0=auto from bbox")
+    ap.add_argument("--clean", action="store_true", help="dedupe, keep the largest piece, fill small holes, light smooth")
     a = ap.parse_args()
 
     import numpy as np, trimesh
@@ -36,6 +37,14 @@ def main():
         v, f = fast_simplification.simplify(m.vertices, m.faces, target_count=a.decimate)
         m = trimesh.Trimesh(v, f, process=False)
         emit("decimated", faces=len(m.faces))
+
+    if a.clean:   # tidy the topology before the connectivity pass
+        try: m.merge_vertices()
+        except Exception: pass
+        try:
+            m.update_faces(m.nondegenerate_faces()); m.update_faces(m.unique_faces()); m.remove_unreferenced_vertices()
+        except Exception: pass
+        emit("deduped", faces=len(m.faces))
 
     # 2) BASE REMOVAL — RANSAC the dominant plane (the table/turntable) and cut it away
     if a.base_remove:
@@ -72,13 +81,20 @@ def main():
     # 3) ISOLATE — keep the largest connected piece (drops floating junk / table remnants).
     # Use connected_components + a face mask instead of .split() (which builds every
     # submesh and calls fill_holes) — faster, lighter, and no repair dependency.
-    if a.isolate or a.base_remove:
+    if a.isolate or a.base_remove or a.clean:
         comps = trimesh.graph.connected_components(m.face_adjacency, min_len=1)
         if len(comps) > 1:
             largest = max(comps, key=len)
             mask = np.zeros(len(m.faces), dtype=bool); mask[largest] = True
             m.update_faces(mask); m.remove_unreferenced_vertices()
         emit("isolated", pieces=len(comps), faces=len(m.faces))
+
+    if a.clean:   # small holes and a light smooth, the same recipe the app used to run in-process
+        try: m.fill_holes()
+        except Exception: pass
+        try: trimesh.smoothing.filter_humphrey(m, iterations=5)
+        except Exception: pass
+        emit("cleaned", faces=len(m.faces))
 
     m.export(a.outfile)
     emit("done", out=os.path.basename(a.outfile), faces=len(m.faces),
