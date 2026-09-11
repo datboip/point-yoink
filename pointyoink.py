@@ -2361,7 +2361,7 @@ class App(ctk.CTk):
         self.wifi_proj=ctk.CTkLabel(row, text="", text_color=TX, font=ctk.CTkFont(size=13, weight="bold"), anchor="w"); self.wifi_proj.pack(side="left", padx=12)
         # speed graph: fills left to right with progress, height = transfer speed (old-school copy dialog)
         self.wifi_graph=tk.Canvas(self.wifi_recv, height=84, bg="#0d0f14", highlightthickness=0); self.wifi_graph.pack(fill="x", padx=24, pady=(12,6))
-        self.wifi_samples=[]
+        self.wifi_samples=[]; self._wifi_last_sample=0.0
         stats=ctk.CTkFrame(self.wifi_recv, fg_color="transparent"); stats.pack(fill="x", padx=24)
         self.wifi_stats={}
         for key,cap in (("got","received"),("files","files"),("rate","speed"),("eta","time left")):
@@ -2388,8 +2388,10 @@ class App(ctk.CTk):
         except Exception: pass
     def _wifi_graph_add(self, frac, rate):
         """Append a (progress, speed) sample and redraw the area chart."""
-        sm=self.wifi_samples
-        if not sm or frac-sm[-1][0]>=0.002: sm.append((frac, rate))   # a 4 MiB part of a 1 GB transfer is ~0.4%
+        sm=self.wifi_samples; now=time.time()
+        # sample by time, not by progress: a raw-frames project arrives as thousands of 0.9 MB files
+        if not sm or now-self._wifi_last_sample>=0.3 or frac-sm[-1][0]>=0.01:
+            sm.append((frac, rate)); self._wifi_last_sample=now
         else: sm[-1]=(frac, rate)
         cv=self.wifi_graph
         try: W=max(50, cv.winfo_width()); H=int(cv.cget("height"))
@@ -2416,7 +2418,7 @@ class App(ctk.CTk):
         rx=self._wifi
         if not rx or rx.t0: return
         import wifi
-        rx.stop(); shutil.rmtree(rx.stage, ignore_errors=True)
+        threading.Thread(target=rx.stop, daemon=True).start(); shutil.rmtree(rx.stage, ignore_errors=True)
         try:
             nrx=wifi.Receiver(rx.dest, None, lambda k,i: self.q.put(("wifi", k, i))); nrx.start()
         except OSError as e:
@@ -2432,7 +2434,7 @@ class App(ctk.CTk):
     def _wifi_cancel(self):
         rx=self._wifi
         if not rx: self._wifi_close_dialog(); return
-        self._wifi=None; rx.stop(); self._wifi_close_dialog()
+        self._wifi=None; threading.Thread(target=rx.stop, daemon=True).start(); self._wifi_close_dialog()
         self.wifi_btn.configure(text="📶  WiFi", fg_color="transparent")
         got=rx.bytes
         try: shutil.rmtree(rx.stage, ignore_errors=True)
@@ -2477,7 +2479,7 @@ class App(ctk.CTk):
                             self.imgs["wifi_thumb"]=cimg(pv[0], 84); self.wifi_thumb.configure(image=self.imgs["wifi_thumb"])
                 except Exception: pass
         elif kind=="done":
-            self._wifi=None; rx.stop(); self._wifi_close_dialog(); self.wifi_btn.configure(text="📶  WiFi", fg_color="transparent")
+            self._wifi=None; threading.Thread(target=rx.stop, daemon=True).start(); self._wifi_close_dialog(); self.wifi_btn.configure(text="📶  WiFi", fg_color="transparent")
             projects=info["projects"]
             if not projects:
                 shutil.rmtree(rx.stage, ignore_errors=True); self.set_banner("The scanner finished but sent no project.", WARN); self.set_status(""); return

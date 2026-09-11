@@ -87,6 +87,7 @@ class Receiver:
     def start(self):
         os.makedirs(self.stage, exist_ok=True)
         self.httpd = ThreadingHTTPServer(("0.0.0.0", PORT), _Handler); self.httpd.daemon_threads = True; self.httpd.rx = self
+        self.httpd.block_on_close = False        # don't wait for the scanner's keep-alive connections on shutdown
         u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         u.bind(("0.0.0.0", PORT))
         try: u.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, struct.pack("4s4s", socket.inet_aton("239.255.0.1"), socket.inet_aton("0.0.0.0")))
