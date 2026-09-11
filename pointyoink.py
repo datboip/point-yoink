@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.2"
+APP = "PointYoink"; VERSION = "0.9.3"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -469,8 +469,9 @@ class App(ctk.CTk):
         self.report_callback_exception = self._on_tk_error
         log_line("PointYoink %s started" % VERSION)
 
-        self.grid_columnconfigure(0, weight=1); self.grid_rowconfigure(2, weight=1)
+        self.grid_columnconfigure(0, weight=1); self.grid_rowconfigure(2, weight=1, minsize=360)
         self._header(); self._statusbar(); self._body(); self._build_options(); self._actions(); self._bottombar()
+        self.bind("<Configure>", lambda e: self._fit_folder() if e.widget is self and self.drawer_mode=="folder" else None)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.refresh_loop(); self.drain_loop(); self._pulse()
         self.after(9000, self._close_splash)   # safety fallback; the setup checks normally close it
@@ -682,10 +683,18 @@ class App(ctk.CTk):
         self.llist.grid_columnconfigure(0, weight=1)
 
         right=ctk.CTkFrame(body, fg_color="transparent"); right.grid(row=0,column=1, sticky="nsew", padx=(14,0))
-        right.grid_rowconfigure(0, weight=1); right.grid_columnconfigure(0, weight=1)
+        right.grid_rowconfigure(1, weight=1); right.grid_columnconfigure(0, weight=1)
+        # Project bar: what is selected + what you can do with it. Sits above the tabs so it is
+        # visible on every tab and never competes with the preview image for height.
+        self.projbar=ctk.CTkFrame(right, fg_color=CARD, corner_radius=14); self.projbar.grid(row=0,column=0, sticky="ew", pady=(0,8)); self.projbar.grid_remove()
+        self.projbar.grid_columnconfigure(0, weight=1)
+        self.detail=ctk.CTkLabel(self.projbar, text="", text_color=TX, anchor="w", justify="left", font=ctk.CTkFont(size=12))
+        self.detail.grid(row=0,column=0, sticky="w", padx=16, pady=(10,0))
+        self.tools=ctk.CTkFrame(self.projbar, fg_color="transparent")
+        self.tools.grid(row=1,column=0, sticky="w", padx=10, pady=(2,6)); self.tools.grid_remove()
         self.tabs=ctk.CTkTabview(right, fg_color=CARD, corner_radius=14, segmented_button_fg_color=CARD2,
                                  segmented_button_selected_color=AC, text_color=TX)
-        self.tabs.grid(row=0,column=0, sticky="nsew")
+        self.tabs.grid(row=1,column=0, sticky="nsew")
         pv=self.tabs.add("Preview"); fl=self.tabs.add("Files")
         pv.grid_columnconfigure(0, weight=1); pv.grid_rowconfigure(0, weight=1, minsize=120)
         bigwrap=ctk.CTkFrame(pv, fg_color="transparent", height=120); bigwrap.grid(row=0,column=0, sticky="nsew"); bigwrap.grid_propagate(False)
@@ -693,31 +702,24 @@ class App(ctk.CTk):
         self.big=ctk.CTkLabel(bigwrap, text="Select a project to preview its scans", fg_color="#0a0c10",
                               corner_radius=12, text_color=MUT); self.big.grid(row=0,column=0, sticky="nsew", padx=10, pady=10)
         self.big.bind("<Configure>", self._on_big_resize)
-        self.detail=ctk.CTkLabel(pv, text="", text_color=TX, anchor="w", justify="left", font=ctk.CTkFont(size=12))
-        self.detail.grid(row=1,column=0, sticky="w", padx=12); self.detail.grid_remove()
         self.renders_lbl=ctk.CTkLabel(pv, text="scan renders (click to enlarge)", text_color=MUT, font=ctk.CTkFont(size=11))
-        self.renders_lbl.grid(row=2,column=0, sticky="w", padx=12, pady=(6,0)); self.renders_lbl.grid_remove()
+        self.renders_lbl.grid(row=1,column=0, sticky="w", padx=12, pady=(2,0)); self.renders_lbl.grid_remove()
         self.film=ctk.CTkScrollableFrame(pv, orientation="horizontal", fg_color="transparent", height=72)
-        self.film.grid(row=3,column=0, sticky="ew", padx=8, pady=(0,8)); self.film.grid_remove()
-        # Tools toolbar: grouped scan actions (no floating buttons -> no square-corner artifacts)
-        self.tools=ctk.CTkFrame(pv, fg_color=CARD2, corner_radius=12)
-        self.tools.grid(row=4,column=0, sticky="ew", padx=10, pady=(0,10)); self.tools.grid_remove()
-        ctk.CTkLabel(self.tools, text="TOOLS", text_color=MUT,
-                     font=ctk.CTkFont(size=10,weight="bold")).pack(side="left", padx=(14,10), pady=8)
+        self.film.grid(row=2,column=0, sticky="ew", padx=8, pady=(0,8)); self.film.grid_remove()
         self.view_btn=ctk.CTkButton(self.tools, text="⟳  View in 3D", width=124, height=32, corner_radius=16,
                                     fg_color=AC, hover_color=AC_H, text_color="#04121f",
                                     font=ctk.CTkFont(size=12,weight="bold"), command=self.on_view_3d)
-        self.view_btn.pack(side="left", padx=5, pady=8)
+        self.view_btn.pack(side="left", padx=5, pady=6)
         self.base_btn=ctk.CTkButton(self.tools, text="✂  Remove base", width=136, height=32, corner_radius=16,
                                     fg_color=CARD, hover_color=STROKE, text_color=TX,
                                     font=ctk.CTkFont(size=12,weight="bold"), command=self.on_remove_base)
-        self.base_btn.pack(side="left", padx=5, pady=8)
+        self.base_btn.pack(side="left", padx=5, pady=6)
         self._tip(self.base_btn, "Interactively slice the table/turntable off the scan. Opens a cut-plane "
                                  "tool; saves a cleaned copy as <name>_clean.ply. Original is kept.")
         self.proc_btn=ctk.CTkButton(self.tools, text="⚙  Process on PC", width=150, height=32, corner_radius=16,
                                     fg_color=CARD, hover_color=STROKE, text_color=TX,
                                     font=ctk.CTkFont(size=12,weight="bold"), command=self.on_process_pc)
-        self.proc_btn.pack(side="left", padx=5, pady=8)
+        self.proc_btn.pack(side="left", padx=5, pady=6)
         self._tip(self.proc_btn, "Rebuild this scan's mesh on your PC from the raw depth frames (GPU when available). "
                                  "Uses local frames if a full import already has them, otherwise pulls just what it needs. "
                                  "Saves <name>_<scan>_pcfused.ply. Needs Open3D.")
@@ -800,51 +802,141 @@ class App(ctk.CTk):
 
     # ---- import options ----
     def _build_options(self):
+        """Bottom drawer. Always visible: one line summarising the import options, plus toggles
+        for the full options panel and a browser of the save folder. The panels share the space."""
         o=ctk.CTkFrame(self, fg_color=CARD, corner_radius=14); o.grid(row=3,column=0, sticky="ew", padx=20, pady=6)
         o.grid_columnconfigure(0, weight=1)
-        r1=ctk.CTkFrame(o, fg_color="transparent"); r1.grid(row=0,column=0, sticky="ew", padx=14, pady=(12,4))
         self.models_only=ctk.BooleanVar(value=self.cfg.get("models_only",True))
+        self.auto_open=ctk.BooleanVar(value=self.cfg.get("auto_open",True))
+        self.cleanup=ctk.BooleanVar(value=self.cfg.get("cleanup",False))
+        self.fuse_voxel=ctk.DoubleVar(value=float(self.cfg.get("fuse_voxel",0.4)))
+        self.exp_stl=ctk.BooleanVar(value=self.cfg.get("exp_stl",False))
+        self.exp_obj=ctk.BooleanVar(value=self.cfg.get("exp_obj",False))
+        self.exp_glb=ctk.BooleanVar(value=self.cfg.get("exp_glb",False))
+        self.dest=ctk.StringVar(value=self.cfg.get("dest",DEFAULT_DEST))
+        hdr=ctk.CTkFrame(o, fg_color="transparent"); hdr.grid(row=0,column=0, sticky="ew", padx=14, pady=(8,8))
+        self.drawer_sum=ctk.CTkLabel(hdr, text="", text_color=MUT, anchor="w", font=ctk.CTkFont(size=12)); self.drawer_sum.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(hdr, text="Select all", width=84, height=28, corner_radius=14, fg_color=CARD2,
+                      hover_color=STROKE, text_color=TX, command=self.select_all).pack(side="right", padx=(4,0))
+        ctk.CTkButton(hdr, text="None", width=64, height=28, corner_radius=14, fg_color=CARD2,
+                      hover_color=STROKE, text_color=TX, command=self.select_none).pack(side="right", padx=4)
+        self.drawer_btns={}
+        for key,label in (("folder","📁 Folder"),("options","⚙ Options")):
+            b=ctk.CTkButton(hdr, text=label, width=96, height=28, corner_radius=14, fg_color=CARD2, hover_color=STROKE, text_color=TX,
+                            command=lambda k=key: self.toggle_drawer(k)); b.pack(side="right", padx=4); self.drawer_btns[key]=b
+        self._tip(self.drawer_btns["options"], "Import options: models only or full project, clean-up, formats, save folder.")
+        self._tip(self.drawer_btns["folder"], "Browse the save folder: every project and file on this PC. Double-click a file to open it.")
+        # -- options panel --
+        op=ctk.CTkFrame(o, fg_color="transparent"); self.drawer_opts=op
+        r1=ctk.CTkFrame(op, fg_color="transparent"); r1.pack(fill="x", padx=14, pady=(0,4))
         mo=ctk.CTkCheckBox(r1, text="Models only (fast - skip raw frames)", variable=self.models_only,
                         onvalue=True, offvalue=False, command=self.update_summary,
                         fg_color=AC, hover_color=AC_H, text_color=TX); mo.pack(side="left")
         self._tip(mo, "Copies only the finished meshes and point clouds (.ply) and skips the "
                       "thousands of raw depth frames. Much faster and smaller. Turn off only if you "
                       "want the raw frames to re-process a scan later in Revo Scan.")
-        self.auto_open=ctk.BooleanVar(value=self.cfg.get("auto_open",True))
         ao=ctk.CTkCheckBox(r1, text="Open folder when done", variable=self.auto_open,
                         fg_color=AC, hover_color=AC_H, text_color=TX); ao.pack(side="left", padx=(18,0))
         self._tip(ao, "Open the destination folder automatically when the import finishes.")
-        self.cleanup=ctk.BooleanVar(value=self.cfg.get("cleanup",False))
-        self.fuse_voxel=ctk.DoubleVar(value=float(self.cfg.get("fuse_voxel",0.4)))
         cu=ctk.CTkCheckBox(r1, text="Clean up mesh", variable=self.cleanup,
                         fg_color=AC, hover_color=AC_H, text_color=TX); cu.pack(side="left", padx=(18,0))
         self._tip(cu, "Tidy the mesh on your PC during import: keep the main object (remove floating bits), "
                       "fill small holes, and lightly smooth. Skips the slow on-device edit. Off = raw mesh, untouched.")
-        ctk.CTkButton(r1, text="Select all", width=84, height=28, corner_radius=14, fg_color=CARD2,
-                      hover_color=STROKE, text_color=TX, command=self.select_all).pack(side="right", padx=4)
-        ctk.CTkButton(r1, text="None", width=64, height=28, corner_radius=14, fg_color=CARD2,
-                      hover_color=STROKE, text_color=TX, command=self.select_none).pack(side="right", padx=4)
-        # export format - a real, intentional control
-        ex=ctk.CTkFrame(o, fg_color=CARD2, corner_radius=12); ex.grid(row=1,column=0, sticky="ew", padx=14, pady=(2,4))
+        ex=ctk.CTkFrame(op, fg_color=CARD2, corner_radius=12); ex.pack(fill="x", padx=14, pady=(2,4))
         ctk.CTkLabel(ex, text="Save meshes as", text_color=TX, font=ctk.CTkFont(size=12,weight="bold")).pack(side="left", padx=(14,10), pady=10)
         ctk.CTkLabel(ex, text="PLY", fg_color=AC, text_color="#04121f", corner_radius=13, width=50, height=26,
                      font=ctk.CTkFont(size=12,weight="bold")).pack(side="left", padx=3)
-        self.exp_stl=ctk.BooleanVar(value=self.cfg.get("exp_stl",False))
-        self.exp_obj=ctk.BooleanVar(value=self.cfg.get("exp_obj",False))
-        self.exp_glb=ctk.BooleanVar(value=self.cfg.get("exp_glb",False))
         self._fmt_chip(ex,"STL",self.exp_stl).pack(side="left", padx=3)
         self._fmt_chip(ex,"OBJ",self.exp_obj).pack(side="left", padx=3)
         self._fmt_chip(ex,"GLB",self.exp_glb).pack(side="left", padx=3)
         ctk.CTkLabel(ex, text="PLY is always kept  ·  STL for printing  ·  OBJ / GLB for editing",
                      text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left", padx=(14,0))
-        r2=ctk.CTkFrame(o, fg_color="transparent"); r2.grid(row=2,column=0, sticky="ew", padx=14, pady=(4,12))
+        r2=ctk.CTkFrame(op, fg_color="transparent"); r2.pack(fill="x", padx=14, pady=(4,12))
         r2.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(r2, text="Save to", text_color=MUT).grid(row=0,column=0, padx=(0,8))
-        self.dest=ctk.StringVar(value=self.cfg.get("dest",DEFAULT_DEST))
         ctk.CTkEntry(r2, textvariable=self.dest, fg_color="#0d0f14", border_color=STROKE, text_color=TX,
                      corner_radius=10, height=34).grid(row=0,column=1, sticky="ew")
         ctk.CTkButton(r2, text="Browse", width=84, height=34, corner_radius=14, fg_color=CARD2,
                       hover_color=STROKE, text_color=TX, command=self.browse).grid(row=0,column=2, padx=(8,0))
+        # -- folder panel: a tree of the save folder --
+        fp=ctk.CTkFrame(o, fg_color="transparent"); self.drawer_folder=fp
+        from tkinter import ttk
+        st=ttk.Style(self); st.theme_use("clam")
+        st.configure("PY.Treeview", background="#0a0c10", fieldbackground="#0a0c10", foreground=TX, borderwidth=0, relief="flat", rowheight=24, font=("TkDefaultFont", 10))
+        st.layout("PY.Treeview", [("Treeview.treearea", {"sticky": "nswe"})])      # no bevel/border around the tree
+        st.configure("PY.Treeview.Heading", background=CARD2, foreground=MUT, borderwidth=0, font=("TkDefaultFont", 9, "bold"))
+        st.map("PY.Treeview", background=[("selected", SELB)], foreground=[("selected", TX)])
+        fh=ctk.CTkFrame(fp, fg_color="transparent"); fh.pack(fill="x", padx=14, pady=(0,4))
+        self.folder_lbl=ctk.CTkLabel(fh, text="", text_color=MUT, anchor="w", font=ctk.CTkFont(size=11)); self.folder_lbl.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(fh, text="Open in file manager", width=150, height=26, corner_radius=13, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self.open_folder).pack(side="right", padx=(4,0))
+        ctk.CTkButton(fh, text="↻", width=32, height=26, corner_radius=13, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self.refresh_folder).pack(side="right", padx=4)
+        tw=ctk.CTkFrame(fp, fg_color="#0a0c10", corner_radius=10); tw.pack(fill="both", expand=True, padx=14, pady=(0,12))
+        self.ftree=ttk.Treeview(tw, style="PY.Treeview", columns=("size","when"), height=6, selectmode="browse")
+        self.ftree.heading("#0", text="name", anchor="w"); self.ftree.heading("size", text="size", anchor="e"); self.ftree.heading("when", text="modified", anchor="w")
+        self.ftree.column("#0", width=420, stretch=True); self.ftree.column("size", width=90, anchor="e", stretch=False); self.ftree.column("when", width=140, stretch=False)
+        self.ftree.pack(fill="both", expand=True, padx=6, pady=6)
+        self.ftree.bind("<<TreeviewOpen>>", self._folder_expand); self.ftree.bind("<Double-1>", self._folder_open)
+        self.ftree.tag_configure("dir", foreground=AC); self.ftree.tag_configure("mesh", foreground=OK)
+        self.drawer_mode=None
+        for v in (self.models_only, self.exp_stl, self.exp_obj, self.exp_glb, self.cleanup, self.dest):
+            v.trace_add("write", lambda *a: self._drawer_summary())
+        self._drawer_summary()
+        self.toggle_drawer(self.cfg.get("drawer", "options"), force=True)
+
+    def _drawer_summary(self):
+        fmts=["PLY"]+[n for n,v in (("STL",self.exp_stl),("OBJ",self.exp_obj),("GLB",self.exp_glb)) if v.get()]
+        d=self.dest.get() or DEFAULT_DEST; d=("~"+d[len(HOME):]) if d.startswith(HOME) else d
+        try: self.drawer_sum.configure(text="Import:  %s  ·  %s%s  ·  save to %s" % (
+            "models only" if self.models_only.get() else "full project", " + ".join(fmts), "  ·  clean up" if self.cleanup.get() else "", d))
+        except Exception: pass
+    def toggle_drawer(self, mode, force=False):
+        """Show the options panel, the folder browser, or neither (click the active one to collapse)."""
+        new=None if (mode==self.drawer_mode and not force) else mode
+        for key,b in self.drawer_btns.items():
+            b.configure(fg_color=(AC if key==new else CARD2), text_color=("#04121f" if key==new else TX), hover_color=(AC_H if key==new else STROKE))
+        self.drawer_opts.grid_remove(); self.drawer_folder.grid_remove()
+        if new=="options": self.drawer_opts.grid(row=1,column=0, sticky="ew")
+        elif new=="folder": self.drawer_folder.grid(row=1,column=0, sticky="nsew"); self._fit_folder(); self.refresh_folder()
+        self.drawer_mode=new; self.cfg["drawer"]=new or "none"
+    def _fit_folder(self, _=None):
+        """Tree rows from the window height, so the drawer never squashes the project list/preview."""
+        try:
+            rows=max(3, min(12, (self.winfo_height()-720)//24))
+            if rows!=int(self.ftree.cget("height")): self.ftree.configure(height=rows)
+        except Exception: pass
+    def refresh_folder(self):
+        root=self.dest.get() or DEFAULT_DEST
+        self.ftree.delete(*self.ftree.get_children()); self._ftree_paths={}
+        self._folder_fill("", root)
+        try:
+            n=sum(len(fs) for _,_,fs in os.walk(root)); total=sum(os.path.getsize(os.path.join(r,f)) for r,_,fs in os.walk(root) for f in fs)
+            self.folder_lbl.configure(text="%d files  ·  %s" % (n, human(total)))
+        except Exception: self.folder_lbl.configure(text="")
+    def _folder_fill(self, parent, path):
+        try: names=sorted(os.listdir(path), key=lambda x: (not os.path.isdir(os.path.join(path,x)), x.lower()))
+        except Exception: return
+        for name in names:
+            if name.startswith("."): continue
+            full=os.path.join(path, name)
+            try: mt=time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(full)))
+            except Exception: mt=""
+            if os.path.isdir(full):
+                node=self.ftree.insert(parent, "end", text="  "+name, values=("", mt), tags=("dir",), open=False)
+                self.ftree.insert(node, "end", text="…")          # placeholder; filled on expand
+                self.ftree.set(node, "size", ""); self._ftree_paths=getattr(self, "_ftree_paths", {}); self._ftree_paths[node]=full
+            else:
+                try: sz=human(os.path.getsize(full))
+                except Exception: sz=""
+                tag=("mesh",) if name.lower().endswith((".ply",".stl",".obj",".glb")) else ()
+                node=self.ftree.insert(parent, "end", text="  "+name, values=(sz, mt), tags=tag)
+                self._ftree_paths=getattr(self, "_ftree_paths", {}); self._ftree_paths[node]=full
+    def _folder_expand(self, e=None):
+        node=self.ftree.focus(); kids=self.ftree.get_children(node)
+        if len(kids)==1 and self.ftree.item(kids[0], "text")=="…":
+            self.ftree.delete(kids[0]); self._folder_fill(node, self._ftree_paths.get(node, ""))
+    def _folder_open(self, e=None):
+        node=self.ftree.focus(); path=getattr(self, "_ftree_paths", {}).get(node)
+        if path and os.path.isfile(path): subprocess.Popen(["xdg-open", path])
 
     def _fmt_chip(self, parent, label, var):
         b=ctk.CTkButton(parent, text=label, width=50, height=26, corner_radius=13)
@@ -1115,7 +1207,7 @@ class App(ctk.CTk):
                         exp_stl=self.exp_stl.get(), exp_obj=self.exp_obj.get(), exp_glb=self.exp_glb.get(),
                         fuse_voxel=round(float(self.fuse_voxel.get() or 0.4),2),
                         scanner_ip=self.live_ip.get().strip(),
-                        cleanup=self.cleanup.get(),
+                        cleanup=self.cleanup.get(), drawer=self.cfg.get("drawer","options"),
                         records=self.records); save_cfg(self.cfg)
 
     # per-project records (rename + imported memory), keyed by ORIGINAL id
@@ -1282,9 +1374,14 @@ class App(ctk.CTk):
         if not p: return
         if p.get("thumb"):
             self._set_big_image(p["thumb"])
-        self.detail.configure(text="Project: %s     Edited: %s\nMeshes: %s   Point clouds: %s   Scans: %s"%(
-            name, p.get("date") or "?", p.get("meshes"), p.get("clouds"), p.get("nodes")))
-        self.detail.grid(); self.renders_lbl.grid(); self.film.grid()
+        bits=[self.disp(name)]
+        if p.get("date"): bits.append("edited "+p["date"])
+        if p.get("nodes"): bits.append("%d scan%s" % (p["nodes"], "" if p["nodes"]==1 else "s"))
+        if p.get("meshes"): bits.append("%d mesh%s" % (p["meshes"], "" if p["meshes"]==1 else "es"))
+        if p.get("clouds") and p.get("clouds")!=p.get("meshes"): bits.append("%d cloud%s" % (p["clouds"], "" if p["clouds"]==1 else "s"))
+        bits.append("on this PC" if p.get("local") else ("imported" if self.is_imported(name) else "on the scanner"))
+        self.detail.configure(text="  ·  ".join(bits))
+        self.projbar.grid(); self.detail.grid(); self.renders_lbl.grid(); self.film.grid()
         if p.get("meshes") or p.get("nodes"): self.tools.grid()   # Process on PC works on unfused scans too
         else: self.tools.grid_remove()
         for w in self.film.winfo_children(): w.destroy()

@@ -3,7 +3,17 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
-## 0.9.2 (local, unreleased)
+## 0.9.3 (local, unreleased)
+- Layout rearranged: a project bar above the tabs shows the selected project
+  (name, date, scans, meshes, where it lives) with its tools (View in 3D,
+  Remove base, Process on PC) on every tab. The Preview tab is just the image
+  and the scan renders.
+- The import options moved into a bottom drawer: one summary line always
+  visible, Options to expand them, Folder to browse the save folder as a tree
+  (projects and files with sizes; double-click opens a file). The drawer sizes
+  itself so the project list and preview always keep their space.
+
+## 0.9.2 (local)
 - WiFi card redesigned: the code as four tiles, a pulsing status, the incoming
   project's name and thumbnail, a live speed graph that fills with progress
   (peak and current shown; the rate is now measured per second, not averaged),
