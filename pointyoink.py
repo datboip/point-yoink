@@ -972,7 +972,7 @@ class App(ctk.CTk):
         card=ctk.CTkFrame(pr, fg_color=CARD, corner_radius=14, width=520); card.grid(row=0,column=0, pady=28)
         card.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(card, text="Process", font=ctk.CTkFont(size=18, weight="bold"), text_color=TX, anchor="w").grid(row=0,column=0, sticky="ew", padx=20, pady=(18,0))
-        ctk.CTkLabel(card, text="Tools that rebuild or change a mesh on this PC. The original file is always kept.", text_color=MUT,
+        ctk.CTkLabel(card, text="Tools that build or change a 3D model on this PC. The original file is always kept.", text_color=MUT,
                      font=ctk.CTkFont(size=12), wraplength=470, justify="left", anchor="w").grid(row=1,column=0, sticky="ew", padx=20, pady=(2,10))
         self.proc_title=ctk.CTkLabel(card, text="No project selected. Pick one on the Import tab first.", text_color=TX, anchor="w",
                                      font=ctk.CTkFont(size=13, weight="bold"), wraplength=470, justify="left")
@@ -981,9 +981,9 @@ class App(ctk.CTk):
         group_label(self.tools, "Mesh tools", top=6)
         ActionRow(self.tools, "View in 3D", "interactive viewer, drag to rotate", icon="⟳", icon_color=AC, command=self.on_view_3d).pack(fill="x", padx=6)
         hairline(self.tools)
-        self.proc_btn=ActionRow(self.tools, "Process on PC", "rebuild the mesh from the raw frames (GPU when available)", icon="⚙", icon_color=AC, command=self.on_process_pc)
+        self.proc_btn=ActionRow(self.tools, "Process on PC", "build the 3D model from the raw scan data, on this PC", icon="⚙", icon_color=AC, command=self.on_process_pc)
         self.proc_btn.pack(fill="x", padx=6)
-        self._tip(self.proc_btn, "Rebuild this scan's mesh on your PC from the raw depth frames (GPU when available). "
+        self._tip(self.proc_btn, "Build this scan's 3D model on your PC from the raw scan data (on the graphics card when there is one). "
                                  "Uses local frames if a full import already has them, otherwise pulls just what it needs. "
                                  "Saves <name>_<scan>_pcfused.ply. Needs Open3D.")
         hairline(self.tools)
@@ -993,7 +993,7 @@ class App(ctk.CTk):
                                  "tool; saves a cleaned copy as <name>_clean.ply. Original is kept.")
         hairline(self.tools)
         group_label(self.tools, "Coming next")
-        ctk.CTkLabel(self.tools, text="The cut-plane tool inside this window, and mesh clean-up you can preview before saving.",
+        ctk.CTkLabel(self.tools, text="The cut-plane tool inside this window, and clean-up you can preview before saving.",
                      text_color=DIM, font=ctk.CTkFont(size=10), wraplength=460, justify="left", anchor="w").pack(fill="x", padx=16, pady=(2,6))
 
         # Captures mode: device screenshots AND screen recordings, out of the project list
@@ -1116,8 +1116,8 @@ class App(ctk.CTk):
         self._opt(op, "check", "GLB", None, self.exp_glb, tip="For the web and editing")
         ctk.CTkLabel(op, text="Original PLY files are kept", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6, pady=(4,0))
         self._hr(op)
-        self._opt(op, "check", "Clean up mesh", "Remove floaters, fill holes, smooth", self.cleanup,
-                  tip="Tidy the mesh on your PC during import: keep the main object (remove floating bits), fill small holes, and lightly smooth. Off = raw mesh, untouched.")
+        self._opt(op, "check", "Clean up the 3D model", "Remove floating bits, fill small holes, smooth", self.cleanup,
+                  tip="Tidy the 3D model on your PC during import: keep the main object (remove floating bits), fill small holes, and lightly smooth. Off = raw mesh, untouched.")
         self._hr(op)
         self._title(op, "Destination")
         dr=ctk.CTkFrame(op, fg_color="transparent"); dr.pack(fill="x", padx=6, pady=(2,0)); dr.grid_columnconfigure(0, weight=1)
@@ -1661,7 +1661,7 @@ class App(ctk.CTk):
         self.big_hint.configure(text="")
         counts=[]
         if p.get("nodes"): counts.append("%d scan%s" % (p["nodes"], "" if p["nodes"]==1 else "s"))
-        if p.get("meshes"): counts.append("%d mesh%s" % (p["meshes"], "" if p["meshes"]==1 else "es"))
+        if p.get("meshes"): counts.append("%d 3D model%s" % (p["meshes"], "" if p["meshes"]==1 else "s"))
         if p.get("clouds") and p.get("clouds")!=p.get("meshes"): counts.append("%d cloud%s" % (p["clouds"], "" if p["clouds"]==1 else "s"))
         where="on this PC" if p.get("local") else ("imported" if self.is_imported(name) else "on the scanner")
         self.detail.configure(text="%s\n%s\n%s · %s" % (self.disp(name), ("edited "+p["date"]) if p.get("date") else "", " · ".join(counts), where))
@@ -1756,7 +1756,8 @@ class App(ctk.CTk):
     # ---- shaded 3D preview: the scan's mesh rendered off-screen (worker thread, cached PNG) ----
     def _mesh_for_node(self, name, node):
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
-        for c in (os.path.join(local, "%s_%s.ply"%(name,node)), os.path.join(local, "data", node, "fuse_mesh.ply"),
+        for c in (os.path.join(local, "%s_%s.ply"%(name,node)), os.path.join(local, "%s_%s_clean.ply"%(name,node)),
+                  os.path.join(local, "%s_%s_pcfused.ply"%(name,node)), os.path.join(local, "data", node, "fuse_mesh.ply"),
                   os.path.join(PROJECTS, name, "data", node, "fuse_mesh.ply")):
             if os.path.exists(c): return c
         return None
@@ -1773,7 +1774,7 @@ class App(ctk.CTk):
         """Show the cached shaded render for this scan, or queue one. Never blocks the UI thread."""
         mesh=self._mesh_for_node(name, node) if node else self._find_mesh(name)
         if not mesh:
-            self.big_hint.configure(text="No mesh in this scan yet"); return
+            self.big_hint.configure(text="No 3D model yet: this scan is raw data. Process on PC builds it."); return
         node=node or self._node_of(name, mesh)
         if node and node!=self._film_sel: self._film_sel=node; self._mark_scan(node)
         key="%s__%s"%(name, node) if node else name; mode=self.shade_mode
@@ -1791,10 +1792,10 @@ class App(ctk.CTk):
             if not st: threading.Thread(target=lambda: self.q.put(("mesh_stats", key, _ply_counts(mesh))), daemon=True).start()
             return
         if (key,mode) in self._shade_failed:
-            self.big_hint.configure(text="Scanner preview · 3D render unavailable"); return
+            self.big_hint.configure(text="Scanner's own preview · could not draw the 3D model"); return
         if mesh.startswith(PROJECTS) and self.pulling:
             self.big_hint.configure(text="Scanner preview · the 3D render waits for the import to finish"); return
-        self.big_hint.configure(text="Rendering 3D preview…"); self._dim_preview()
+        self.big_hint.configure(text="Drawing the 3D model…"); self._dim_preview()
         with self._shade_lock:
             self._shade_want=(key, mode, name, mesh, out); start=not self._shade_running; self._shade_running=True
         if start: threading.Thread(target=self._shade_thread, daemon=True).start()
@@ -1810,7 +1811,7 @@ class App(ctk.CTk):
                     cache=os.path.join(THUMBS, "view"); os.makedirs(cache, exist_ok=True)
                     path=os.path.join(cache, key+"_fuse_mesh.ply")
                     if not os.path.exists(path) or os.path.getsize(path)!=os.path.getsize(mesh):
-                        self.q.put(("shade_msg", key, "Copying the mesh off the scanner…")); shutil.copyfile(mesh, path)
+                        self.q.put(("shade_msg", key, "Copying the 3D model off the scanner…")); shutil.copyfile(mesh, path)
                 stats=_ply_counts(path)
                 self.q.put(("mesh_stats", key, stats))
                 _render_mesh_png(path, out, mode)
@@ -1829,7 +1830,7 @@ class App(ctk.CTk):
         except Exception: pass
     def _show_shaded(self, out):
         self._set_big_image(out)
-        self.big_hint.configure(text="Static render · View in 3D to rotate and zoom")
+        self.big_hint.configure(text="Still image · View in 3D to rotate and zoom")
         self._mv_start()
     def _make_mv(self, software=False):
         w=None
@@ -1857,12 +1858,12 @@ class App(ctk.CTk):
                 self.big.grid_remove(); self.mv.grid()
                 self.big_hint.configure(text="Drag to rotate · scroll to zoom · right-drag to pan · double-click to reset")
             else:
-                self.big_hint.configure(text="Static render · View in 3D to rotate and zoom")
+                self.big_hint.configure(text="Still image · View in 3D to rotate and zoom")
         self.mv.load(path, ready)
     def _show_stats(self, st):
         v,f=st
-        if f: self.renders_lbl.configure(text="Mesh · %s triangles · %s vertices"%(_kfmt(f), _kfmt(v)))
-        elif v: self.renders_lbl.configure(text="Point cloud · %s points"%_kfmt(v))
+        if f: self.renders_lbl.configure(text="3D model · %s triangles"%_kfmt(f))
+        elif v: self.renders_lbl.configure(text="Points only · %s points"%_kfmt(v))
 
     # ---- import ----
     def on_pull(self):
@@ -2014,9 +2015,9 @@ class App(ctk.CTk):
         if not name: return
         src=self._find_mesh(name)
         if not src:
-            self.set_banner("No mesh found for this project.", WARN); return
-        self.set_status("Loading 3D view: reading the mesh…")
-        self._open_loader("Loading 3D view", "Reading the mesh… large scans take a few seconds.")
+            self.set_banner("This project has no 3D model yet. Process on PC builds one from the raw scan data.", WARN); return
+        self.set_status("Loading 3D view: reading the model…")
+        self._open_loader("Loading 3D view", "Reading the 3D model… large scans take a few seconds.")
         threading.Thread(target=self._view_worker, args=(name, src), daemon=True).start()
     def _view_worker(self, name, src):
         # if the mesh is on the (slow) device mount, copy it to a local cache first
@@ -2026,7 +2027,7 @@ class App(ctk.CTk):
                 cache=os.path.join(THUMBS, "view"); os.makedirs(cache, exist_ok=True)
                 path=os.path.join(cache, name+"_fuse_mesh.ply")
                 if not os.path.exists(path) or os.path.getsize(path)!=os.path.getsize(src):
-                    self.q.put(("loader_msg", "Copying mesh from the scanner…"))
+                    self.q.put(("loader_msg", "Copying the 3D model from the scanner…"))
                     shutil.copyfile(src, path)
             except Exception as e:
                 log_error("view-copy", e); self.q.put(("view_done", None)); return
@@ -2052,7 +2053,7 @@ class App(ctk.CTk):
         if not name: return
         src=self._find_mesh(name)
         if not src:
-            self.set_banner("No mesh found for this project.", WARN); return
+            self.set_banner("This project has no 3D model yet. Process on PC builds one from the raw scan data.", WARN); return
         self._basing=True; self.base_btn.configure(state="disabled")
         self.set_status("Base removal: opening the cut-plane tool…")
         self._open_loader("Base removal", "Opening the cut-plane tool… large scans take a few seconds.")
@@ -2064,7 +2065,7 @@ class App(ctk.CTk):
                 os.makedirs(outdir, exist_ok=True)
                 path=os.path.join(outdir, name+"_fuse_mesh.ply")
                 if not os.path.exists(path) or os.path.getsize(path)!=os.path.getsize(src):
-                    self.q.put(("loader_msg", "Copying mesh from the scanner…"))
+                    self.q.put(("loader_msg", "Copying the 3D model from the scanner…"))
                     shutil.copyfile(src, path)
             except Exception as e:
                 log_error("base-copy", e); self.q.put(("base_done", ("err", "copy failed"))); return
@@ -2091,7 +2092,7 @@ class App(ctk.CTk):
         if not name: return
         if not _has_open3d():
             self._alert("Open3D needed",
-                "Process on PC rebuilds the mesh with Open3D, which isn't installed for this Python.\n\n"
+                "Process on PC builds the 3D model with Open3D, which isn't installed for this Python.\n\n"
                 "Install it with:\n  pip3 install --user --break-system-packages open3d\n\n"
                 "(~400 MB. The GPU is used automatically when available.)")
             return
@@ -2146,7 +2147,7 @@ class App(ctk.CTk):
                     except Exception: payload={}
                     if stage=="device": devname="GPU" if "CUDA" in str(payload.get("device","")) else "CPU"
                     elif stage=="integrate": self.q.put(("fuse_status","Scan %d/%d: %s integrating frame %d/%d…"%(ni+1,len(nodes),devname,payload.get("done",0),payload.get("total",0))))
-                    elif stage=="extract": self.q.put(("fuse_status","Scan %d/%d: extracting mesh…"%(ni+1,len(nodes))))
+                    elif stage=="extract": self.q.put(("fuse_status","Scan %d/%d: building the 3D model…"%(ni+1,len(nodes))))
                     elif stage=="done": ok=True
                     elif stage=="error": log_line("fuse %s/%s: %s"%(name,node,payload.get("msg","")))
                 proc.wait()
@@ -2552,10 +2553,10 @@ class App(ctk.CTk):
             col=ctk.CTkFrame(row, fg_color="transparent"); col.pack(side="left", fill="x", expand=True, padx=6)
             ctk.CTkLabel(col, text="scan %s" % r["node"], text_color=TX, font=ctk.CTkFont(size=12, weight="bold"), anchor="w").pack(anchor="w")
             parts=[]
-            if r["mesh"]: parts.append("mesh %s" % human(r["mesh"]))
+            if r["mesh"]: parts.append("3D model %s" % human(r["mesh"]))
             if r["cloud"]: parts.append("point cloud %s" % human(r["cloud"]))
             parts.append("%d raw frames %s" % (r["frames"], human(r["raw"])) if r["frames"] else "no raw frames")
-            if not r["mesh"] and not r["cloud"]: parts.insert(0, "unfused (raw only - use Process on PC)")
+            if not r["mesh"] and not r["cloud"]: parts.insert(0, "raw scan data only, no 3D model yet (Process on PC builds it)")
             ctk.CTkLabel(col, text="  ·  ".join(parts), text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(anchor="w")
         mode=ctk.StringVar(value="models" if self.models_only.get() else "full")
         mr=ctk.CTkFrame(t, fg_color="transparent"); mr.pack(fill="x", padx=20)
@@ -2913,7 +2914,7 @@ class App(ctk.CTk):
                     if out is None: self._shade_failed.add((key,mode))
                     if (key,mode)==self._shade_key:
                         if out: self._show_shaded(out)
-                        else: self.big_hint.configure(text="Scanner preview · 3D render unavailable (see Help > Log)")
+                        else: self.big_hint.configure(text="Scanner's own preview · could not draw the 3D model (see Help > Log)")
                 elif kind=="shade_msg":
                     if self._shade_key and rest[0]==self._shade_key[0]: self.big_hint.configure(text=rest[1])
                 elif kind=="mesh_stats":
@@ -2978,8 +2979,10 @@ class App(ctk.CTk):
                     except Exception: pass
                     status, info = rest[0]
                     if status=="ok":
-                        self.set_banner("Processed on PC -> %s" % info, OK); self.set_status("Processed on PC -> %s" % info)
-                        self.projects_sig=None
+                        n=len(info.split(", ")); self.set_banner("Built %d 3D model%s on this PC" % (n, "" if n==1 else "s"), OK); self.set_status("3D model%s built: %s" % ("" if n==1 else "s", info))
+                        self.projects_sig=None; self.gallery_cache={}; self._mesh_stats={}
+                        sel=self.selected; self.listed=False; self.start_listing()
+                        if sel: self.after(1500, lambda s=sel: (self.select_project(s) if s in [p["name"] for p in self.projects] else None))
                         if self.auto_open.get(): self.open_folder()
                     else:
                         self.set_banner("Process on PC failed - see Help > Log. %s" % (info or ""), WARN); self.set_status("")
