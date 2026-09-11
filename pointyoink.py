@@ -305,13 +305,18 @@ def list_local_projects(dest):
     for name in names:
         pdir=os.path.join(dest, name)
         if name.startswith(".") or name in SKIP_LOCAL or name.endswith("_glb") or not os.path.isdir(pdir): continue
+        def node_of(path):   # <name>_<node>[_pcfused|_clean].ply -> node
+            n=os.path.basename(path)[len(name)+1:-4]
+            for suf in ("_pcfused","_clean"):
+                if n.endswith(suf): n=n[:-len(suf)]
+            return n
         flat=[x for x in glob.glob(os.path.join(pdir, name+"_*.ply")) if not x.endswith("_cloud.ply")]
         nested=glob.glob(os.path.join(pdir, "data", "*", "fuse_mesh.ply"))
         clouds=glob.glob(os.path.join(pdir, name+"_*_cloud.ply")) or glob.glob(os.path.join(pdir, "data", "*", "fuse.ply"))
-        nodes=set(os.path.basename(x)[len(name)+1:-4] for x in flat) | set(os.path.basename(os.path.dirname(x)) for x in nested) \
-              | set(os.path.basename(d) for d in glob.glob(os.path.join(pdir, "data", "*")) if os.path.isdir(d))
+        mesh_nodes=set(node_of(x) for x in flat) | set(os.path.basename(os.path.dirname(x)) for x in nested)
+        nodes=mesh_nodes | set(os.path.basename(d) for d in glob.glob(os.path.join(pdir, "data", "*")) if os.path.isdir(d))
         if not (flat or nested or clouds or os.path.exists(os.path.join(pdir, name+".revo"))): continue
-        info={"name":name, "local":True, "meshes":len(flat or nested), "clouds":len(clouds), "nodes":len(nodes) or None, "date":None, "thumb":None, "edit_time":None}
+        info={"name":name, "local":True, "meshes":len(mesh_nodes), "clouds":len(clouds), "nodes":len(nodes) or None, "date":None, "thumb":None, "edit_time":None}
         try:
             d=json.load(open(os.path.join(pdir, name+".revo"))); et=d.get("edit_time")
             if et: info["date"]=time.strftime("%Y-%m-%d %H:%M", time.localtime(int(et))); info["edit_time"]=int(et)
@@ -939,9 +944,9 @@ class App(ctk.CTk):
         self.big=ctk.CTkLabel(bigwrap, text="Select a project to preview its scans", fg_color="transparent", text_color=MUT)
         self.big.grid(row=0,column=0, sticky="nsew", padx=12, pady=12)
         self.big.bind("<Configure>", self._on_big_resize)
-        import meshview   # interactive 3D (drag, scroll, right-drag, double-click) drawn by the same renderer
-        self.mv=meshview.MeshView(bigwrap); self.mv.grid(row=0,column=0, sticky="nsew", padx=12, pady=12); self.mv.grid_remove()
-        self._mv_key=None; self._mv_want=None
+        # interactive 3D: the GPU view (glview.py, full mesh) when OpenGL works in this window, else the
+        # software renderer (meshview.py). Same mouse language either way.
+        self._mv_wrap=bigwrap; self.mv=self._make_mv(); self._mv_key=None; self._mv_want=None
         self.big_hint=ctk.CTkLabel(bigwrap, text="", text_color=MUT, font=ctk.CTkFont(size=11), fg_color="#0a0c10", corner_radius=6)
         self.big_hint.place(relx=0.5, rely=1.0, y=-10, anchor="s")
         self.renders_lbl=ctk.CTkLabel(bigwrap, text="", text_color=MUT, font=ctk.CTkFont(size=11), fg_color="#0a0c10", corner_radius=6)
@@ -1005,6 +1010,11 @@ class App(ctk.CTk):
         self.shots.grid(row=1,column=0, sticky="nsew", padx=10, pady=(0,10))
         for c in range(4): self.shots.grid_columnconfigure(c, weight=1)
         self._shots_items=[]
+        self.shots_empty=ctk.CTkLabel(self.shots, justify="left", anchor="w", text_color=MUT, font=ctk.CTkFont(size=12), wraplength=560,
+            text="Screenshots and screen recordings only come over the USB cable.\n\n"
+                 "Plug the scanner in, tap File Transfer on it, then click USB above. "
+                 "WiFi only ever sends the project you share from the scanner, never its screenshots.")
+        self.shots_empty.grid(row=0,column=0, padx=20, pady=20, sticky="w")
         # Live tab: two live sources. MIRACO streams pose + IMU over WiFi (TCP 9999, 120 Hz);
         # a tethered RANGE streams its cameras over USB (range.py).
         lv=self.mode_frames["Live"]
@@ -1821,14 +1831,28 @@ class App(ctk.CTk):
         self._set_big_image(out)
         self.big_hint.configure(text="Static render · View in 3D to rotate and zoom")
         self._mv_start()
+    def _make_mv(self, software=False):
+        w=None
+        if not software and os.environ.get("POINTYOINK_NO_GL")!="1":
+            try:
+                import glview; w=glview.GLView(self._mv_wrap)
+            except Exception as e: log_line("GL view unavailable, using the software view: %s" % e); w=None
+        if w is None:
+            import meshview; w=meshview.MeshView(self._mv_wrap)
+        w.grid(row=0,column=0, sticky="nsew", padx=12, pady=12); w.grid_remove(); return w
     def _mv_start(self):
-        """Load the interactive view for the current scan (decimation runs in a thread) and swap it in."""
+        """Load the interactive view for the current scan (mesh prep runs in a thread) and swap it in."""
         want=self._mv_want
         if not want or self._mv_key==want[0] or not os.path.exists(want[1]): return
         key,path=want; self._mv_key=key; self.mv.wire=(self.shade_mode=="wire")
         self.big_hint.configure(text="Static render · loading the interactive view…")
         def ready(ok, k=key):
             if k!=self._mv_key: return
+            if not ok and getattr(self.mv, "failed", False) and not isinstance(self.mv, __import__("meshview").MeshView):
+                log_line("GL view failed in this window (%s); switching to the software view" % getattr(self.mv, "_err", ""))
+                try: self.mv.destroy()
+                except Exception: pass
+                self.mv=self._make_mv(software=True); self.mv.wire=(self.shade_mode=="wire"); self.mv.load(path, ready); return
             if ok:
                 self.big.grid_remove(); self.mv.grid()
                 self.big_hint.configure(text="Drag to rotate · scroll to zoom · right-drag to pan · double-click to reset")
@@ -2418,7 +2442,7 @@ class App(ctk.CTk):
         rx=self._wifi
         if not rx or rx.t0: return
         import wifi
-        threading.Thread(target=rx.stop, daemon=True).start(); shutil.rmtree(rx.stage, ignore_errors=True)
+        rx.stop(); shutil.rmtree(rx.stage, ignore_errors=True)     # synchronous: the port must be free before the next bind
         try:
             nrx=wifi.Receiver(rx.dest, None, lambda k,i: self.q.put(("wifi", k, i))); nrx.start()
         except OSError as e:
@@ -2585,7 +2609,7 @@ class App(ctk.CTk):
     # ---- screenshots ----
     def refresh_screenshots(self):
         if not quick_mounted():
-            self.set_banner("Connect the scanner to see its screenshots.", WARN); return
+            self.set_banner("Screenshots come over USB: plug in, tap File Transfer, click USB.", WARN); return
         self.set_status("Reading screenshots off the device…")
         threading.Thread(target=self._shots_worker, daemon=True).start()
     def _shots_worker(self):
@@ -2862,7 +2886,7 @@ class App(ctk.CTk):
                                 % (len(ef), ", ".join(ef[:3]) + ("…" if len(ef)>3 else "")), WARN)
             else:
                 self.progline.configure(text="Done."); self.set_banner("Import complete.", OK)
-            self.projects_sig=None
+            self.projects_sig=None; self.gallery_cache={}; self.listed=False; self.start_listing()   # new projects appear
             za=getattr(self, "_zip_after", None)
             if za:
                 self._zip_after=None

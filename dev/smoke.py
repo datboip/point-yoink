@@ -40,10 +40,14 @@ def run():
         steps.append("no local projects (empty state)")
     for m in ("Captures", "Live", "Projects"):
         step("mode " + m, lambda m=m: app._set_mode(m))
-    step("wifi open", lambda: app.on_wifi())
-    step("wifi dialog exists", lambda: (_ for _ in ()).throw(RuntimeError("no wifi receiver")) if not app._wifi else None)
-    step("wifi new code", lambda: app._wifi_new_code())
-    step("wifi cancel", lambda: app._wifi_cancel())
+    import socket
+    busy = socket.socket().connect_ex(("127.0.0.1", 9706)) == 0
+    if busy: steps.append("wifi steps skipped (port 9706 in use by another PointYoink)")
+    else:
+        step("wifi open", lambda: app.on_wifi())
+        step("wifi dialog exists", lambda: (_ for _ in ()).throw(RuntimeError("no wifi receiver")) if not app._wifi else None)
+        step("wifi new code", lambda: app._wifi_new_code())
+        step("wifi cancel", lambda: app._wifi_cancel())
     step("export zip w/o selection", lambda: app.on_export_zip())
     step("import w/o selection", lambda: app.on_pull())
     step("settings dialog", lambda: app.dlg_settings())

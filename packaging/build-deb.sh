@@ -16,7 +16,7 @@ mkdir -p "$PKG/DEBIAN" \
          "$PKG/usr/share/doc/pointyoink"
 
 # --- vendor the pip-only deps (fast-simplification is a compiled ext -> arch-specific deb) ---
-"$ROOT/venv/bin/pip" install --quiet --target "$PKG/usr/lib/pointyoink/vendor" customtkinter trimesh "pyglet<2" fast-simplification
+"$ROOT/venv/bin/pip" install --quiet --target "$PKG/usr/lib/pointyoink/vendor" customtkinter trimesh "pyglet<2" fast-simplification pyopengltk PyOpenGL
 # drop things provided by apt (PIL/ImageTk = system tk build; numpy/matplotlib/networkx are apt)
 V="$PKG/usr/lib/pointyoink/vendor"
 rm -rf "$V"/PIL* "$V"/Pillow* "$V"/pillow* "$V"/numpy* "$V"/matplotlib* "$V"/networkx* "$V"/bin "$V"/__pycache__ 2>/dev/null || true
@@ -32,6 +32,7 @@ cp "$ROOT/range.py"      "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/wifi.py"       "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/shade.py"      "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/meshview.py"   "$PKG/usr/lib/pointyoink/"
+cp "$ROOT/glview.py"     "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/icon.png"      "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/icon.png"      "$PKG/usr/share/icons/hicolor/512x512/apps/pointyoink.png"
 cp "$ROOT/LICENSE" "$ROOT/README.md" "$ROOT/CHANGELOG.md" "$PKG/usr/share/doc/pointyoink/" 2>/dev/null || true
