@@ -53,8 +53,8 @@ def main():
         T0 = kabsch([p[1] for p in pairs], [p[0] for p in pairs]); emit("pairs", n=len(pairs), error_mm=round(pair_err(pairs, T0), 2))
     elif not a.auto:
         emit("error", msg="need 3 or more point pairs, or --auto"); return 2
-    emit("load")
-    bp, bn = sample(a.base, 400000); mp, mn = sample(a.moving, 400000)
+    emit("load", msg="reading both scans")
+    bp, bn = sample(a.base, 250000); mp, mn = sample(a.moving, 250000)
     try:
         import open3d as o3d
     except Exception:
@@ -63,7 +63,7 @@ def main():
         emit("result", fitness=None, rmse=None, icp=False); return 0
     B = cloud(bp, bn, a.voxel); M = cloud(mp, mn, a.voxel)
     if a.auto and len(pairs) < 3:
-        emit("auto")
+        emit("auto", msg="looking for a rough fit by itself")
         fv = a.voxel * 3
         Bd, Md = B.voxel_down_sample(fv), M.voxel_down_sample(fv)
         fb = o3d.pipelines.registration.compute_fpfh_feature(Bd, o3d.geometry.KDTreeSearchParamHybrid(radius=fv * 5, max_nn=100))
@@ -75,12 +75,15 @@ def main():
         T0 = np.asarray(r.transformation); emit("auto_done", fitness=round(r.fitness, 3), rmse=round(r.inlier_rmse, 2))
     T = T0; fit = rmse = None
     if not a.no_icp:
-        emit("icp")
-        res = o3d.pipelines.registration.registration_icp(M, B, a.max_dist, T0, o3d.pipelines.registration.TransformationEstimationPointToPlane(),
-                                                          o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=60))
+        # coarse pass on a light cloud (seconds), then a tight pass on the working cloud with few iterations
+        emit("icp", msg="fine adjustment")
+        Bc, Mc = B.voxel_down_sample(max(a.voxel * 2.5, 2.0)), M.voxel_down_sample(max(a.voxel * 2.5, 2.0))
+        res = o3d.pipelines.registration.registration_icp(Mc, Bc, a.max_dist, T0, o3d.pipelines.registration.TransformationEstimationPointToPlane(),
+                                                          o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=40))
         T = np.asarray(res.transformation); fit, rmse = float(res.fitness), float(res.inlier_rmse)
+        emit("icp2", msg="final touch")
         res2 = o3d.pipelines.registration.registration_icp(M, B, max(a.voxel * 1.5, 1.0), T, o3d.pipelines.registration.TransformationEstimationPointToPlane(),
-                                                           o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=40))   # tight pass
+                                                           o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=15))
         if res2.fitness > 0.2: T = np.asarray(res2.transformation); fit, rmse = float(res2.fitness), float(res2.inlier_rmse)
     out = {"matrix": T.tolist(), "fitness": fit, "rmse": rmse, "pair_error_before": pair_err(pairs, np.eye(4)), "pair_error_after": pair_err(pairs, T)}
     json.dump(out, open(a.out, "w")); emit("result", fitness=(round(fit, 3) if fit is not None else None), rmse=(round(rmse, 2) if rmse is not None else None), icp=not a.no_icp)

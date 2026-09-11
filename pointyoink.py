@@ -1626,7 +1626,7 @@ class App(ctk.CTk):
                         fuse_voxel=round(float(self.fuse_voxel.get() or 0.4),2),
                         clean_isolation=self._num(self.clean_iso,15,0,100), clean_fill_holes=self.clean_holes.get(),
                         clean_smooth_times=int(self._num(self.clean_smooth,3,0,50)), clean_keep_pct=self._num(self.clean_keep,100,1,100),
-                        clean_do_iso=self.clean_do_iso.get(), clean_do_smooth=self.clean_do_smooth.get(), clean_do_keep=self.clean_do_keep.get(),
+                        clean_do_iso=self.clean_do_iso.get(), clean_do_smooth=self.clean_do_smooth.get(), clean_do_keep=self.clean_do_keep.get(), clean_do_base=self.clean_do_base.get(),
                         scanner_ip=self.live_ip.get().strip(),
                         cleanup=self.cleanup.get(), side=self.cfg.get("side","project"),
                         gl_view=self.cfg.get("gl_view","auto"), fuse_device=self.cfg.get("fuse_device","auto"),
@@ -2134,6 +2134,7 @@ class App(ctk.CTk):
         self.clean_do_iso=ctk.BooleanVar(value=bool(self.cfg.get("clean_do_iso",True)))
         self.clean_do_smooth=ctk.BooleanVar(value=bool(self.cfg.get("clean_do_smooth",True)))
         self.clean_do_keep=ctk.BooleanVar(value=bool(self.cfg.get("clean_do_keep",False)))
+        self.clean_do_base=ctk.BooleanVar(value=bool(self.cfg.get("clean_do_base",False)))
     def _num(self, var, default, lo, hi):
         try: v=float(str(var.get()).strip().rstrip("%"))
         except Exception: v=default
@@ -2144,6 +2145,7 @@ class App(ctk.CTk):
         args=["--clean", "--isolation-rate", "%g" % (self._num(self.clean_iso,15,0,100) if self.clean_do_iso.get() else 0),
               "--smooth-times", "%d" % (int(self._num(self.clean_smooth,3,0,50)) if self.clean_do_smooth.get() else 0)]
         if self.clean_holes.get(): args.append("--fill-holes")
+        if self.clean_do_base.get(): args.append("--base-remove")
         keep=self._num(self.clean_keep,100,1,100)
         if self.clean_do_keep.get() and keep<100: args+=["--simplify-pct", "%g" % keep]
         return args
@@ -2408,20 +2410,24 @@ class App(ctk.CTk):
         self._proc_empty.grid_remove()
         nodes=self._proc_nodes(name); local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
         self.proc_title.configure(text="%d scan%s · %s" % (len(nodes), "" if len(nodes)==1 else "s", name if self.disp(name)!=name else ""))
+        self._proc_next_strip(name, nodes, local)
         for i,node in enumerate(nodes):
             vs=self._proc_versions(name, node); cur=self._proc_current(name, node)
             raw=len(glob.glob(os.path.join(local, "data", node, "cache", "*.dph")))
-            card=ctk.CTkFrame(self.proc_cards, fg_color=CARD, corner_radius=14); card.grid(row=i, column=0, sticky="ew", padx=6, pady=6)
+            card=ctk.CTkFrame(self.proc_cards, fg_color=CARD, corner_radius=14); card.grid(row=i+1, column=0, sticky="ew", padx=6, pady=6)
             card.grid_columnconfigure(1, weight=1)
             thumb=os.path.join(local, "data", node, "preview.png")
             if not os.path.exists(thumb): thumb=os.path.join(local, "%s_%s.png" % (name, node))
+            tl=ctk.CTkLabel(card, text="", fg_color="#0a0c10", corner_radius=8, width=110, height=70); tl.grid(row=0,column=0, rowspan=3, padx=(14,12), pady=12)
             if os.path.exists(thumb):
-                try: self.imgs["proc_"+node]=cimg(thumb, 110); ctk.CTkLabel(card, image=self.imgs["proc_"+node], text="", fg_color="#0a0c10", corner_radius=8).grid(row=0,column=0, rowspan=3, padx=(14,12), pady=12)
+                try: self.imgs["proc_"+node]=cimg(thumb, 110); tl.configure(image=self.imgs["proc_"+node])
                 except Exception: pass
+            elif cur: self._card_thumb(name, node, cur[2], tl)      # no scanner picture (a model built or combined here): render one
             top=ctk.CTkFrame(card, fg_color="transparent"); top.grid(row=0,column=1, sticky="ew", pady=(12,0))
             ctk.CTkLabel(top, text=self._scan_label(name, node), font=ctk.CTkFont(size=14, weight="bold"), text_color=TX).pack(side="left")
             ctk.CTkLabel(top, text=(node if node!="combined" else "all aligned scans in one model"), text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=10)
-            status=("no 3D model yet · %d raw frames" % raw) if not vs else ("%d version%s · %d raw frames" % (len(vs), "" if len(vs)==1 else "s", raw) if raw else "%d version%s · no raw data on this PC" % (len(vs), "" if len(vs)==1 else "s"))
+            if node=="combined": status="%d version%s · built from the scans you lined up" % (len(vs), "" if len(vs)==1 else "s")
+            else: status=("no 3D model yet · %d raw frames" % raw) if not vs else ("%d version%s · %d raw frames" % (len(vs), "" if len(vs)==1 else "s", raw) if raw else "%d version%s · no raw data on this PC" % (len(vs), "" if len(vs)==1 else "s"))
             ctk.CTkLabel(top, text=status, text_color=(WARN if not vs else MUT), font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
             vr=ctk.CTkFrame(card, fg_color="transparent"); vr.grid(row=1,column=1, sticky="ew", pady=(6,0))
             ctk.CTkLabel(vr, text="Versions:" if vs else "", text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0,6))
@@ -2446,12 +2452,60 @@ class App(ctk.CTk):
                 b.pack(side="top", fill="x", pady=2); self._tip(b, tip); return b
             bb=mk("build", "⚙  Build model", "Build this scan's 3D model from its raw data, on this PC." if raw else "No raw scan data on this PC for this scan (share the project over WiFi as Full project).",
                   bool(raw), lambda n=name,nd=node: self._proc_build(n, [nd]))
+            if node=="combined": bb.pack_forget()                     # the combined model is rebuilt from the Combine window, not here
             cb=mk("prepare", "✦  Prepare…", "Remove floating pieces, smooth the surface, fill small holes, reduce triangles. You see before and after, then keep or discard.",
                   bool(vs), lambda n=name,nd=node: self._prepare_dialog(n, nd))
             xb=mk("export", "⬆  Export…", "Save this scan as STL, OBJ, GLB or PLY, with its size and a mesh check.", bool(vs), lambda n=name,nd=node: self._export_dialog(n, nd))
             pb=ctk.CTkProgressBar(card, height=6, corner_radius=3, progress_color=AC, fg_color="#0d0f14"); pb.set(0)
             pl=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w")
             self._proc_rows[node]={"card":card, "bar":pb, "lbl":pl, "build":bb, "prepare":cb, "export":xb}
+    def _card_thumb(self, name, node, path, label):
+        """Small shaded render for a card without a scanner picture, cached under THUMBS, made in a thread."""
+        key="%s__%s__card" % (name, node); out=os.path.join(THUMBS, key+".png")
+        def put():
+            try:
+                if label.winfo_exists(): self.imgs["proc_"+node]=cimg(out, 110); label.configure(image=self.imgs["proc_"+node])
+            except Exception: pass
+        if os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(path): put(); return
+        def work():
+            try:
+                import shade; os.makedirs(THUMBS, exist_ok=True)
+                v,f=shade.load_oriented(path, 150000); shade.render(v, f, size=(330, 210), grid=False, gizmo=False).save(out)
+                self.q.put(("call", put))
+            except Exception as e: log_error("card thumb", e)
+        threading.Thread(target=work, daemon=True).start()
+    def _proc_next(self, name, nodes, local):
+        """What to do now for this project: (title, detail, button text, command, step index 0..3)."""
+        scans=[n for n in nodes if n!="combined"]
+        unbuilt=[n for n in scans if not self._proc_versions(name, n) and glob.glob(os.path.join(local,"data",n,"cache","*.dph"))]
+        built=[n for n in scans if self._proc_versions(name, n)]
+        if unbuilt:
+            return ("Build the 3D model%s" % ("" if len(unbuilt)==1 else "s"), "%d scan%s only %s raw data. Building takes seconds on a graphics card." % (len(unbuilt), "" if len(unbuilt)==1 else "s", "has" if len(unbuilt)==1 else "have"),
+                    "⚙  Build %d model%s" % (len(unbuilt), "" if len(unbuilt)==1 else "s"), lambda: self._proc_build(name, unbuilt), 0)
+        target="combined" if "combined" in nodes else (built[0] if built else None)
+        if len(built)>=2 and "combined" not in nodes:
+            return ("Line up the scans and build one model", "You scanned %d sides. Click matching spots on two scans at a time, then build one model from all of them." % len(built),
+                    "⧉  Combine scans…", lambda: self._align_dialog(name), 1)
+        if not target: return ("Nothing to prepare yet", "Share this project over WiFi as Full project to get its raw data, or plug the scanner in.", None, None, 0)
+        vs=self._proc_versions(name, target); lab=self._scan_label(name, target)
+        if not any(k=="clean" for k,_,_ in vs):
+            return ("Prepare the %s model" % lab.lower() if target=="combined" else "Prepare %s" % lab, "Remove floating pieces and the base, smooth, fill holes. You see before and after and keep or discard.",
+                    "✦  Prepare…", lambda: self._prepare_dialog(name, target), 2)
+        return ("Export", "%s is prepared. Save it as STL for a slicer, or OBJ, GLB, PLY." % lab, "⬆  Export…", lambda: self._export_dialog(name, target), 3)
+    def _proc_next_strip(self, name, nodes, local):
+        title, detail, btxt, cmd, step = self._proc_next(name, nodes, local)
+        strip=ctk.CTkFrame(self.proc_cards, fg_color="#0f1a2b", corner_radius=14, border_width=1, border_color="#1f3a5f"); strip.grid(row=0, column=0, sticky="ew", padx=6, pady=(4,10))
+        strip.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(strip, text="NEXT", text_color=AC, font=ctk.CTkFont(size=11, weight="bold")).grid(row=0,column=0, padx=(16,10), pady=(12,0), sticky="w")
+        ctk.CTkLabel(strip, text=title, text_color=TX, font=ctk.CTkFont(size=15, weight="bold"), anchor="w").grid(row=0,column=1, sticky="w", pady=(12,0))
+        ctk.CTkLabel(strip, text=detail, text_color=MUT, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=640).grid(row=1,column=1, sticky="w", pady=(0,4))
+        trail=ctk.CTkFrame(strip, fg_color="transparent"); trail.grid(row=2,column=1, sticky="w", pady=(0,12))
+        for i,nm in enumerate(("Build", "Combine", "Prepare", "Export")):
+            col=(OK if i<step else (AC if i==step else DIM)); mark=("✓ " if i<step else ("▶ " if i==step else ""))
+            ctk.CTkLabel(trail, text=mark+nm, text_color=col, font=ctk.CTkFont(size=11, weight=("bold" if i==step else "normal"))).pack(side="left")
+            if i<3: ctk.CTkLabel(trail, text="  →  ", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left")
+        if btxt:
+            ctk.CTkButton(strip, text=btxt, width=190, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).grid(row=0,column=2, rowspan=3, padx=16, pady=12)
     def _proc_progress(self, node, frac, text):
         r=self._proc_rows.get(node)
         if not r: return
@@ -2502,7 +2556,7 @@ class App(ctk.CTk):
         cur=self._proc_current(name, node)
         if not cur: return
         self._ensure_clean_vars()
-        t=self._top("Prepare · %s" % self._scan_label(name, node), 860, 640, key="prepare")
+        t=self._top("Prepare · %s" % self._scan_label(name, node), 960, 780, key="prepare")
         if t is None: return
         src=cur[2]; final=os.path.join(os.path.dirname(src), "%s_%s_clean.ply" % (name, node)); tmp=final[:-4]+".tmp.ply"
         card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
@@ -2511,7 +2565,7 @@ class App(ctk.CTk):
         def row(var, title, before, entry, after, tip):
             r=ctk.CTkFrame(opts, fg_color=CARD2, corner_radius=10); r.pack(fill="x", padx=4, pady=3)
             cbx=ctk.CTkCheckBox(r, text=title, variable=var, width=24, checkbox_width=18, checkbox_height=18, corner_radius=5, border_color=STROKE, fg_color=AC, hover_color=AC,
-                                text_color=TX, font=ctk.CTkFont(size=12, weight="bold")); cbx.pack(side="left", padx=(12,10), pady=8)
+                                text_color=TX, font=ctk.CTkFont(size=12, weight="bold")); cbx.pack(side="left", padx=(12,10), pady=7)
             self._tip(cbx, tip)
             ctk.CTkLabel(r, text=before, text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left")
             if entry is not None:
@@ -2519,6 +2573,8 @@ class App(ctk.CTk):
                 ctk.CTkLabel(r, text=after, text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left")
         row(self.clean_do_iso, "Remove floating pieces", "drop pieces smaller than", self.clean_iso, "% of the biggest one",
             "Loose bits that are not part of the object. The scanner's Isolation rate; its default is 15%.")
+        row(self.clean_do_base, "Remove base", "cuts off the biggest flat surface (table, turntable, floor). Check the After view: it can bite into a flat part of the object", None, "",
+            "Automatic. For a cut you place by hand, use Remove base on the Prepare page instead.")
         row(self.clean_do_smooth, "Smooth surface", "", self.clean_smooth, "passes (the scanner uses 3)",
             "Evens out scan ripple. More passes soften small detail.")
         row(self.clean_holes, "Fill small holes", "closes small gaps in the surface. Off on the scanner by default: it can invent surface where the scan missed", None, "",
@@ -2527,13 +2583,36 @@ class App(ctk.CTk):
             "The scanner's Simplify ratio (it uses 40%). 100 keeps every triangle.")
         prev=ctk.CTkFrame(card, fg_color="transparent"); prev.pack(fill="both", expand=True, padx=12, pady=(10,0))
         prev.grid_columnconfigure((0,1), weight=1); prev.grid_rowconfigure(1, weight=1)
-        ctk.CTkLabel(prev, text="Before", text_color=MUT, font=ctk.CTkFont(size=11)).grid(row=0,column=0)
+        ctk.CTkLabel(prev, text="Before · drag to turn, both views turn together", text_color=MUT, font=ctk.CTkFont(size=11)).grid(row=0,column=0)
         ctk.CTkLabel(prev, text="After", text_color=MUT, font=ctk.CTkFont(size=11)).grid(row=0,column=1)
-        imgs=[ctk.CTkLabel(prev, text="", fg_color="#0a0c10", corner_radius=10) for _ in range(2)]
-        imgs[0].grid(row=1,column=0, sticky="nsew", padx=(4,3), pady=4); imgs[1].grid(row=1,column=1, sticky="nsew", padx=(3,4), pady=4)
+        boxes=[ctk.CTkFrame(prev, fg_color="#0a0c10", corner_radius=10) for _ in range(2)]
+        boxes[0].grid(row=1,column=0, sticky="nsew", padx=(4,3), pady=4); boxes[1].grid(row=1,column=1, sticky="nsew", padx=(3,4), pady=4)
+        views=[]; loads=[]
+        for b in boxes:
+            b.grid_columnconfigure(0, weight=1); b.grid_rowconfigure(0, weight=1)
+            v=self._new_view(b); v.grid(row=0,column=0, sticky="nsew", padx=4, pady=4); views.append(v)
+            l=ctk.CTkLabel(b, text="", text_color=MUT, font=ctk.CTkFont(size=13), fg_color="#0a0c10"); l.grid(row=0,column=0, sticky="nsew", padx=4, pady=4); loads.append(l)
+        def sync(a, b):
+            try:
+                if hasattr(a, "rot"): b.rot=a.rot.copy()
+                else: b.azim, b.elev=a.azim, a.elev
+                b.zoom=a.zoom; b.pan=list(a.pan); b.draw()
+            except Exception: pass
+        for a,b in ((views[0],views[1]),(views[1],views[0])):
+            for ev in ("<B1-Motion>","<B2-Motion>","<B3-Motion>","<ButtonRelease-1>","<MouseWheel>","<Button-4>","<Button-5>","<Double-Button-1>"):
+                a.bind(ev, lambda e, a=a, b=b: sync(a, b), add="+")
+        def show(i, path, text):
+            loads[i].configure(text=text); loads[i].grid(); loads[i].lift()
+            def cb(ok):
+                if not t.winfo_exists(): return
+                if ok: loads[i].grid_remove(); sync(views[0], views[1]) if i==1 else None
+                else: loads[i].configure(text="Could not load this model")
+            views[i].load(path, cb, max_faces=600000)
+        show(0, src, "Loading…"); loads[1].configure(text="Press Run to see the result here"); loads[1].grid(); loads[1].lift()
         status=ctk.CTkLabel(card, text="Tick what to do, then Run. Nothing is changed until you press Keep.", text_color=MUT, font=ctk.CTkFont(size=12)); status.pack(anchor="w", padx=18, pady=(6,0))
         btns=ctk.CTkFrame(card, fg_color="transparent"); btns.pack(fill="x", padx=12, pady=(6,12))
-        state={"done":False}
+        def able(b, on, fill=AC):
+            b.configure(state=("normal" if on else "disabled"), fg_color=(fill if on else CARD2), text_color=("#04121f" if on else DIM), text_color_disabled=DIM)
         def close():
             try:
                 if os.path.exists(tmp): os.remove(tmp)
@@ -2548,31 +2627,27 @@ class App(ctk.CTk):
             self._proc_set_current(name, node, "clean"); close()
         def discard(): close(); self.set_banner("Discarded. Nothing was changed.", MUT)
         def run():
-            if not (self.clean_do_iso.get() or self.clean_do_smooth.get() or self.clean_holes.get() or self.clean_do_keep.get()):
+            if not (self.clean_do_iso.get() or self.clean_do_smooth.get() or self.clean_holes.get() or self.clean_do_keep.get() or self.clean_do_base.get()):
                 status.configure(text="Tick at least one action.", text_color=WARN); return
-            self._persist(); runb.configure(state="disabled"); keepb.pack_forget(); discb.pack_forget()
+            self._persist(); able(runb, False); keepb.pack_forget(); discb.pack_forget()
+            loads[1].configure(text="Working…"); loads[1].grid(); loads[1].lift(); t0=time.time()
             status.configure(text="Working on a copy… (a big model takes a minute)", text_color=MUT)
+            def tick():
+                if t.winfo_exists() and runb.cget("state")=="disabled": status.configure(text="Working on a copy… %ds (a big model takes a minute)" % int(time.time()-t0)); t.after(1000, tick)
+            t.after(1000, tick)
             def work():
-                ok=self._clean_subprocess(src, tmp); ims=[None,None]
-                try:
-                    import shade
-                    for i,pth in enumerate((src, tmp if ok else None)):
-                        if not pth: continue
-                        v,f=shade.load_oriented(pth, 300000); ims[i]=shade.render(v, f, size=(400, 250), grid=False)
-                except Exception as e: log_error("prepare preview", e)
-                def show():
-                    for i,im in enumerate(ims):
-                        if im is not None:
-                            self.imgs["prep_%d"%i]=ctk.CTkImage(light_image=im, dark_image=im, size=im.size); imgs[i].configure(image=self.imgs["prep_%d"%i])
-                    runb.configure(state="normal")
+                ok=self._clean_subprocess(src, tmp)
+                def done():
+                    if not t.winfo_exists(): return
+                    able(runb, True)
                     if ok:
                         st=None
                         try: st=os.path.getsize(tmp)
                         except Exception: pass
-                        status.configure(text="Done: %s → %s. Keep it as the prepared version, or discard." % (human(os.path.getsize(src)), human(st or 0)), text_color=TX)
-                        keepb.pack(side="right", padx=6); discb.pack(side="right", padx=6); state["done"]=True
-                    else: status.configure(text="Could not prepare this scan (see Help > Log).", text_color=WARN)
-                self.q.put(("call", show))
+                        status.configure(text="Done: %s → %s. Turn the views to compare, then Keep or Discard." % (human(os.path.getsize(src)), human(st or 0)), text_color=TX)
+                        show(1, tmp, "Loading the result…"); keepb.pack(side="right", padx=6); discb.pack(side="right", padx=6)
+                    else: status.configure(text="Could not prepare this scan (see Help > Log).", text_color=WARN); loads[1].configure(text="No result")
+                self.q.put(("call", done))
             threading.Thread(target=work, daemon=True).start()
         runb=ctk.CTkButton(btns, text="Run", width=110, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=run); runb.pack(side="left", padx=6)
         ctk.CTkButton(btns, text="Close", width=90, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=close).pack(side="left", padx=6)
@@ -2675,15 +2750,21 @@ class App(ctk.CTk):
         frames[0].grid(row=2,column=0, sticky="nsew", padx=(14,4), pady=4); frames[1].grid(row=2,column=1, sticky="nsew", padx=(4,14), pady=4)
         caps=[ctk.CTkLabel(f, text="", text_color=MUT, font=ctk.CTkFont(size=11)) for f in frames]
         views=[self._new_view(f) for f in frames]
-        for f,c,v in zip(frames, caps, views):
+        loads=[ctk.CTkLabel(f, text="Loading the 3D view…", text_color=MUT, font=ctk.CTkFont(size=14), fg_color="#0a0c10") for f in frames]
+        for f,c,v,l in zip(frames, caps, views, loads):
             f.grid_columnconfigure(0, weight=1); f.grid_rowconfigure(1, weight=1); c.grid(row=0,column=0, sticky="w", padx=10, pady=(6,0)); v.grid(row=1,column=0, sticky="nsew", padx=6, pady=6)
+            l.grid(row=1,column=0, sticky="nsew", padx=6, pady=6); l.lift()
         can_pick=all(hasattr(v, "pick") for v in views)
+        def able(b, on, fill=AC):
+            """Buttons read as off when off: grey with dim text, instead of a bright button with invisible text."""
+            b.configure(state=("normal" if on else "disabled"), fg_color=(fill if on else CARD2), text_color=("#04121f" if on else DIM), text_color_disabled=DIM,
+                        hover_color=(AC_H if fill==AC else "#35b57c") if on else CARD2)
         status=ctk.CTkLabel(card, text="", text_color=TX, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=1100); status.grid(row=3,column=0, columnspan=2, sticky="ew", padx=16, pady=(6,0))
         btns=ctk.CTkFrame(card, fg_color="transparent"); btns.grid(row=4,column=0, columnspan=2, sticky="ew", padx=12, pady=(6,12))
         def refresh_chips():
             done=[n for n in nodes if n in rec and isinstance(rec[n], dict) and rec[n].get("base")==st["base"]]
             chips.configure(text=("Lined up so far: "+", ".join(lab(n) for n in done)) if done else "Nothing lined up yet")
-            comb.configure(state=("normal" if done else "disabled"), text="⧉  Build one model from %d scan%s" % (len(done)+1, "" if not done else "s"))
+            able(comb, bool(done), OK); comb.configure(text="⧉  Build one model from %d scan%s" % (len(done)+1, "" if not done else "s"))
         def load_views():
             st["pairs"]=[]; st["pending"]=None; st["result"]=None
             for v in views:
@@ -2691,8 +2772,16 @@ class App(ctk.CTk):
                 if hasattr(v, "clear_layers"): v.clear_layers(draw=False)
             caps[0].configure(text="Base · %s · click a recognisable spot" % lab(st["base"]))
             caps[1].configure(text="%s · then click the same spot here" % (lab(st["moving"]) if st["moving"] else "no scan"))
-            views[0].load(self._proc_current(name, st["base"])[2])
-            if st["moving"]: views[1].load(self._proc_current(name, st["moving"])[2])
+            def shown(i):
+                def cb(ok):
+                    if not t.winfo_exists(): return
+                    loads[i].grid_remove()
+                    if not ok: caps[i].configure(text=caps[i].cget("text")+"  (could not load)", text_color=WARN)
+                return cb
+            for i,l in enumerate(loads): l.configure(text="Loading the 3D view…"); l.grid(); l.lift()
+            views[0].load(self._proc_current(name, st["base"])[2], shown(0), max_faces=600000)     # lighter copies: they appear in seconds and picking stays accurate
+            if st["moving"]: views[1].load(self._proc_current(name, st["moving"])[2], shown(1), max_faces=600000)
+            else: loads[1].grid_remove()
             keepb.pack_forget(); status.configure(text="")
             hint.configure(text=("Click a spot you can recognise on the base scan, then the same spot on the other scan. Three pairs are enough; five spread-out ones are better. Then press Line up from points. "
                                  "Or press Auto if the two scans overlap a lot.") if can_pick else
@@ -2710,6 +2799,9 @@ class App(ctk.CTk):
         def pick_moving():
             st["moving"]=next(n for n in nodes if lab(n)==msel.get()); load_views()
         def on_pick(which, world, view):
+            try: _on_pick(which, world, view)
+            except Exception as e: log_error("align pick", e); status.configure(text="Could not place that point (see Help > Log).", text_color=WARN)
+        def _on_pick(which, world, view):
             if st["busy"] or not can_pick: return
             i=len(st["pairs"]); col=self.PAIR_COLOURS[i % len(self.PAIR_COLOURS)]
             if which==0:
@@ -2722,17 +2814,34 @@ class App(ctk.CTk):
                 views[1].markers.append((view, col)); views[1].draw()
                 pairs_lbl.configure(text="%d pair%s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s"))
                 status.configure(text="%d pair%s. %s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s", "Press Line up from points, or add more." if len(st["pairs"])>=3 else "Add %d more." % (3-len(st["pairs"]))))
-            alignb.configure(state=("normal" if len(st["pairs"])>=3 else "disabled"))
+            able(alignb, len(st["pairs"])>=3)
         if can_pick:
             views[0].on_pick=lambda w,v: on_pick(0, w, v); views[1].on_pick=lambda w,v: on_pick(1, w, v)
         def undo():
             if st["pending"] is not None: st["pending"]=None; views[0].markers.pop(); views[0].draw()
             elif st["pairs"]: st["pairs"].pop(); views[0].markers.pop(); views[1].markers.pop(); views[0].draw(); views[1].draw()
-            pairs_lbl.configure(text="%d pair%s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s")); alignb.configure(state=("normal" if len(st["pairs"])>=3 else "disabled"))
+            pairs_lbl.configure(text="%d pair%s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s")); able(alignb, len(st["pairs"])>=3)
+        busy={"t0":0.0, "msg":"", "job":None}
+        def busy_text(m): busy["msg"]=m
+        def busy_tick():
+            if not busy["job"] or not t.winfo_exists(): return
+            if busy["msg"] is not None: status.configure(text="Working: %s… %ds" % (busy["msg"] or "starting", int(time.time()-busy["t0"])), text_color=TX)
+            busy["job"]=t.after(500, busy_tick)
+        def busy_on(m):
+            busy["t0"]=time.time(); busy["msg"]=m; bar.grid(row=5,column=0, columnspan=2, sticky="ew", padx=16, pady=(0,10)); bar.configure(mode="indeterminate"); bar.start()
+            for b in (alignb, autob, comb): b.configure(state="disabled")
+            busy["job"]=t.after(10, busy_tick)
+        def busy_off():
+            if busy["job"]:
+                try: t.after_cancel(busy["job"])
+                except Exception: pass
+            busy["job"]=None
+            if t.winfo_exists():
+                bar.stop(); bar.grid_remove(); able(alignb, len(st["pairs"])>=3); autob.configure(state="normal"); refresh_chips()
         def run_align(auto):
             if st["busy"] or not st["moving"]: return
             if not _has_open3d() and auto: self._alert("Open3D needed", "Auto and the fine adjustment need Open3D.\n  pip3 install --user --break-system-packages open3d"); return
-            st["busy"]=True; keepb.pack_forget(); status.configure(text="Lining up… (auto takes a minute or two)" if auto else "Lining up…", text_color=MUT)
+            st["busy"]=True; keepb.pack_forget(); busy_on("Starting…" if not auto else "Starting Auto… this takes a minute or two")
             base_p=self._proc_current(name, st["base"])[2]; mov_p=self._proc_current(name, st["moving"])[2]
             os.makedirs(THUMBS, exist_ok=True); pj=os.path.join(THUMBS, "align_pairs.json"); oj=os.path.join(THUMBS, "align_result.json")
             json.dump({"pairs": st["pairs"]}, open(pj, "w"))
@@ -2743,14 +2852,20 @@ class App(ctk.CTk):
                     cmd=[_sys.executable, os.path.join(HERE, "align.py"), "--base", base_p, "--moving", mov_p, "--out", oj]
                     if st["pairs"]: cmd+=["--pairs", pj]
                     if auto: cmd.append("--auto")
-                    r=subprocess.run(cmd, capture_output=True, text=True, timeout=1800, env=env)
-                    for ln in r.stdout.splitlines():
+                    proc=subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env); tail=[]
+                    for ln in proc.stdout:
+                        ln=ln.strip(); tail=(tail+[ln])[-6:]
                         if ln.startswith("STAGE error "): err=ln[12:]
-                    if r.returncode==0 and os.path.exists(oj): res=json.load(open(oj))
-                    else: log_line("align failed: %s %s" % (err, (r.stdout+r.stderr)[-300:]))
+                        elif ln.startswith("STAGE "):
+                            try: msg=json.loads(ln.split(" ",2)[2]).get("msg")
+                            except Exception: msg=None
+                            if msg: self.q.put(("call", lambda m=msg: busy_text(m)))
+                    proc.wait()
+                    if proc.returncode==0 and os.path.exists(oj): res=json.load(open(oj))
+                    else: log_line("align failed: %s %s" % (err, " | ".join(tail)))
                 except Exception as e: log_error("align", e)
                 def done():
-                    st["busy"]=False
+                    st["busy"]=False; busy_off()
                     if not t.winfo_exists(): return
                     if not res: status.configure(text="Could not line these up%s. Try more spread-out points, or pick a scan with more overlap." % ((": "+err) if err else ""), text_color=WARN); return
                     st["result"]=res; fit=res.get("fitness"); rmse=res.get("rmse"); pe=res.get("pair_error_after")
@@ -2774,7 +2889,12 @@ class App(ctk.CTk):
             else: status.configure(text="Every scan is lined up. Build one model from all of them below.")
         def combine():
             done=[n for n in nodes if n in rec and isinstance(rec[n], dict) and rec[n].get("base")==st["base"]]
-            self._combine(name, st["base"], done, status); comb.configure(state="disabled")
+            self._combine(name, st["base"], done, status); able(comb, False, OK); busy_on(None)   # the combine worker writes its own frame counts into the status line
+            def watch():
+                if not t.winfo_exists(): return
+                if not getattr(self, "_fusing", False): busy_off()
+                else: t.after(700, watch)
+            t.after(1500, watch)
         pairs_lbl=ctk.CTkLabel(btns, text="0 pairs", text_color=MUT, font=ctk.CTkFont(size=12)); pairs_lbl.pack(side="left", padx=(6,10))
         ctk.CTkButton(btns, text="Undo point", width=100, height=32, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=undo).pack(side="left", padx=4)
         alignb=ctk.CTkButton(btns, text="Line up from points", width=160, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", state="disabled", command=lambda: run_align(False)); alignb.pack(side="left", padx=4)
@@ -2783,7 +2903,8 @@ class App(ctk.CTk):
         comb=ctk.CTkButton(btns, text="⧉  Build one model", width=230, height=32, corner_radius=16, fg_color=OK, hover_color="#35b57c", text_color="#04121f", state="disabled", command=combine); comb.pack(side="right", padx=6)
         self._tip(comb, "Fuses the raw frames of the base scan and every lined-up scan into one model, in the base scan's position. Needs the raw data of each scan on this PC.")
         keepb=ctk.CTkButton(btns, text="Keep this alignment", width=160, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=keep)
-        load_views(); refresh_chips()
+        bar=ctk.CTkProgressBar(card, height=6, corner_radius=3, progress_color=AC, fg_color="#0d0f14")
+        able(alignb, False); load_views(); refresh_chips()
     def _combine(self, name, base, aligned, status=None):
         """Fuse the base scan's frames and every aligned scan's frames (moved by its saved transform) into <name>_combined_pcfused.ply."""
         if getattr(self, "_fusing", False): self.set_banner("A build is already running.", WARN); return

@@ -22,7 +22,7 @@ class MeshView(tk.Label):
         self.bind("<MouseWheel>", self._wheel); self.bind("<Button-4>", lambda e: self._wheel(e, 1)); self.bind("<Button-5>", lambda e: self._wheel(e, -1))
         self.bind("<Double-Button-1>", lambda e: self.reset()); self.bind("<Configure>", lambda e: self._schedule_hi(120))
     # ---- loading ----
-    def load(self, path, on_ready=None):
+    def load(self, path, on_ready=None, max_faces=None):
         """Decimate in a worker thread, then draw. on_ready(ok) is called on the Tk thread."""
         self.path = path; self.lo = self.hi = None; self._gen += 1; gen = self._gen
         self.configure(image="", text="loading 3D view…"); self._photo = None

@@ -18,6 +18,7 @@ class GLView(OpenGLFrame):
         super().__init__(master, **kw)
         self.failed = False; self.ready = False; self.wire = False
         self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 1.0, [0.0, 0.0]
+        self.rot = self._default_rot()         # free rotation: a 4x4 the drag turns about the screen axes, no limits
         self._drag = None; self._gen = 0; self._pending = None; self._n = 0; self._vbo = None
         self.animate = 0
         self.tf = None                         # orientation transform of the loaded mesh (shade.load_oriented_tf)
@@ -32,6 +33,14 @@ class GLView(OpenGLFrame):
         self.bind("<ButtonRelease-1>", self._release); self.bind("<ButtonRelease-3>", self._release); self.bind("<ButtonRelease-2>", self._release)
         self.bind("<MouseWheel>", self._wheel); self.bind("<Button-4>", lambda e: self._wheel(e, 1)); self.bind("<Button-5>", lambda e: self._wheel(e, -1))
         self.bind("<Double-Button-1>", lambda e: self.reset())
+    @staticmethod
+    def _axis_rot(deg, x, y, z):
+        a = np.radians(deg); c, s_ = np.cos(a), np.sin(a); n = np.array([x, y, z], float); n /= np.linalg.norm(n)
+        K = np.array([[0, -n[2], n[1]], [n[2], 0, -n[0]], [-n[1], n[0], 0]]); R = np.eye(4); R[:3, :3] = np.eye(3) + s_ * K + (1 - c) * K @ K; return R
+    def _default_rot(self):
+        return self._axis_rot(self.elev - 90.0, 1, 0, 0) @ self._axis_rot(self.azim, 0, 0, 1)
+    def _mult_rot(self):
+        GL.glMultMatrixf(np.ascontiguousarray(self.rot.T, dtype=np.float32))     # GL wants column-major
     # ---- context ----
     def tkMap(self, evt):
         try: super().tkMap(evt)
@@ -53,12 +62,12 @@ class GLView(OpenGLFrame):
         except Exception as e:
             self.failed = True; self._err = e
     # ---- loading ----
-    def load(self, path, on_ready=None):
+    def load(self, path, on_ready=None, max_faces=MAX_FACES):
         """Load (and orient, and smooth-normal) the mesh in a worker thread, then upload to the GPU."""
         self._gen += 1; gen = self._gen; self._n = 0
         def work():
             try:
-                v, f, tf = shade.load_oriented_tf(path, MAX_FACES)
+                v, f, tf = shade.load_oriented_tf(path, max_faces)
                 if gen != self._gen: return                       # a newer load superseded this one: stop early
                 self.tf = tf
                 import trimesh
@@ -119,7 +128,7 @@ class GLView(OpenGLFrame):
         GL.glMatrixMode(GL.GL_MODELVIEW); GL.glLoadIdentity()
         GL.glTranslatef(self.pan[0] * 2.0, self.pan[1] * 2.0, -4.2 / self.zoom)
         GL.glLightfv(GL.GL_LIGHT0, GL.GL_POSITION, (-0.5, 0.8, 1.0, 0.0)); GL.glLightfv(GL.GL_LIGHT1, GL.GL_POSITION, (0.8, -0.3, 0.4, 0.0))
-        GL.glRotatef(self.elev - 90.0, 1, 0, 0); GL.glRotatef(self.azim, 0, 0, 1)
+        self._mult_rot()
         GL.glTranslatef(0, 0, -0.5 * getattr(self, "_zmax", 0.0))
         self._mv_m = GL.glGetDoublev(GL.GL_MODELVIEW_MATRIX); self._pj_m = GL.glGetDoublev(GL.GL_PROJECTION_MATRIX); self._vp = (0, 0, w, h)
         # floor grid
@@ -155,14 +164,17 @@ class GLView(OpenGLFrame):
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0); GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
         GL.glMaterialfv(GL.GL_FRONT_AND_BACK, GL.GL_AMBIENT_AND_DIFFUSE, (0.74, 0.76, 0.80, 1.0))
         if self.markers:                       # numbered pick points, always on top
-            GL.glDisable(GL.GL_LIGHTING); GL.glDisable(GL.GL_DEPTH_TEST); GL.glPointSize(11.0); GL.glBegin(GL.GL_POINTS)
+            GL.glDisable(GL.GL_LIGHTING); GL.glDisable(GL.GL_DEPTH_TEST)
+            GL.glPointSize(18.0); GL.glBegin(GL.GL_POINTS)                     # dark rim
+            for xyz, col in self.markers: GL.glColor3f(0.04, 0.05, 0.07); GL.glVertex3f(*xyz)
+            GL.glEnd(); GL.glPointSize(12.0); GL.glBegin(GL.GL_POINTS)          # the colour
             for xyz, col in self.markers: GL.glColor3f(*col); GL.glVertex3f(*xyz)
             GL.glEnd(); GL.glPointSize(1.0); GL.glEnable(GL.GL_DEPTH_TEST)
         # axis gizmo, bottom-left, rotating with the view: X red, Y green, Z blue
         GL.glDisable(GL.GL_LIGHTING); GL.glDisable(GL.GL_DEPTH_TEST)
         g = int(min(w, h) * 0.22); GL.glViewport(10, 10, g, g)
         GL.glMatrixMode(GL.GL_PROJECTION); GL.glLoadIdentity(); GL.glOrtho(-1.3, 1.3, -1.3, 1.3, -2, 2)
-        GL.glMatrixMode(GL.GL_MODELVIEW); GL.glLoadIdentity(); GL.glRotatef(self.elev - 90.0, 1, 0, 0); GL.glRotatef(self.azim, 0, 0, 1)
+        GL.glMatrixMode(GL.GL_MODELVIEW); GL.glLoadIdentity(); self._mult_rot()
         GL.glLineWidth(2.0); GL.glBegin(GL.GL_LINES)
         for col, ax in (((1.0, 0.36, 0.42), (1, 0, 0)), ((0.24, 0.81, 0.56), (0, 1, 0)), ((0.35, 0.69, 1.0), (0, 0, 1))):
             GL.glColor3f(*col); GL.glVertex3f(0, 0, 0); GL.glVertex3f(*ax)
@@ -176,7 +188,7 @@ class GLView(OpenGLFrame):
         if self.wire: self._wire_data()
         self.draw()
     def reset(self, draw=True):
-        self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 1.0, [0.0, 0.0]
+        self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 1.0, [0.0, 0.0]; self.rot = self._default_rot()
         if draw: self.draw()
     def snapshot(self, path, size=None):
         """PNG of the current view read back from the GPU."""
@@ -241,7 +253,7 @@ class GLView(OpenGLFrame):
     def _press(self, e): self._drag = (e.x, e.y); self._press_at = (e.x, e.y)
     def _release(self, e):
         self._drag = None
-        if self.on_pick and self._press_at and abs(e.x - self._press_at[0]) < 3 and abs(e.y - self._press_at[1]) < 3 and e.num == 1:
+        if self.on_pick and self._press_at and abs(e.x - self._press_at[0]) <= 8 and abs(e.y - self._press_at[1]) <= 8 and e.num == 1:   # a click, not a drag
             r = self.pick(e.x, e.y)
             if r is not None:
                 try: self.on_pick(*r)
@@ -249,8 +261,10 @@ class GLView(OpenGLFrame):
         self._press_at = None
     def _rotate(self, e):
         if not self._drag: return
+        if self._press_at and abs(e.x - self._press_at[0]) <= 8 and abs(e.y - self._press_at[1]) <= 8: return   # still within a click
         dx, dy = e.x - self._drag[0], e.y - self._drag[1]; self._drag = (e.x, e.y)
-        self.azim += dx * 0.5; self.elev = max(-89, min(89, self.elev + dy * 0.5)); self.draw()
+        # turn about the screen's own axes, so any orientation is reachable and nothing ever locks
+        self.rot = self._axis_rot(dy * 0.5, 1, 0, 0) @ self._axis_rot(dx * 0.5, 0, 1, 0) @ self.rot; self.draw()
     def _pan(self, e):
         if not self._drag: return
         w, h = max(64, self.winfo_width()), max(64, self.winfo_height())
