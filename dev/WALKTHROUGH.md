@@ -6,7 +6,11 @@ Screenshots to drop in: [scanner-share-icon], [scanner-wifi-code], [scanner-fini
 
 ## The one-click path (what most people want)
 
-1. **Get the project onto your PC.** Two ways, pick either:
+1. **Get the project onto your PC.** Two ways; the difference matters:
+   - **USB** shows everything on the scanner: every project, plus its screenshots and recordings.
+     You tick what you want. Best for grabbing several projects at once.
+   - **WiFi** sends only the one project you open Share from, and only that. Best when the cable
+     is not handy or you want one project fast (it is quicker than the cable).
    - **WiFi**: click **WiFi** in PointYoink. A 4-digit code appears. On the MIRACO open the project,
      tap the share icon, choose **Wi-Fi**, type the code. The project comes across on its own
      (a 1 GB project takes under a minute). [scanner-share-icon] [scanner-wifi-code] [app-wifi-card]
