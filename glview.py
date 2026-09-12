@@ -27,6 +27,8 @@ class GLView(OpenGLFrame):
         self.tint = None                       # (r,g,b) for the main mesh, None = default material
         self.on_pick = None                    # callback(world_xyz_mm, view_xyz) for a plain left click
         self._press_at = None
+        self._cvbo = None; self._ncol = 0      # optional per-vertex colours (set_colors)
+        self.plane = None                      # optional translucent quad: (centre_view_xyz, normal_view_xyz, half_size)
         self.bind("<ButtonPress-1>", self._press); self.bind("<B1-Motion>", self._rotate)
         self.bind("<ButtonPress-3>", self._press); self.bind("<B3-Motion>", self._pan)
         self.bind("<ButtonPress-2>", self._press); self.bind("<B2-Motion>", self._pan)
@@ -85,7 +87,7 @@ class GLView(OpenGLFrame):
         if isinstance(res, Exception) or self.failed:
             (on_ready and on_ready(False)); return
         v, n, f, wire = res
-        self.markers = []; self.clear_layers(draw=False); self.reset(draw=False)
+        self.markers = []; self.plane = None; self._ncol = 0; self.clear_layers(draw=False); self.reset(draw=False)
         if self.ready: self._upload(v, n, f, wire)
         else: self._pending = (v, n, f, wire)
         (on_ready and on_ready(not self.failed))
@@ -147,10 +149,15 @@ class GLView(OpenGLFrame):
                 GL.glEnable(GL.GL_LIGHTING); GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
                 GL.glMaterialfv(GL.GL_FRONT_AND_BACK, GL.GL_AMBIENT_AND_DIFFUSE, (self.tint + (1.0,)) if self.tint else (0.74, 0.76, 0.80, 1.0))
                 GL.glEnableClientState(GL.GL_VERTEX_ARRAY); GL.glEnableClientState(GL.GL_NORMAL_ARRAY)
+                use_col = self._cvbo is not None and self._ncol
+                if use_col:
+                    GL.glEnable(GL.GL_COLOR_MATERIAL); GL.glColorMaterial(GL.GL_FRONT_AND_BACK, GL.GL_AMBIENT_AND_DIFFUSE)
+                    GL.glEnableClientState(GL.GL_COLOR_ARRAY); GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._cvbo); GL.glColorPointer(3, GL.GL_FLOAT, 0, None)
                 GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[0]); GL.glVertexPointer(3, GL.GL_FLOAT, 0, None)
                 GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[1]); GL.glNormalPointer(GL.GL_FLOAT, 0, None)
                 GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[2]); GL.glDrawElements(GL.GL_TRIANGLES, self._n, GL.GL_UNSIGNED_INT, None)
                 GL.glDisableClientState(GL.GL_VERTEX_ARRAY); GL.glDisableClientState(GL.GL_NORMAL_ARRAY)
+                if use_col: GL.glDisableClientState(GL.GL_COLOR_ARRAY); GL.glDisable(GL.GL_COLOR_MATERIAL)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0); GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
             GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
         for L in self.layers:                  # tinted overlays (another scan, for alignment checks)
@@ -163,6 +170,15 @@ class GLView(OpenGLFrame):
             GL.glDisableClientState(GL.GL_VERTEX_ARRAY); GL.glDisableClientState(GL.GL_NORMAL_ARRAY)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0); GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
         GL.glMaterialfv(GL.GL_FRONT_AND_BACK, GL.GL_AMBIENT_AND_DIFFUSE, (0.74, 0.76, 0.80, 1.0))
+        if self.plane is not None:             # the cut plane: a translucent amber square with its normal
+            c, nrm, hs = self.plane; nrm = np.asarray(nrm, float); nrm /= (np.linalg.norm(nrm) + 1e-9)
+            a = np.array([1.0, 0, 0]) if abs(nrm[0]) < 0.9 else np.array([0, 1.0, 0]); u = np.cross(nrm, a); u /= np.linalg.norm(u); v = np.cross(nrm, u)
+            GL.glDisable(GL.GL_LIGHTING); GL.glEnable(GL.GL_BLEND); GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA); GL.glDepthMask(GL.GL_FALSE)
+            GL.glColor4f(1.0, 0.69, 0.13, 0.28); GL.glBegin(GL.GL_QUADS)
+            for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+                q = np.asarray(c) + u * (sx * hs) + v * (sy * hs); GL.glVertex3f(*q)
+            GL.glEnd(); GL.glDepthMask(GL.GL_TRUE); GL.glDisable(GL.GL_BLEND)
+            GL.glColor3f(1.0, 0.69, 0.13); GL.glLineWidth(2.0); GL.glBegin(GL.GL_LINES); GL.glVertex3f(*c); GL.glVertex3f(*(np.asarray(c) + nrm * hs * 0.4)); GL.glEnd(); GL.glLineWidth(1.0)
         if self.markers:                       # numbered pick points, always on top
             GL.glDisable(GL.GL_LIGHTING); GL.glDisable(GL.GL_DEPTH_TEST)
             GL.glPointSize(18.0); GL.glBegin(GL.GL_POINTS)                     # dark rim
@@ -215,6 +231,19 @@ class GLView(OpenGLFrame):
             view = np.array([vx, vy, vz]); return shade.view_to_world(view, self.tf), view
         except Exception:
             return None
+    def set_colors(self, rgb):
+        """Per-vertex colours (Nx3 float32, 0..1) for the main mesh; None goes back to the plain material."""
+        try:
+            self.tkMakeCurrent()
+            if rgb is None:
+                if self._cvbo is not None: GL.glDeleteBuffers(1, [int(self._cvbo)])
+                self._cvbo = None; self._ncol = 0; self.draw(); return
+            rgb = np.ascontiguousarray(rgb, dtype=np.float32)
+            if self._cvbo is None: self._cvbo = int(GL.glGenBuffers(1))
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._cvbo); GL.glBufferData(GL.GL_ARRAY_BUFFER, rgb.nbytes, rgb, GL.GL_DYNAMIC_DRAW)
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0); self._ncol = len(rgb); self.draw()
+        except Exception as e:
+            self._err = e
     def add_layer(self, path, matrix=None, colour=(1.0, 0.55, 0.25), on_ready=None):
         """Draw another mesh in this view, tinted, optionally moved by a 4x4 (in mm, world coords) first."""
         gen = self._gen

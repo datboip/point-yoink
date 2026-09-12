@@ -957,13 +957,32 @@ class App(ctk.CTk):
         self._modes.add("Live view", tag="Planned", icon="◉")
         self.mode_sw=_ModeSwitch(self._modes)
         btns=ctk.CTkFrame(h, fg_color="transparent"); btns.grid(row=0,column=3, sticky="e", padx=(0,14)); self._hbtns=btns
-        sb=ctk.CTkButton(btns, text="⚙  Settings", width=96, height=30, corner_radius=6, fg_color="transparent", hover_color=CARD2,
-                         text_color=MUT, font=ctk.CTkFont(size=13, weight="bold"), command=self.dlg_settings); sb.pack(side="left", padx=2)
-        for t,tip,c in [("?","Help",self.dlg_help),("i","About PointYoink",self.dlg_about)]:
-            b=ctk.CTkButton(btns, text=t, width=30, height=30, corner_radius=15, fg_color="transparent", hover_color=CARD2, text_color=MUT,
-                            font=ctk.CTkFont(size=13, weight="bold"), command=c); b.pack(side="left", padx=2); self._tip(b, tip)
+        mb=ctk.CTkButton(btns, text="≡", width=36, height=30, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT,
+                         font=ctk.CTkFont(size=18, weight="bold"), command=self._app_menu); mb.pack(side="left", padx=2); self._menu_btn=mb
+        self._tip(mb, "Settings, how it works, help, about")
         tk.Frame(h, bg=STROKE, height=1, bd=0, highlightthickness=0).place(x=0, rely=1.0, y=-1, relwidth=1.0)
 
+    def _app_menu(self):
+        """The app menu under the ≡ button: a small dark popup that closes on click or focus loss."""
+        old=getattr(self, "_menu_pop", None)
+        if old is not None and old.winfo_exists(): old.destroy(); self._menu_pop=None; return
+        m=ctk.CTkToplevel(self); m.overrideredirect(True); m.configure(fg_color=CARD2); self._menu_pop=m
+        try: m.attributes("-topmost", True)
+        except Exception: pass
+        box=ctk.CTkFrame(m, fg_color=CARD2, corner_radius=10, border_width=1, border_color=STROKE); box.pack(fill="both", expand=True)
+        def item(text, cmd, sep=False):
+            if sep: tk.Frame(box, bg=STROKE, height=1, bd=0, highlightthickness=0).pack(fill="x", padx=8, pady=4)
+            ctk.CTkButton(box, text=text, anchor="w", width=220, height=32, corner_radius=6, fg_color="transparent", hover_color=STROKE, text_color=TX,
+                          font=ctk.CTkFont(size=12), command=lambda: (m.destroy(), cmd())).pack(fill="x", padx=6, pady=1)
+        item("⚙  Settings…", self.dlg_settings)
+        item("✦  How this works (the five steps)", self._howto_dialog, sep=True)
+        item("?  Help", self.dlg_help)
+        item("▤  Open error log", self.dlg_logs)
+        item("i  About "+APP, self.dlg_about, sep=True)
+        item("↗  PointYoink on GitHub", lambda: subprocess.Popen(["xdg-open", GITHUB]))
+        self.update_idletasks()
+        x=self._menu_btn.winfo_rootx()+self._menu_btn.winfo_width()-236; y=self._menu_btn.winfo_rooty()+self._menu_btn.winfo_height()+4
+        m.geometry("+%d+%d" % (max(0, x), y)); m.after(50, lambda: (m.focus_force(), m.bind("<FocusOut>", lambda e: m.winfo_exists() and m.destroy())))
     # ---- device bar: scanner, state, connection controls ----
     def _statusbar(self):
         d=ctk.CTkFrame(self, fg_color=CARD, corner_radius=0, height=54); d.grid(row=1,column=0, sticky="ew"); d.grid_propagate(False)
@@ -1517,7 +1536,7 @@ class App(ctk.CTk):
             except Exception: pass
         hc=ctk.CTkFrame(head, fg_color="transparent"); hc.pack(side="left", anchor="w")
         ctk.CTkLabel(hc, text="How to use PointYoink", font=ctk.CTkFont(size=19,weight="bold"), text_color=TX).pack(anchor="w")
-        ctk.CTkLabel(hc, text="Get your MIRACO scans onto Linux in a few clicks", text_color=MUT, font=ctk.CTkFont(size=12)).pack(anchor="w")
+        ctk.CTkLabel(hc, text="Scans off the MIRACO, onto Linux, into a model you can use", text_color=MUT, font=ctk.CTkFont(size=12)).pack(anchor="w")
         sc=ctk.CTkScrollableFrame(t, fg_color="transparent"); sc.pack(fill="both", expand=True, padx=16, pady=6)
         def card(title, rows, accent=AC):
             f=ctk.CTkFrame(sc, fg_color=CARD, corner_radius=14); f.pack(fill="x", padx=6, pady=7)
@@ -1526,29 +1545,34 @@ class App(ctk.CTk):
                 ctk.CTkLabel(f, text=r, font=ctk.CTkFont(size=12), text_color=TX, justify="left",
                              anchor="w", wraplength=690).pack(anchor="w", padx=16, pady=1)
             ctk.CTkFrame(f, fg_color="transparent", height=6).pack()
-        card("Quick start", [
-            "1.   Plug the scanner into this PC with a USB-C data cable.",
-            "2.   On the scanner, tap  “File Transfer”  (Share to PC, USB Cable).",
-            "3.   PointYoink connects on its own; your projects show on the left.",
-            "4.   Tick the projects you want. Click one to preview its scans.",
-            "5.   Pick a Save-to folder and click  Import selected.",
+        card("Two pages", [
+            "Import  -  the scanner. What is on it, the import options, one Import button.",
+            "Projects  -  this PC. Everything you imported, the 3D view, and a NEXT bar that says what to do now.",
         ])
-        card("Models only vs full", [
-            "“Models only” (default) grabs the finished meshes and point clouds and",
-            "skips the thousands of raw depth frames, so it is far faster.",
-            "Turn it off only if you want the raw frames to reprocess a scan later.",
+        card("Getting a project in", [
+            "USB:  plug in a USB-C data cable, tap File Transfer on the scanner, and every project is listed. Tick, Import.",
+            "WiFi:  click WiFi here, a 4-digit code shows; on the scanner choose Share to PC > Wi-Fi and type it. One project arrives, faster than the cable.",
+            "Finished models  is quick.  Full project  also brings the raw frames, which Build and Combine need.",
+        ])
+        card("The five steps (the NEXT bar walks you through them)", [
+            "1  Build  -  raw frames become a 3D model. One-tap Edit on the scanner does it too; Build here when that did not turn out right.",
+            "2  Cut base  -  drag one line above the table on each scan. The cut is remembered and applied when combining.",
+            "3  Combine  -  scanned each side separately? Click matching spots on two scans at a time, Keep, then build one model from all the frames.",
+            "4  Prepare  -  remove floating pieces, smooth, fill holes, reduce triangles. Before and after, Keep or Discard.",
+            "5  Export  -  version, format and folder together, with the model's size and a mesh check.",
+            "Originals are never changed: every step saves a new version, and you pick which one counts.",
         ], accent=OK)
         card("What you get", [
-            "fuse_mesh.ply   -   the finished 3D mesh, with faces (print or render this).",
-            "fuse.ply   -   the fused point cloud, points only.",
-            "Both are standard .ply for Blender, MeshLab, or CloudCompare.",
-            "Tick STL or OBJ in Import options to also export those formats.",
+            "<project>_<scan>.ply  or  data/<scan>/fuse_mesh.ply   -   the scanner's finished model.",
+            "<project>_<scan>_pcfused.ply   -   a model built on this PC.       <project>_<scan>_clean.ply   -   the prepared or base-cut version.",
+            "<project>_combined_pcfused.ply   -   one model from all the scans you lined up.",
+            "All standard .ply for Blender, MeshLab or CloudCompare; STL, OBJ and GLB from Export.",
         ])
         card("Trouble?", [
-            "Nothing detected:  confirm you tapped File Transfer, and try another",
-            "USB-C cable - some cables only charge.",
-            "Stuck connecting:  unplug, replug, tap File Transfer, and try again.",
-            "Blank previews:  the scanner is waking up; click the project again.",
+            "Nothing detected over USB:  tap File Transfer on the scanner, and try another USB-C cable, some only charge.",
+            "WiFi says transfer failed:  the PC and the scanner must be on the same network, and port 9706 must be open.",
+            "Build needs Open3D:  pip3 install --user --break-system-packages open3d   (a graphics card makes it seconds per scan).",
+            "Point picking is greyed:  the graphics-card 3D view is off (Settings > 3D view). Auto still works.",
             "Anything else:  open the error log below and file an issue.",
         ], accent=WARN)
         row=ctk.CTkFrame(t, fg_color="transparent"); row.pack(fill="x", padx=22, pady=(2,16))
@@ -1783,8 +1807,13 @@ class App(ctk.CTk):
         self.listing=True; dest=self.dest.get() or DEFAULT_DEST; self._listing_src="device" if quick_mounted() else "local"
         def work():
             dev=list_projects() if self._listing_src=="device" else []
-            names={p["name"] for p in dev}
-            self.q.put(("projects", dev+[p for p in list_local_projects(dest) if p["name"] not in names]))
+            names={p["name"] for p in dev}; local=list_local_projects(dest); lmap={p["name"]: p for p in local}
+            for p in dev:                                  # a project that is also on this PC keeps what the PC knows about it
+                lp=lmap.get(p["name"])
+                if lp:
+                    for k in ("combined", "prepared", "dev_meshed"): p[k]=lp.get(k)
+                    p["on_pc"]=True
+            self.q.put(("projects", dev+[p for p in local if p["name"] not in names]))
         threading.Thread(target=work, daemon=True).start()
     def on_mount(self):
         if self._mounting: return
@@ -1848,7 +1877,7 @@ class App(ctk.CTk):
             if p.get("local"): badges.append(("on this PC", AC, "#15304d"))
             elif self.is_imported(name): badges.append(("↑ updated", WARN, "#3d2f14") if self.changed(name) else ("✓ Imported", OK, "#173a2a"))
             else: badges.append(("on the scanner", MUT, CARD2))
-            if p.get("nodes") and p.get("local"):
+            if p.get("nodes") and (p.get("local") or p.get("on_pc")):
                 dm=p.get("dev_meshed") or 0
                 if not dm: badges.append(("raw only", WARN, "#3d2f14"))
                 elif dm<p["nodes"]: badges.append(("partly scanner-edited", WARN, "#3d2f14"))
@@ -2342,12 +2371,108 @@ class App(ctk.CTk):
         else: node=None; src=self._find_mesh(name)
         if not src:
             self.set_banner("This scan has no 3D model yet. Build it first.", WARN); return
+        if node and os.environ.get("POINTYOINK_NO_GL")!="1" and self.cfg.get("gl_view","auto")!="software":
+            self._cut_dialog(name, node, src); return              # the in-app cut view; the matplotlib tool stays as the fallback
         self._basing=True
         try: self.base_btn.configure(state="disabled")
         except Exception: pass
         self.set_status("Base removal: opening the cut-plane tool…")
         self._open_loader("Base removal", "Opening the cut-plane tool… large scans take a few seconds.\nDrag the line to just above the table, then Apply cut. The cut is remembered for this scan.")
         threading.Thread(target=self._base_worker, args=(name, src, node), daemon=True).start()
+    def _cut_dialog(self, name, node, src):
+        """Remove base inside the app: the scan in the GPU view, the part to keep in grey, the part to remove in red,
+        one slider along the table's normal, Flip, Apply. Saves <name>_<node>_clean.ply and remembers the plane."""
+        import numpy as np
+        t=self._top("Remove base · %s" % self._scan_label(name, node), 980, 780, key="cut")
+        if t is None: return
+        local=os.path.join(self.dest.get() or DEFAULT_DEST, name); out=os.path.join(local, "%s_%s_clean.ply" % (name, node))
+        card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
+        card.grid_columnconfigure(0, weight=1); card.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(card, text="Grey stays, red goes. Drag the slider until only the table is red. Flip if it picked the wrong side. The cut is remembered for combining.",
+                     text_color=MUT, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=900).grid(row=0,column=0, sticky="w", padx=16, pady=(12,6))
+        box=ctk.CTkFrame(card, fg_color="#0a0c10", corner_radius=10); box.grid(row=1,column=0, sticky="nsew", padx=14, pady=4)
+        box.grid_columnconfigure(0, weight=1); box.grid_rowconfigure(0, weight=1)
+        view=self._new_view(box); view.grid(row=0,column=0, sticky="nsew", padx=4, pady=4)
+        if not hasattr(view, "set_colors"):
+            t.destroy(); self._dialogs.pop("cut", None); self._basing=True; self._open_loader("Base removal", "Opening the cut-plane tool…")
+            threading.Thread(target=self._base_worker, args=(name, src, node), daemon=True).start(); return
+        load=ctk.CTkLabel(box, text="Loading the 3D view…", text_color=MUT, font=ctk.CTkFont(size=14), fg_color="#0a0c10"); load.grid(row=0,column=0, sticky="nsew", padx=4, pady=4); load.lift()
+        ctl=ctk.CTkFrame(card, fg_color="transparent"); ctl.grid(row=2,column=0, sticky="ew", padx=14, pady=(6,12)); ctl.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(ctl, text="Cut height", text_color=MUT, font=ctk.CTkFont(size=12)).grid(row=0,column=0, padx=(4,10))
+        slider=ctk.CTkSlider(ctl, from_=0, to=1000, number_of_steps=1000, progress_color=AC, button_color=AC, button_hover_color=AC_H, fg_color="#0d0f14"); slider.grid(row=0,column=1, sticky="ew")
+        val=ctk.CTkLabel(ctl, text="", text_color=TX, font=ctk.CTkFont(size=12), width=150); val.grid(row=0,column=2, padx=10)
+        flipb=ctk.CTkButton(ctl, text="Flip side", width=90, height=32, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX); flipb.grid(row=0,column=3, padx=4)
+        cancelb=ctk.CTkButton(ctl, text="Cancel", width=90, height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX); cancelb.grid(row=0,column=4, padx=4)
+        applyb=ctk.CTkButton(ctl, text="✂  Apply cut", width=130, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=12, weight="bold")); applyb.grid(row=0,column=5, padx=(4,0))
+        status=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w"); status.grid(row=3,column=0, sticky="w", padx=16, pady=(0,10))
+        st={"n":None, "H":None, "Hmin":0.0, "Hmax":1.0, "cut":0.0, "keep_above":True, "V":None, "job":None, "busy":False}
+        KEEP=np.array([0.74,0.76,0.80], np.float32); GONE=np.array([1.0,0.36,0.42], np.float32)
+        def close():
+            self._dialogs.pop("cut", None); t.destroy()
+        t.protocol("WM_DELETE_WINDOW", close); cancelb.configure(command=close)
+        def paint():
+            st["job"]=None
+            if st["H"] is None: return
+            keep=(st["H"]>st["cut"]) if st["keep_above"] else (st["H"]<st["cut"])
+            cols=np.where(keep[:,None], KEEP, GONE).astype(np.float32); view.set_colors(cols)
+            import shade
+            n=st["n"]; V=st["V"]; c_w=V.mean(0)+n*(st["cut"]-V.mean(0).dot(n))
+            cv=shade.world_to_view(c_w, view.tf); nv=shade.world_to_view(c_w+n*10.0, view.tf)-cv
+            view.plane=(cv, nv if st["keep_above"] else -nv, 1.1); view.draw()
+            val.configure(text="%.1f mm · %d%% removed" % (st["cut"]-st["Hmin"], 100-int(keep.mean()*100)))
+        def schedule():
+            if st["job"] is None: st["job"]=t.after(60, paint)
+        def on_slide(v):
+            st["cut"]=st["Hmin"]+(st["Hmax"]-st["Hmin"])*float(v)/1000.0; schedule()
+        slider.configure(command=on_slide)
+        def flip(): st["keep_above"]=not st["keep_above"]; schedule()
+        flipb.configure(command=flip)
+        def ready(ok):
+            if not t.winfo_exists(): return
+            if not ok or getattr(view, "_src", None) is None or view.tf is None:
+                load.configure(text="Could not load this model"); return
+            def work():
+                try:
+                    import shade, cutplane
+                    v_view, f = view._src; V=shade.view_to_world(v_view, view.tf); rng=np.random.default_rng(0)
+                    n=cutplane.ransac_normal(V, rng); H=V.dot(n)
+                    res=(n, H, V)
+                except Exception as e: log_error("cut setup", e); res=None
+                def done():
+                    if not t.winfo_exists(): return
+                    if res is None: load.configure(text="Could not find the table in this scan"); return
+                    n, H, V = res; st["n"]=n; st["H"]=H; st["V"]=V; st["Hmin"]=float(H.min()); st["Hmax"]=float(H.max())
+                    st["cut"]=float(np.percentile(H, 8)); st["keep_above"]=(H>st["cut"]).mean()>0.5
+                    slider.set(1000.0*(st["cut"]-st["Hmin"])/max(1e-6, st["Hmax"]-st["Hmin"])); load.grid_remove(); paint()
+                    status.configure(text="Starting just above the flattest surface. %s" % ("Drag to rotate, scroll to zoom." ))
+                self.q.put(("call", done))
+            threading.Thread(target=work, daemon=True).start()
+        view.load(src, ready, max_faces=600000)
+        def apply():
+            if st["H"] is None or st["busy"]: return
+            st["busy"]=True; applyb.configure(state="disabled"); status.configure(text="Cutting the full model… (a big scan takes a few seconds)")
+            n=st["n"]; spec="%.6f,%.6f,%.6f,%.4f,%s" % (n[0], n[1], n[2], st["cut"], "1" if st["keep_above"] else "0")
+            def work():
+                ok=False; plane=None
+                try:
+                    env=dict(os.environ, OPENBLAS_NUM_THREADS="1"); env.setdefault("POINTYOINK_MEM_CAP_GB", "10")
+                    r=subprocess.run([_sys.executable, os.path.join(HERE, "cutplane.py"), src, out, "--plane", spec], capture_output=True, text=True, timeout=1800, env=env)
+                    for ln in r.stdout.splitlines():
+                        if ln.startswith("CUT_DONE"):
+                            ok=True
+                            try: plane=json.loads(ln[9:]).get("plane")
+                            except Exception: plane=None
+                    if not ok: log_line("cut failed: %s" % (r.stdout+r.stderr)[-400:])
+                except Exception as e: log_error("cut", e)
+                def done():
+                    st["busy"]=False
+                    if ok:
+                        self.q.put(("base_done", ("ok", out, node, plane)))
+                        if t.winfo_exists(): close()
+                    elif t.winfo_exists(): applyb.configure(state="normal"); status.configure(text="The cut failed (see Help > Log).", text_color=WARN)
+                self.q.put(("call", done))
+            threading.Thread(target=work, daemon=True).start()
+        applyb.configure(command=apply)
     def _base_worker(self, name, src, node=None):
         path=src; dest=self.dest.get() or DEFAULT_DEST; outdir=os.path.join(dest, name)
         if src.startswith(PROJECTS):   # on the slow device mount - copy locally first

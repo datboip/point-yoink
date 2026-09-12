@@ -34,6 +34,9 @@ def main():
     if len(sys.argv) < 3:
         print("CUT_ERROR usage: cutplane.py <in> <out>", flush=True); return 2
     infile, outfile = sys.argv[1], sys.argv[2]
+    given = None                                    # --plane nx,ny,nz,d,keep_above  (from the in-app cut view): no window, just cut
+    if len(sys.argv) > 4 and sys.argv[3] == "--plane":
+        v = sys.argv[4].split(","); given = ([float(v[0]), float(v[1]), float(v[2])], float(v[3]), v[4].lower() in ("1", "true", "yes"))
     import numpy as np, trimesh
     m = trimesh.load(infile, force="mesh")
     if len(m.faces) > 800000:
@@ -44,7 +47,10 @@ def main():
     rng = np.random.default_rng(0)
 
     # cut axis = dominant-plane normal (the table's normal); build 2 in-plane axes
-    normal = ransac_normal(V, rng)
+    normal = np.array(given[0], float) if given else ransac_normal(V, rng)
+    if given:
+        H = V.dot(normal); state = {"cut": given[1], "keep_above": given[2], "apply": True}
+        return finish(m, H, normal, state, outfile)
     a = np.array([1.0, 0, 0]) if abs(normal[0]) < 0.9 else np.array([0, 1.0, 0])
     u = np.cross(normal, a); u /= np.linalg.norm(u)
     w = np.cross(normal, u)
@@ -121,6 +127,10 @@ def main():
     if not state["apply"]:
         print("CUT_CANCELLED", flush=True); return 0
 
+    return finish(m, H, normal, state, outfile)
+
+def finish(m, H, normal, state, outfile):
+    import numpy as np, trimesh
     # apply the cut to the (decimated) mesh, then keep the largest piece
     keepv = (H > state["cut"]) if state["keep_above"] else (H < state["cut"])
     keep_f = keepv[m.faces].all(axis=1)
