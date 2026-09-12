@@ -22,6 +22,12 @@ builds; 1.0.0 will be the first public GitHub release.
   scanner-edited badges per project, and per scan.
 - 3D views rotate freely with no stops. Prepare dialog shows live linked
   before/after views and can remove the base.
+- **Remove base inside the app**: the scan in the GPU view, grey stays and
+  red goes, one slider along the table, Flip, Apply. Starts just above the
+  flattest surface. The matplotlib window remains only for the software view.
+- One ≡ menu replaces Settings, ? and i in the header. Help rewritten for the
+  two pages and the five steps; "How this works" panel on first open.
+- A project that is both on the scanner and on this PC keeps its PC badges.
 - **Prepare page** (was Process): the clean-up button is four named actions
   in one dialog: Remove floating pieces, Smooth surface, Fill small holes,
   Reduce triangle count, each with the scanner's default. It runs on a copy,

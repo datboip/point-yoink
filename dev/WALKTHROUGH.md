@@ -23,16 +23,28 @@ Screenshots to drop in: [scanner-share-icon], [scanner-wifi-code], [scanner-fini
 
 That is the whole workflow. Everything below is optional.
 
-## When you want more
+## When you want more: the five steps on the Projects page
 
-- **View in 3D**: rotate, zoom and pan the mesh right in the window; **Open 3D viewer** for the
-  full-detail window.
-- **Remove base**: slice the table or turntable off a scan with one slider; the original is kept.
-- **Process on PC**: rebuild a scan's mesh from the raw frames on your own GPU, in seconds instead of
-  minutes on the scanner. Needs the full project (untick "Models only" for that import).
-- **Export ZIP**: bundle a project's models into one zip, with a size estimate first, for sharing.
-- **Captures**: pull the scanner's screenshots and screen recordings.
-- **Live view**: the MIRACO's live pose over WiFi, or a tethered Revopoint RANGE's cameras.
+After an import, open **Projects**. The NEXT bar under the project title says what to do now and does it
+with one button; the trail shows Build → Cut base → Combine → Prepare → Export.
+
+1. **Build** (only for scans that are raw frames). One-tap Edit on the scanner does the same job and is
+   the easy path; build here when that did not turn out right, or when you want to combine sides.
+   Needs the raw frames (Full project) and Open3D. Seconds on an NVIDIA card.
+2. **Cut base**. Remove base on each scan: the scan in the 3D view, grey stays, red goes, one slider,
+   Flip if it chose the wrong side, Apply. The cut is remembered for that scan and applied again when
+   scans are combined, so the table never gets fused into the combined model.
+3. **Combine**. Scanned each side separately? Combine scans: pick the base scan, click three to five
+   matching spots on it and on another scan, Line up from points (or Auto when they overlap a lot),
+   check the orange overlay, Keep. Repeat for each side, then Build one model. Reopen a lined-up scan
+   any time to add or undo points.
+4. **Prepare**. Remove floating pieces, smooth, fill small holes, reduce triangles, with the scanner's
+   defaults. Before and after side by side; Keep or Discard. Once Combined exists, prepare that one.
+5. **Export**. Version, format (STL for slicers, OBJ, GLB, PLY) and folder together; the size in mm and
+   a mesh check (pieces, open edges) show first.
+
+Every step saves a new version. The version chips on the right pick which one the preview and exports
+use; the original from the scanner is never overwritten. Compare versions puts any two side by side.
 
 ## If something does not work
 
