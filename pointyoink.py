@@ -1621,7 +1621,7 @@ class App(ctk.CTk):
         ctk.CTkCheckBox(t, text="Models only by default", variable=mo, fg_color=AC, hover_color=AC_H, text_color=TX).pack(anchor="w", padx=20, pady=(16,4))
         ctk.CTkCheckBox(t, text="Open folder when import finishes", variable=ao, fg_color=AC, hover_color=AC_H, text_color=TX).pack(anchor="w", padx=20)
         fr=ctk.CTkFrame(t, fg_color="transparent"); fr.pack(fill="x", padx=20, pady=(14,0))
-        ctk.CTkLabel(fr, text="Process on PC detail (voxel, mm)", text_color=TX).pack(side="left")
+        ctk.CTkLabel(fr, text="Build detail (voxel, mm)", text_color=TX).pack(side="left")
         fv=ctk.StringVar(value=str(self.fuse_voxel.get()))
         ctk.CTkEntry(fr, textvariable=fv, width=64, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=10).pack(side="left", padx=8)
         ctk.CTkLabel(fr, text="0.4 = match scanner  ·  0.3 finer  ·  0.2 max", text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left")
@@ -2035,7 +2035,7 @@ class App(ctk.CTk):
         """Show the cached shaded render for this scan, or queue one. Never blocks the UI thread."""
         mesh=self._mesh_for_node(name, node) if node else self._find_mesh(name)
         if not mesh:
-            self.big_hint.configure(text="No 3D model yet: this scan is raw data. Process on PC builds it."); self._preview_idle(); return
+            self.big_hint.configure(text="No 3D model yet: this scan is raw data. Build it on the Projects page (or One-tap Edit on the scanner)."); self._preview_idle(); return
         node=node or self._node_of(name, mesh)
         if node and node!=self._film_sel: self._film_sel=node; self._mark_scan(node)
         key="%s__%s"%(name, node) if node else name; mode=self.shade_mode
@@ -2116,7 +2116,7 @@ class App(ctk.CTk):
         except Exception: pass
     def _show_shaded(self, out):
         self._set_big_image(out); self._preview_idle()
-        self.big_hint.configure(text="Still image · View in 3D to rotate and zoom")
+        self.big_hint.configure(text="Still image · the live 3D view is loading")
         self._mv_start()
     def _make_mv(self, software=False):
         w=None
@@ -2145,7 +2145,7 @@ class App(ctk.CTk):
                 self.big.grid_remove(); self.mv.grid()
                 self.big_hint.configure(text="Drag to rotate · scroll to zoom · right-drag to pan · double-click to reset")
             else:
-                self.big_hint.configure(text="Still image · View in 3D to rotate and zoom")
+                self.big_hint.configure(text="Still image · the live 3D view is loading")
         self.mv.load(path, ready)
     def _show_stats(self, st):
         v,f=st
@@ -2160,7 +2160,7 @@ class App(ctk.CTk):
         onpc=[n for n in sel if (self._proj(n) or {}).get("local")]
         if onpc:
             sel=[n for n in sel if n not in onpc]
-            if not sel: self.set_banner("Those are already on this PC - use View in 3D, Export ZIP or Process on PC.", MUT); return
+            if not sel: self.set_banner("Those are already on this PC: open the Projects page to work on them.", MUT); return
         already=[n for n in sel if self.is_imported(n) and not self.changed(n)]
         if already:
             names=", ".join(self.disp(n) for n in already)
@@ -2328,7 +2328,7 @@ class App(ctk.CTk):
         if not name: return
         src=self._find_mesh(name)
         if not src:
-            self.set_banner("This project has no 3D model yet. Process on PC builds one from the raw scan data.", WARN); return
+            self.set_banner("This project has no 3D model yet. Build one first.", WARN); return
         self.set_status("Loading 3D view: reading the model…")
         self._open_loader("Loading 3D view", "Reading the 3D model… large scans take a few seconds.")
         threading.Thread(target=self._view_worker, args=(name, src), daemon=True).start()
@@ -2911,7 +2911,7 @@ class App(ctk.CTk):
         row(self.clean_do_iso, "Remove floating pieces", "drop pieces smaller than", self.clean_iso, "% of the biggest one",
             "Loose bits that are not part of the object. The scanner's Isolation rate; its default is 15%.")
         row(self.clean_do_base, "Remove base", "cuts off the biggest flat surface (table, turntable, floor). Check the After view: it can bite into a flat part of the object", None, "",
-            "Automatic. For a cut you place by hand, use Remove base on the Prepare page instead.")
+            "Automatic. For a cut you place by hand, use Remove base on the scan instead.")
         row(self.clean_do_smooth, "Smooth surface", "", self.clean_smooth, "passes (the scanner uses 3)",
             "Evens out scan ripple. More passes soften small detail.")
         row(self.clean_holes, "Fill small holes", "closes small gaps in the surface. Off on the scanner by default: it can invent surface where the scan missed", None, "",
@@ -3361,7 +3361,7 @@ class App(ctk.CTk):
                 proc.wait()
             except Exception as e: log_error("combine", e)
             self.q.put(("fuse_done", ("ok", os.path.basename(out)) if (ok and os.path.exists(out)) else ("err", "the combined model could not be built - see the log")))
-            if ok: say("Done: %s. It shows on the Prepare page as Combined." % os.path.basename(out))
+            if ok: say("Done: %s. It shows in the project as Combined." % os.path.basename(out))
         threading.Thread(target=work, daemon=True).start()
 
     def on_process_pc(self):
@@ -3370,7 +3370,7 @@ class App(ctk.CTk):
         if not name: return
         if not _has_open3d():
             self._alert("Open3D needed",
-                "Process on PC builds the 3D model with Open3D, which isn't installed for this Python.\n\n"
+                "Building models needs Open3D, which isn't installed for this Python.\n\n"
                 "Install it with:\n  pip3 install --user --break-system-packages open3d\n\n"
                 "(~400 MB. The GPU is used automatically when available.)")
             return
@@ -3841,7 +3841,7 @@ class App(ctk.CTk):
             if r["mesh"]: parts.append("3D model %s" % human(r["mesh"]))
             if r["cloud"]: parts.append("point cloud %s" % human(r["cloud"]))
             parts.append("%d raw frames %s" % (r["frames"], human(r["raw"])) if r["frames"] else "no raw frames")
-            if not r["mesh"] and not r["cloud"]: parts.insert(0, "raw scan data only, no 3D model yet (Process on PC builds it)")
+            if not r["mesh"] and not r["cloud"]: parts.insert(0, "raw scan data only, no 3D model yet (Build it on the Projects page, or One-tap Edit on the scanner)")
             ctk.CTkLabel(col, text="  ·  ".join(parts), text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(anchor="w")
         any_model=any(r["mesh"] or r["cloud"] for r in rows)
         mode=ctk.StringVar(value=("models" if (self.models_only.get() and any_model) else "full"))
@@ -3850,7 +3850,7 @@ class App(ctk.CTk):
         ctk.CTkRadioButton(mr, text="Full project (raw scan data too)", variable=mode, value="full", fg_color=AC, hover_color=AC_H, text_color=TX).pack(side="left")
         if not any_model:
             rb.configure(state="disabled")
-            ctk.CTkLabel(t, text="Raw scan data only: there are no 3D models to save yet, so the full project is kept. Process on PC builds the models.",
+            ctk.CTkLabel(t, text="Raw scan data only: there are no 3D models to save yet, so the full project is kept. Build them on the Projects page.",
                          text_color=WARN, font=ctk.CTkFont(size=11), wraplength=580, justify="left").pack(anchor="w", padx=22, pady=(6,0))
         br=ctk.CTkFrame(t, fg_color="transparent"); br.pack(fill="x", padx=16, pady=14)
         def close():
@@ -4342,7 +4342,7 @@ class App(ctk.CTk):
                         if sel: self.after(1500, lambda s=sel: (self.select_project(s) if s in [p["name"] for p in self.projects] else None))
                         if self.auto_open.get(): self.open_folder()
                     else:
-                        self.set_banner("Process on PC failed - see Help > Log. %s" % (info or ""), WARN); self.set_status("")
+                        self.set_banner("Building the model failed - see Help > Log. %s" % (info or ""), WARN); self.set_status("")
                         if self.selected: self._proc_render(self.selected)
                 elif kind=="live_found":
                     if rest[0]:
