@@ -10,7 +10,7 @@
 
 Revopoint's Revo Scan software is Windows, macOS, iOS and Android only. There is no Linux version, so getting your finished scans off a MIRACO on a Linux machine usually means dual-booting, running a Windows VM, or fighting a raw MTP copy that drags thousands of tiny files across a slow connection.
 
-PointYoink is a small desktop app that does it directly. Put the scanner in File Transfer mode, and PointYoink mounts it, shows your projects with the scanner's own preview renders, and copies the ones you pick straight to a folder. The output is standard `.ply` meshes and point clouds you can open in Blender, MeshLab, or CloudCompare.
+PointYoink is a small desktop app that does it directly, over USB or WiFi, and then takes the scans the rest of the way: build a model from raw frames on your graphics card, cut the table off, line up the sides you scanned separately and fuse them into one model, clean it up, and export STL, OBJ, GLB or PLY with a mesh check. Originals are never changed; every step saves a new version.
 
 > Unofficial. Not affiliated with or endorsed by Revopoint. "Revopoint" and "MIRACO" are trademarks of their respective owners. PointYoink only reads files off your own device and contains none of Revopoint's software.
 
@@ -26,17 +26,16 @@ PointYoink is a small desktop app that does it directly. Put the scanner in File
 
 ## What it does
 
-- Detects the scanner and its File Transfer (MTP) mode, and connects automatically.
-- Lists your projects with thumbnails, dates, scan counts, and sizes.
-- Shows the scanner's own preview render for each scan, and opens any mesh in an interactive 3D viewer (rotate/zoom).
-- Copies just the finished models by default, so you move megabytes instead of gigabytes. Or turn that off to pull the full project including raw frames.
-- Optionally exports the meshes to STL, OBJ, or GLB on import.
-- **Process on PC**: rebuild a scan's mesh on your computer from the raw depth frames (GPU when available), skipping the scanner's slow on-device fusion. Works on scans you never fused on the device.
-- Rename a project to something readable. The original scanner ID stays as the folder name and reference, so nothing is lost.
-- Remembers what you have already imported, across sessions, and asks before importing it again.
-- Export any project as a single .zip for archiving or sharing.
-- Cancel and retry, per-project progress, an import summary, and a dark UI.
-- Built-in error log to make bug reports easy.
+Two pages. **Import** is the scanner: what is on it, the import options, one Import button. **Projects** is this PC: everything you imported, a 3D view you can turn, and a NEXT bar that says what to do now and does it with one button.
+
+- **Import over USB** (File Transfer mode lists every project) or **over WiFi** (the scanner's Share to PC sends one project to a 4-digit code PointYoink shows you; about 20 MB/s, faster than the cable). Finished models is quick; Full project also brings the raw frames.
+- **Build**: turn a scan's raw frames into a 3D model on your PC, using the scanner's own registration. Seconds on an NVIDIA card, minutes on a CPU. Measured against the scanner's One-tap Edit: 0.2 mm median.
+- **Cut base**: drag one line above the table in the 3D view; grey stays, red goes. The cut is remembered per scan and applied again when scans are combined, so the table never gets fused in.
+- **Combine**: scanned each side separately? Click three to five matching spots on two scans, or press Auto, check the orange overlay, keep it, repeat for each side, then build one model from all the frames at once. Your points stay editable.
+- **Prepare**: remove floating pieces, smooth, fill small holes, reduce triangles, with the scanner's defaults. Before and after side by side, Keep or Discard.
+- **Export**: version, format and folder together, with the model's size in mm, triangle count, pieces and open edges shown first.
+- Badges tell you what the scanner already did (raw only, partly scanner-edited, scanner-edited) and what you made (combined, prepared). Compare any two versions in linked 3D views.
+- Rename projects, remember what was imported, export a project as one ZIP, cancel and retry, a built-in error log, a dark UI, and a first-run "How this works" panel.
 
 ## Why not just...
 
@@ -90,43 +89,39 @@ python3 -m venv --system-site-packages venv
 
 ## How to use
 
-1. Plug the scanner into the PC with a USB-C data cable.
-2. On the scanner screen, tap **File Transfer** (Share to PC, USB Cable).
-3. PointYoink connects on its own. Your projects appear on the left.
-4. Tick the projects you want. Click one to preview its scans.
-5. Choose a **Save to** folder and click **Import selected**.
+1. **Import.** Plug in a USB-C data cable and tap **File Transfer** on the scanner, or click **WiFi** and enter the code on the scanner under Share to PC > Wi-Fi. Tick, Import. Choose **Full project** if you want to build or combine on the PC.
+2. **Projects.** The imported project appears with its scans. Follow the **NEXT** bar: it walks you through the five steps below and each one is a single button.
 
-**Models only** (on by default) copies the finished `.ply` meshes and point clouds and skips the raw depth frames. Turn it off only if you want the raw frames to reprocess a scan later in Revo Scan on another machine.
+| Step | What happens | Where the result goes |
+|---|---|---|
+| Build | raw frames become a 3D model (One-tap Edit on the scanner does this too; build here when that did not turn out right) | `<project>_<scan>_pcfused.ply` |
+| Cut base | one line above the table, Apply; the plane is remembered | `<project>_<scan>_clean.ply` |
+| Combine | line up the sides on matching points, then fuse all their frames into one model, table already dropped | `<project>_combined_pcfused.ply` |
+| Prepare | floating pieces, smoothing, holes, triangle count; before and after | `<project>_<scan>_clean.ply` |
+| Export | STL, OBJ, GLB or PLY with a size and mesh check | the folder you choose |
+
+Every step saves a new version and you pick which one the preview and exports use, so an original from the scanner is never overwritten.
 
 ## How it works
 
-A MIRACO project holds thousands of raw depth frames plus the finished, fused output. The raw frames are the bulk of the size and are only needed to re-fuse a scan. PointYoink copies just the finished output, so an import moves a few megabytes instead of gigabytes. It still uses `jmtpfs` underneath; the speed comes from not moving the data you do not need.
+A MIRACO project holds thousands of raw depth frames plus the finished, fused output. **Finished models** copies just the finished output, so an import moves megabytes instead of gigabytes. **Full project** keeps the scanner's nested layout with the raw frames, which is what Build and Combine read.
 
-Imported files land in a clean, flat layout with unique names, so nothing is buried in cryptic folders:
+Build fuses the frames in a TSDF volume ([Open3D](https://www.open3d.org/), GPU when there is one) using the globally registered poses the scanner writes with every scan (`cache/global_register_pose.pose`). That table is what makes multi-pass scans line up the way they do on the device: on three test scans the result sits 0.2 mm median from the scanner's own One-tap Edit model. Combine solves a rigid fit from your point pairs (or from FPFH features with Auto), refines it with ICP, and then fuses every scan's frames into one volume with each scan's base plane culled first. All the heavy work runs in memory-capped subprocesses so a huge mesh can never take the machine down.
+
+Imported files land in a flat layout with unique names:
 
 ```
 revopoint-scans-models/
   Project09102026033917/
-    Project09102026033917_<scan>.ply    # the mesh, one per scan
-    Project09102026033917_<scan>.stl    # if you asked for STL/OBJ/GLB
-    Project09102026033917_<scan>.png    # the scan's preview render
-    Project09102026033917_<scan>_cloud.ply  # the point cloud
-    Project09102026033917.revo          # project metadata
+    Project09102026033917_<scan>.ply           # the scanner's finished model, one per scan
+    Project09102026033917_<scan>_pcfused.ply   # a model built on this PC
+    Project09102026033917_<scan>_clean.ply     # the prepared or base-cut version
+    Project09102026033917_combined_pcfused.ply # one model from all the scans you lined up
+    Project09102026033917_<scan>.png           # the scan's preview render
+    data/<scan>/...                            # raw frames and the scanner's own files (Full project)
 ```
 
-The `.ply` mesh is what you print or render; the `_cloud.ply` is the raw point cloud. Both are standard binary PLY and open in Blender, MeshLab, or CloudCompare. Turn off **Models only** to pull the full project including raw frames instead (kept in the scanner's original nested layout, for re-processing in Revo Scan).
-
-**Export ZIP** bundles the selected projects, and asks what to include - STL only, OBJ only, GLB only, all models, or everything. Files go in flat with clean names, so unzipping gives you a ready-to-use folder (e.g. drop the STLs straight into a slicer).
-
-## Process on PC
-
-The MIRACO builds its 3D models on a phone-class chip, so it is slow and gives you few knobs. PointYoink can do that step on your computer instead: **Process on PC** builds a scan's 3D model from the raw scan data, on your graphics card when there is one (an NVIDIA card does a scan in seconds; the CPU takes minutes).
-
-- Raw scan data comes over WiFi with **Full project** (over USB it is impractically slow, about 4 seconds per file).
-- The result lands next to the project as `<name>_<scan>_pcfused.ply`, ready for the 3D view, Remove base and export.
-- Uses the scanner's own registration (the global pose table it saves with every scan), so multi-pass scans line up the way they do on the device. Measured on three scans against the scanner's One-tap Edit model: median surface distance 0.2 mm, and over 90% of the scanner's surface lies within 1 mm of ours. What One-tap Edit still adds is trimming: it drops floor patches around the object that a fresh build keeps, so run Clean up (drop small pieces) and Remove base on the Process page. See `dev/compare.py`.
-- Detail is set in Settings (voxel size; 0.4 mm matches the scanner, 0.3 is finer and uses more memory).
-- Needs [Open3D](https://www.open3d.org/), which is large and optional: `pip3 install --user --break-system-packages open3d`. PointYoink tells you if it is missing.
+**Export ZIP** bundles the selected projects with clean flat names.
 
 ## Troubleshooting
 
@@ -137,8 +132,10 @@ The MIRACO builds its 3D models on a phone-class chip, so it is slow and gives y
 
 ## Roadmap
 
-- A **Live** tab showing the scanner's real-time orientation and position (the MIRACO streams pose and IMU data over WiFi).
-- Wireless transfer over WiFi, so you don't need the USB cable.
+- Selection tools in the 3D view (lasso, brush) for removing bad regions, and smoothing only a selected area.
+- An assembly view for parts that belong together but must stay separate.
+- Presets and a job queue for repeat work.
+- A **Live** view showing the scanner's real-time orientation (the MIRACO streams pose and IMU data over WiFi); the tethered Revopoint RANGE already streams into it.
 - Confirm the base MIRACO and MIRACO Plus, and document any differences from the Pro.
 
 ## Privacy

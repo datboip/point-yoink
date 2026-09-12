@@ -1899,11 +1899,10 @@ class App(ctk.CTk):
         if projs and q and not shown:
             ctk.CTkLabel(self.llist, text="No project matches “%s”."%self.search.get().strip(), text_color=MUT,
                          font=ctk.CTkFont(size=12)).grid(row=0,column=0, sticky="w", padx=12, pady=16)
-        threading.Thread(target=self._compute_sizes, args=([p["name"] for p in projs],), daemon=True).start()
+        threading.Thread(target=self._compute_sizes, args=([p["name"] for p in projs], self.dest.get() or DEFAULT_DEST), daemon=True).start()
         self.update_summary()
         if projs and not self.selected: self.select_project(projs[0]["name"])
-    def _compute_sizes(self, names):
-        dest=self.dest.get() or DEFAULT_DEST
+    def _compute_sizes(self, names, dest):
         for n in names:
             if n not in self.size_cache:
                 sz,_=project_model_size(n, os.path.join(dest, n)); self.size_cache[n]=sz; self.q.put(("sizes",None))
@@ -2436,13 +2435,16 @@ class App(ctk.CTk):
                     import shade, cutplane
                     v_view, f = view._src; V=shade.view_to_world(v_view, view.tf); rng=np.random.default_rng(0)
                     n=cutplane.ransac_normal(V, rng); H=V.dot(n)
-                    res=(n, H, V)
+                    # the table is the densest height; point the normal so the object sits above it
+                    hist, edges=np.histogram(H, bins=120); h_tab=float(0.5*(edges[hist.argmax()]+edges[hist.argmax()+1]))
+                    if H.mean() < h_tab: n=-n; H=-H; h_tab=-h_tab
+                    res=(n, H, V, h_tab)
                 except Exception as e: log_error("cut setup", e); res=None
                 def done():
                     if not t.winfo_exists(): return
                     if res is None: load.configure(text="Could not find the table in this scan"); return
-                    n, H, V = res; st["n"]=n; st["H"]=H; st["V"]=V; st["Hmin"]=float(H.min()); st["Hmax"]=float(H.max())
-                    st["cut"]=float(np.percentile(H, 8)); st["keep_above"]=(H>st["cut"]).mean()>0.5
+                    n, H, V, h_tab = res; st["n"]=n; st["H"]=H; st["V"]=V; st["Hmin"]=float(H.min()); st["Hmax"]=float(H.max())
+                    st["cut"]=min(st["Hmax"], h_tab+0.02*(st["Hmax"]-st["Hmin"])); st["keep_above"]=True     # just above the table
                     slider.set(1000.0*(st["cut"]-st["Hmin"])/max(1e-6, st["Hmax"]-st["Hmin"])); load.grid_remove(); paint()
                     status.configure(text="Starting just above the flattest surface. %s" % ("Drag to rotate, scroll to zoom." ))
                 self.q.put(("call", done))

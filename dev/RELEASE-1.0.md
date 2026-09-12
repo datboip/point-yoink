@@ -3,17 +3,26 @@
 Everything since 0.7.0 is local. 1.0.0 is a decision, not a version count. Do these, in order:
 
 ## Finish
-- [ ] Mock-based layout landed (build round winner + grafts), with the embedded 3D view
-      (meshview.py) in the preview and shaded thumbnails (shade.py) in the list and scan strip.
-- [ ] Walkthrough / first-run guide: the one-click path for most people (plug in or WiFi, tick, Import),
-      with the MIRACO's own screenshots (share icon, Share to PC Wi-Fi code screen, Transfer finished,
-      USB File Transfer popup). Same images in the README.
-- [ ] Editor mode (Process): cut-plane tool inside the window, clean-up with preview.
+- [x] Mock-based layout landed, GPU 3D view in the preview (glview.py), software fallback (meshview.py).
+- [x] Two pages: Import (the scanner) and Projects (this PC) with the NEXT bar and the five steps
+      Build > Cut base > Combine > Prepare > Export. First-run "How this works" panel, Help rewritten.
+- [x] Cut-plane tool inside the window (GPU view, colours, remembered plane, applied when combining).
+      The matplotlib tool (cutplane.py with a window) stays as the software-view fallback.
+- [x] Prepare with live linked before/after and Keep/Discard; Export dialog with size and mesh check.
+- [x] Combine: point pairs or Auto, ICP, overlay, editable, multi-set fusion (fuse.py --set).
+- [ ] Shaded thumbnails for the list (scanner previews are used today; combined gets a render).
+- [ ] The MIRACO's own screenshots in Help and the README (dev/design/device/*.png exist).
+- [ ] WiFi transfer window: Run in background; review window with the raw-only warning (concepts).
+- [ ] Menu: fold "Also export as" on Import into the Export dialog? (decide; STL on import is handy)
 
 ## Test on real hardware
-- [ ] MIRACO USB import of a fresh project, models only and full.
+- [ ] MIRACO USB import of a fresh project, models only and full (the user's save folder was emptied
+      on 2026-09-11 for exactly this: import one project and walk the NEXT bar end to end).
 - [ ] MIRACO WiFi share: single project, and check whether the project list allows a multi-select share.
-- [ ] Process on PC on a full scan (GPU), compare against the scanner's mesh.
+- [x] Process on PC on a full scan (GPU), compared against the scanner's mesh: 0.2 mm median with the
+      scanner's global poses (dev/design/device/SCANNER-EDIT-OPTIONS.md has the table).
+- [ ] Cut base on each scan, Combine three sides, Prepare the combined model, Export STL, open in a slicer.
+- [ ] A raw-only project (never One-tap edited): badges say raw only, NEXT says Build, Build works.
 - [ ] RANGE: Live view, orientation confirmed, capture to .ply.
 - [ ] Window at 1024x600: nothing clipped.
 

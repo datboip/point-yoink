@@ -174,7 +174,7 @@ class GLView(OpenGLFrame):
             c, nrm, hs = self.plane; nrm = np.asarray(nrm, float); nrm /= (np.linalg.norm(nrm) + 1e-9)
             a = np.array([1.0, 0, 0]) if abs(nrm[0]) < 0.9 else np.array([0, 1.0, 0]); u = np.cross(nrm, a); u /= np.linalg.norm(u); v = np.cross(nrm, u)
             GL.glDisable(GL.GL_LIGHTING); GL.glEnable(GL.GL_BLEND); GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA); GL.glDepthMask(GL.GL_FALSE)
-            GL.glColor4f(1.0, 0.69, 0.13, 0.28); GL.glBegin(GL.GL_QUADS)
+            GL.glColor4f(1.0, 0.69, 0.13, 0.16); GL.glBegin(GL.GL_QUADS)
             for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
                 q = np.asarray(c) + u * (sx * hs) + v * (sy * hs); GL.glVertex3f(*q)
             GL.glEnd(); GL.glDepthMask(GL.GL_TRUE); GL.glDisable(GL.GL_BLEND)
