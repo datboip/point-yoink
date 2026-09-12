@@ -358,15 +358,7 @@ def gather_gallery(name, local=None):
         for png in sorted(glob.glob(os.path.join(local, name+"_*.png"))): paths.append((os.path.basename(png)[len(name)+1:-4], png))
         if not paths:
             for pv in sorted(glob.glob(os.path.join(local, "data", "*", "preview.png"))): paths.append((os.path.basename(os.path.dirname(pv)), pv))
-        comb=os.path.join(local, name+"_combined_pcfused.ply")
-        if os.path.exists(comb):     # the model built from all lined-up scans gets its own tile (rendered here, cached)
-            tp=os.path.join(THUMBS, "%s__combined__card.png" % name)
-            if not os.path.exists(tp) or os.path.getmtime(tp)<os.path.getmtime(comb):
-                try:
-                    import shade; os.makedirs(THUMBS, exist_ok=True)
-                    v,f=shade.load_oriented(comb, 150000); shade.render(v, f, size=(330, 210), grid=False, gizmo=False).save(tp)
-                except Exception as e: log_error("combined tile", e); tp=None
-            if tp: paths.append(("combined", tp))
+        _combined_tile(name, local, paths)
         return paths
     for node in nodes:
         prev=os.path.join(PROJECTS,name,"data",node,"preview.png")
@@ -377,7 +369,20 @@ def gather_gallery(name, local=None):
                 except Exception: continue
             else: continue
         paths.append((node, lp))
+    if local: _combined_tile(name, local, paths)       # also when the scanner is connected (the combined model lives on this PC)
     return paths
+
+def _combined_tile(name, local, paths):
+    """The model built from all lined-up scans gets its own tile (rendered here, cached under THUMBS)."""
+    comb=os.path.join(local, name+"_combined_pcfused.ply")
+    if not os.path.exists(comb): return
+    tp=os.path.join(THUMBS, "%s__combined__card.png" % name)
+    if not os.path.exists(tp) or os.path.getmtime(tp)<os.path.getmtime(comb):
+        try:
+            import shade; os.makedirs(THUMBS, exist_ok=True)
+            v,f=shade.load_oriented(comb, 150000); shade.render(v, f, size=(330, 210), grid=False, gizmo=False).save(tp)
+        except Exception as e: log_error("combined tile", e); return
+    paths.append(("combined", tp))
 
 def human_count(n):
     n=int(n or 0)
@@ -2378,9 +2383,9 @@ class App(ctk.CTk):
         name=self.selected
         if not name: return
         node=node or self._film_sel
-        if node and node!="combined":
-            cur=self._proc_current(name, node); src=cur[2] if cur else None
-        else: node=None; src=self._find_mesh(name)
+        if node:
+            cur=self._proc_current(name, node); src=cur[2] if cur else None       # the selected scan, or the combined model
+        else: src=self._find_mesh(name)
         if not src:
             self.set_banner("This scan has no 3D model yet. Build it first.", WARN); return
         if node and os.environ.get("POINTYOINK_NO_GL")!="1" and self.cfg.get("gl_view","auto")!="software":
