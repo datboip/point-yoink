@@ -1554,6 +1554,19 @@ class App(ctk.CTk):
             "WiFi:  click WiFi here, a 4-digit code shows; on the scanner choose Share to PC > Wi-Fi and type it. One project arrives, faster than the cable.",
             "Finished models  is quick.  Full project  also brings the raw frames, which Build and Combine need.",
         ])
+        # the scanner's own screens for the two ways in
+        shots=[("scanner-share-icon", "Share: the icon top right of a project"), ("scanner-wifi-code", "Wi-Fi: type the code PointYoink shows"), ("scanner-usb-tab", "USB: File Transfer")]
+        adir=os.path.join(HERE, "assets", "device")
+        if all(os.path.exists(os.path.join(adir, n+".png")) for n,_ in shots):
+            f=ctk.CTkFrame(sc, fg_color=CARD, corner_radius=14); f.pack(fill="x", padx=6, pady=7)
+            ctk.CTkLabel(f, text="On the scanner", font=ctk.CTkFont(size=14,weight="bold"), text_color=AC).pack(anchor="w", padx=16, pady=(12,6))
+            row=ctk.CTkFrame(f, fg_color="transparent"); row.pack(fill="x", padx=10, pady=(0,10))
+            for n,capt in shots:
+                cell=ctk.CTkFrame(row, fg_color="#0a0c10", corner_radius=10); cell.pack(side="left", padx=6, pady=2, expand=True, fill="x")
+                try:
+                    self.imgs["help_"+n]=cimg(os.path.join(adir, n+".png"), 210); ctk.CTkLabel(cell, image=self.imgs["help_"+n], text="").pack(padx=6, pady=(6,2))
+                except Exception: pass
+                ctk.CTkLabel(cell, text=capt, text_color=MUT, font=ctk.CTkFont(size=10), wraplength=200).pack(pady=(0,6))
         card("The five steps (the NEXT bar walks you through them)", [
             "1  Build  -  raw frames become a 3D model. One-tap Edit on the scanner does it too; Build here when that did not turn out right.",
             "2  Cut base  -  drag one line above the table on each scan. The cut is remembered and applied when combining.",

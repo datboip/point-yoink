@@ -35,6 +35,7 @@ cp "$ROOT/meshview.py"   "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/glview.py"     "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/align.py"      "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/icon.png"      "$PKG/usr/lib/pointyoink/"
+mkdir -p "$PKG/usr/lib/pointyoink/assets/device" && cp "$ROOT"/assets/device/*.png "$PKG/usr/lib/pointyoink/assets/device/"
 cp "$ROOT/icon.png"      "$PKG/usr/share/icons/hicolor/512x512/apps/pointyoink.png"
 cp "$ROOT/LICENSE" "$ROOT/README.md" "$ROOT/CHANGELOG.md" "$PKG/usr/share/doc/pointyoink/" 2>/dev/null || true
 
