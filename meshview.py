@@ -38,17 +38,21 @@ class MeshView(tk.Label):
                 res = ((lv, lf), (hv, hf))
             except Exception as e:
                 res = e
-            self.after(0, lambda: self._loaded(gen, res, on_ready))
+            try: self.after(0, lambda: self._loaded(gen, res, on_ready))
+            except Exception: pass                                 # the widget (or the app) is gone
         threading.Thread(target=work, daemon=True).start()
+    def _alive(self):
+        try: return bool(self.winfo_exists())
+        except Exception: return False
     def _loaded(self, gen, res, on_ready):
-        if gen != self._gen: return
+        if gen != self._gen or not self._alive(): return     # a newer load, or the dialog holding this view was closed
         if isinstance(res, Exception):
             self.configure(text="could not load this mesh"); (on_ready and on_ready(False)); return
         self.lo, self.hi = res; self.configure(text=""); self.reset(draw=False); self.draw(hi=True); (on_ready and on_ready(True))
     # ---- drawing ----
     def draw(self, hi=False):
         data = self.hi if (hi and self.hi is not None) else self.lo
-        if data is None: return
+        if data is None or not self._alive(): return
         w, h = max(64, self.winfo_width()), max(64, self.winfo_height())
         from PIL import ImageTk
         img = shade.render(data[0], data[1], size=(w, h), wire=self.wire, azim=self.azim, elev=self.elev, zoom=self.zoom, pan=tuple(self.pan))

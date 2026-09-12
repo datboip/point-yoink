@@ -38,6 +38,27 @@ def run():
             step("side " + k, lambda k=k: app.set_side(k, True))
         step("refresh_folder", lambda: app.refresh_folder())
         step("rename dialog (no-op)", lambda: None)
+        # the Projects page and its dialogs (software 3D views under Xvfb)
+        def close_dialogs():
+            for k, d in list(getattr(app, "_dialogs", {}).items()):
+                try: d.destroy()
+                except Exception: pass
+            app._dialogs = {}
+        step("projects page", lambda: app._set_mode("Local"))
+        step("panel refresh", lambda: app._panel_refresh())
+        nodes = app._proc_nodes(name)
+        node = nodes[0] if nodes else None
+        if node:
+            step("pick scan", lambda: app._pick_scan_by_node(name, node))
+            step("prepare dialog", lambda: app._prepare_dialog(name, node)); step("close", close_dialogs)
+            step("export dialog", lambda: app._export_dialog(name, node)); step("close", close_dialogs)
+            step("compare dialog", lambda: app._compare_dialog(name)); step("close", close_dialogs)
+            step("align dialog", lambda: app._align_dialog(name)); step("close", close_dialogs)
+            step("next strip", lambda: app._next_refresh(name, nodes, os.path.join(a.dest, name)))
+        step("howto dialog", lambda: app._howto_dialog()); step("close", close_dialogs)
+        step("app menu open", lambda: app._app_menu()); step("app menu close", lambda: app._app_menu())
+        step("back to import page", lambda: app._set_mode("Projects"))
+        step("cards page", lambda: app._set_mode("Process"))
     else:
         steps.append("no local projects (empty state)")
     for m in ("Captures", "Live", "Projects"):

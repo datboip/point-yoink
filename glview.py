@@ -80,10 +80,14 @@ class GLView(OpenGLFrame):
                 res = (np.ascontiguousarray(v, dtype=np.float32), nrm, np.ascontiguousarray(f, dtype=np.uint32), None)
             except Exception as e:
                 res = e
-            self.after(0, lambda: self._loaded(gen, res, on_ready))
+            try: self.after(0, lambda: self._loaded(gen, res, on_ready))
+            except Exception: pass                                 # the widget (or the app) is gone
         threading.Thread(target=work, daemon=True).start()
+    def _alive(self):
+        try: return bool(self.winfo_exists())
+        except Exception: return False
     def _loaded(self, gen, res, on_ready):
-        if gen != self._gen: return
+        if gen != self._gen or not self._alive(): return       # a newer load, or the window holding this view was closed
         if isinstance(res, Exception) or self.failed:
             (on_ready and on_ready(False)); return
         v, n, f, wire = res
@@ -119,7 +123,9 @@ class GLView(OpenGLFrame):
                 res = (np.ascontiguousarray(wv, dtype=np.float32), np.ascontiguousarray(wf, dtype=np.uint32))
             except Exception:
                 res = (v, np.ascontiguousarray(f[::max(1, len(f) // 80000)], dtype=np.uint32))
-            if gen == self._gen: self.after(0, lambda: (self.tkMakeCurrent(), self._upload_wire(*res), self.draw()))
+            if gen == self._gen:
+                try: self.after(0, lambda: self._alive() and (self.tkMakeCurrent(), self._upload_wire(*res), self.draw()))
+                except Exception: pass
         threading.Thread(target=work, daemon=True).start()
     # ---- drawing ----
     def redraw(self):
@@ -196,7 +202,7 @@ class GLView(OpenGLFrame):
             GL.glColor3f(*col); GL.glVertex3f(0, 0, 0); GL.glVertex3f(*ax)
         GL.glEnd(); GL.glLineWidth(1.0); GL.glEnable(GL.GL_DEPTH_TEST)
     def draw(self, hi=False):
-        if self.ready and not self.failed:
+        if self.ready and not self.failed and self._alive():
             try: self._display()
             except Exception as e: self.failed = True; self._err = e
     def set_wire(self, on):
@@ -259,7 +265,7 @@ class GLView(OpenGLFrame):
             except Exception as e:
                 res = e
             def up():
-                if gen != self._gen: return
+                if gen != self._gen or not self._alive(): return
                 if isinstance(res, Exception): (on_ready and on_ready(False)); return
                 try:
                     self.tkMakeCurrent(); vbo = GL.glGenBuffers(3); v, n, f = res
@@ -269,7 +275,8 @@ class GLView(OpenGLFrame):
                     self.layers.append({"vbo": vbo, "n": int(f.size), "colour": tuple(colour)}); self.draw(); (on_ready and on_ready(True))
                 except Exception:
                     (on_ready and on_ready(False))
-            self.after(0, up)
+            try: self.after(0, up)
+            except Exception: pass
         threading.Thread(target=work, daemon=True).start()
     def clear_layers(self, draw=True):
         try:
