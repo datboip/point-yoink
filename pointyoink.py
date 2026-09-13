@@ -1983,7 +1983,7 @@ class App(ctk.CTk):
                 cell=ctk.CTkFrame(self.film, fg_color="#0a0c10", corner_radius=10, border_width=2, border_color=(AC if node==self._film_sel else STROKE))
                 cell.pack(side="left", padx=(0,10), pady=(6,4))
                 im=ctk.CTkLabel(cell, image=self.imgs["g_"+name+node], text=""); im.pack(padx=8, pady=(8,2))
-                cap=ctk.CTkLabel(cell, text=("Combined" if node=="combined" else "Scan %02d"%(1+[n for n,_ in items if n!="combined"].index(node))), text_color=(AC if node=="combined" else MUT), font=ctk.CTkFont(size=11)); cap.pack(pady=(0,6))
+                cap=ctk.CTkLabel(cell, text=self._scan_label(name, node), text_color=(AC if node=="combined" else MUT), font=ctk.CTkFont(size=11)); cap.pack(pady=(0,6))
                 for w in (cell, im, cap): w.bind("<Button-1>", lambda e,nd=node,pp=path: self._pick_scan(name, nd, pp))
                 self._film_cells[node]=cell
             except Exception: pass
@@ -2811,7 +2811,11 @@ class App(ctk.CTk):
         if node:
             vs=self._proc_versions(name, node); cur=self._proc_current(name, node)
             raw=len(glob.glob(os.path.join(local, "data", node, "cache", "*.dph"))); has_prep=any(k=="clean" for k,_,_ in vs)
-            self._title(pp, self._scan_label(name, node), size=14, pady=(10,0))
+            tr=ctk.CTkFrame(pp, fg_color="transparent"); tr.pack(fill="x", padx=6, pady=(10,0))
+            ctk.CTkLabel(tr, text=self._scan_label(name, node), text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w").pack(side="left")
+            if node!="combined":
+                rb=ctk.CTkButton(tr, text="✎", width=26, height=24, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=13), command=lambda n=name,nd=node: self._rename_scan(n, nd)); rb.pack(side="left", padx=(4,0))
+                self._tip(rb, "Name this scan: front, back, left side…")
             sub=("built from the scans you lined up" if node=="combined" else ("%d raw frames on this PC" % raw if raw else "no raw data on this PC"))
             ctk.CTkLabel(pp, text=sub, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6)
             if node!="combined":
@@ -2886,8 +2890,29 @@ class App(ctk.CTk):
     STAGE_WORDS={"meshed": ("edited on the scanner", OK), "fused": ("fused on the scanner, not meshed", WARN), "raw": ("raw only, not edited on the scanner", WARN), None: ("", MUT)}
     def _scan_label(self, name, node):
         if node=="combined": return "Combined"
+        custom=(self.records.get(name, {}).get("scan_labels", {}) or {}).get(node)
+        if custom: return custom
         nodes=[n for n in self._proc_nodes(name) if n!="combined"]
         return "Scan %02d" % (nodes.index(node)+1) if node in nodes else node
+    def _rename_scan(self, name, node):
+        """Give a scan a name like front, back, left side. Shown on the strip, the panel, the cards and in Combine."""
+        cur=(self.records.get(name, {}).get("scan_labels", {}) or {}).get(node, "")
+        t=self._top("Name this scan", 420, 190, key="scanname")
+        if t is None: return
+        ctk.CTkLabel(t, text="A name for this scan (front, back, left side…). Leave empty for Scan %02d." % (1+[n for n in self._proc_nodes(name) if n!="combined"].index(node) if node in self._proc_nodes(name) else 0),
+                     text_color=MUT, font=ctk.CTkFont(size=12), wraplength=380, justify="left").pack(anchor="w", padx=20, pady=(18,6))
+        v=ctk.StringVar(value=cur); e=ctk.CTkEntry(t, textvariable=v, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=10); e.pack(fill="x", padx=20); e.focus_set()
+        def ok(*_):
+            labs=self.records.setdefault(name, {}).setdefault("scan_labels", {}); txt=v.get().strip()
+            if txt: labs[node]=txt
+            else: labs.pop(node, None)
+            self._persist(); self._dialogs.pop("scanname", None); t.destroy()
+            self.gallery_cache.pop(name, None); self.projects_sig=None
+            if self.selected==name: self.select_project(name); self._pick_scan_by_node(name, node)
+        e.bind("<Return>", ok)
+        br=ctk.CTkFrame(t, fg_color="transparent"); br.pack(fill="x", padx=16, pady=14)
+        ctk.CTkButton(br, text="Save", width=100, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=ok).pack(side="right", padx=6)
+        ctk.CTkButton(br, text="Cancel", width=90, height=32, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=lambda: (self._dialogs.pop("scanname", None), t.destroy())).pack(side="right", padx=6)
     def _mesh_info(self, path, cb):
         """Size, counts, pieces and open edges of a model, measured in a memory-capped child; cb(dict or None) on the UI thread."""
         def work():
@@ -3902,18 +3927,25 @@ class App(ctk.CTk):
     def _wifi_confirm(self, keep, dest, then):
         """Name the incoming project(s) and, when one is already on this PC, choose keep-and-add or replace."""
         existing=[n for n in keep if os.path.isdir(os.path.join(dest, n))]
-        t=self._top("Before importing", 520, 300+60*len(keep)+(70 if existing else 0), key="wifiname")
+        nscans=sum(len(v) for v in keep.values())
+        t=self._top("Before importing", 560, min(820, 200+60*len(keep)+34*nscans+(90 if existing else 0)), key="wifiname")
         if t is None: return
         t.protocol("WM_DELETE_WINDOW", lambda: (self._dialogs.pop("wifiname", None), t.destroy()))
         ctk.CTkLabel(t, text="Name it (optional)", font=ctk.CTkFont(family=WORDMARK, size=15, weight="bold"), text_color=TX).pack(anchor="w", padx=22, pady=(20,2))
         ctk.CTkLabel(t, text="A name you will recognise, like \"headrest front\". The scanner's id stays as the folder name.",
                      text_color=MUT, font=ctk.CTkFont(size=11), wraplength=460, justify="left").pack(anchor="w", padx=22)
-        vars_={}
+        vars_={}; scan_vars={}
         for n in keep:
             row=ctk.CTkFrame(t, fg_color="transparent"); row.pack(fill="x", padx=22, pady=(10,0))
             ctk.CTkLabel(row, text=n, text_color=MUT, font=ctk.CTkFont(size=11), width=190, anchor="w").pack(side="left")
             v=ctk.StringVar(value=self.records.get(n, {}).get("label") or ""); vars_[n]=v
             ctk.CTkEntry(row, textvariable=v, placeholder_text="name (optional)", fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=10).pack(side="left", fill="x", expand=True, padx=(8,0))
+            # the scans too: "front", "back", "left side" is what you want to see when lining them up
+            for i,node in enumerate(sorted(keep[n])):
+                sr=ctk.CTkFrame(t, fg_color="transparent"); sr.pack(fill="x", padx=22, pady=(4,0))
+                ctk.CTkLabel(sr, text="   scan %02d · %s" % (i+1, node), text_color=DIM, font=ctk.CTkFont(size=10), width=190, anchor="w").pack(side="left")
+                sv=ctk.StringVar(value=self.records.get(n, {}).get("scan_labels", {}).get(node) or ""); scan_vars[(n, node)]=sv
+                ctk.CTkEntry(sr, textvariable=sv, placeholder_text="front, back, left side… (optional)", height=26, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=8, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True, padx=(8,0))
         mode=ctk.StringVar(value="merge")
         if existing:
             box=ctk.CTkFrame(t, fg_color="#3d2f14", corner_radius=10); box.pack(fill="x", padx=22, pady=(16,0))
@@ -3925,6 +3957,10 @@ class App(ctk.CTk):
                                fg_color=AC, hover_color=AC_H, text_color=TX, font=ctk.CTkFont(size=11)).pack(anchor="w", padx=12, pady=(2,10))
         br=ctk.CTkFrame(t, fg_color="transparent"); br.pack(fill="x", padx=18, pady=16)
         def ok():
+            for (n,node),sv in scan_vars.items():
+                txt=sv.get().strip(); labs=self.records.setdefault(n, {}).setdefault("scan_labels", {})
+                if txt: labs[node]=txt
+                else: labs.pop(node, None)
             self._dialogs.pop("wifiname", None); t.destroy(); then({n: v.get() for n,v in vars_.items()}, mode.get()=="replace")
         ctk.CTkButton(br, text="Import", width=110, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=ok).pack(side="right", padx=6)
         ctk.CTkButton(br, text="Back", width=90, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX,
