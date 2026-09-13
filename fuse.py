@@ -85,18 +85,33 @@ def main():
     else: emit("error", msg="give --frames and --calib, or --set"); return 2
     fx, fy, cx, cy = read_calib(sets[0][1])
     emit("calib", fx=round(fx, 2), fy=round(fy, 2), cx=round(cx, 2), cy=round(cy, 2))
-    jobs = []      # (dph, gp dict, T mm, calib tuple, plane)
+    jobs = []      # (dph, gp dict, T mm, calib tuple, plane, (W, H))
+    def frame_size(frames, dphs):
+        """The scan's depth frame size: the scanner's property.rvproj says (fast mode saves 400x300, high 800x600),
+        else the file size tells (2 bytes per pixel)."""
+        try:
+            sp = json.load(open(os.path.join(os.path.dirname(os.path.abspath(frames)), "property.rvproj"))).get("scan_param", {})
+            w, h = int(sp.get("depth_width") or 0), int(sp.get("depth_height") or 0)
+            if w and h: return w, h
+        except Exception: pass
+        px = os.path.getsize(dphs[0]) // 2
+        for w, h in ((800, 600), (400, 300), (640, 480), (1280, 800), (320, 240)):
+            if w * h == px: return w, h
+        return a.width, a.height
     for frames, calib, T, P in sets:
         dphs = sorted(glob.glob(os.path.join(frames, "*.dph")))[::max(1, a.every)]
         if not dphs: emit("error", msg="no .dph frames in " + frames); return 2
+        Wf, Hf = frame_size(frames, dphs)
         gp = {}
         pose_path = os.path.join(frames, "global_register_pose.pose") if a.poses == "auto" else a.poses
         if a.poses != "none" and os.path.exists(pose_path):
             try: gp = read_global_poses(pose_path)
             except Exception as e: emit("warn", msg="global poses unreadable: %r" % (e,)); gp = {}
         cal = read_calib(calib)
-        emit("frames", count=len(dphs), global_poses=len(gp), set=os.path.basename(os.path.dirname(frames)))
-        jobs += [(d, gp, T, cal, P) for d in dphs]
+        if Wf != 800:                                    # Pl.bin is for the 800x600 frames; scale it for the other sizes
+            k = Wf / 800.0; cal = (cal[0] * k, cal[1] * k, cal[2] * k, cal[3] * k)
+        emit("frames", count=len(dphs), global_poses=len(gp), set=os.path.basename(os.path.dirname(frames)), size="%dx%d" % (Wf, Hf))
+        jobs += [(d, gp, T, cal, P, (Wf, Hf)) for d in dphs]
     dphs = [j[0] for j in jobs]
 
     W, H = a.width, a.height
@@ -121,7 +136,7 @@ def main():
             voxel_length=voxel_m, sdf_trunc=voxel_m * a.trunc,
             color_type=o3d.pipelines.integration.TSDFVolumeColorType.NoColor)
 
-    n = 0; cur_cal = None; grid = None
+    n = 0; cur_cal = None; grid = None; cur_size = None
     cos_min = float(np.cos(np.radians(a.grazing)))
     def clean_frame(d, cal):
         """Drop the pixels the scanner would not trust: depth jumps (edges, flying pixels) and surfaces seen edge-on."""
@@ -136,8 +151,8 @@ def main():
         edge = jump | ~valid
         edge = edge | np.roll(edge, 1, 0) | np.roll(edge, -1, 0) | np.roll(edge, 1, 1) | np.roll(edge, -1, 1)   # one-pixel skirt
         # surface normal from the depth gradient, compared with the view ray
-        if grid is None:
-            u, v = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32)); grid = (u, v)
+        if grid is None or grid[0].shape != d.shape:
+            u, v = np.meshgrid(np.arange(d.shape[1], dtype=np.float32), np.arange(d.shape[0], dtype=np.float32)); grid = (u, v)
         u, v = grid; X = (u - cx) * z / fx; Y = (v - cy) * z / fy
         dXu = np.roll(X, -1, 1) - np.roll(X, 1, 1); dYu = np.roll(Y, -1, 1) - np.roll(Y, 1, 1); dZu = np.roll(z, -1, 1) - np.roll(z, 1, 1)
         dXv = np.roll(X, -1, 0) - np.roll(X, 1, 0); dYv = np.roll(Y, -1, 0) - np.roll(Y, 1, 0); dZv = np.roll(z, -1, 0) - np.roll(z, 1, 0)
@@ -152,8 +167,8 @@ def main():
         """Zero the depth pixels that sit on the removed side of this scan's base plane (plane in the scan's own mm frame)."""
         nonlocal grid
         fx, fy, cx, cy = cal
-        if grid is None:
-            u, v = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32)); grid = (u, v)
+        if grid is None or grid[0].shape != d.shape:
+            u, v = np.meshgrid(np.arange(d.shape[1], dtype=np.float32), np.arange(d.shape[0], dtype=np.float32)); grid = (u, v)
         u, v = grid; z = d.astype(np.float32) * a.depth_scale          # mm, OpenCV camera frame
         X = (u - cx) * z / fx; Y = (v - cy) * z / fy
         M = pose_mm @ F                                                # camera(OpenCV) -> scan world, mm
@@ -163,14 +178,16 @@ def main():
         bad = (h < P["d"] + margin) if P.get("keep_above", True) else (h > P["d"] - margin)
         d[bad & (d > 0)] = 0
         return d
-    for i, (dph, gp, T, cal, P) in enumerate(jobs):
+    for i, (dph, gp, T, cal, P, size) in enumerate(jobs):
         inf = dph[:-4] + ".inf"
         if not os.path.exists(inf): continue
-        if cal != cur_cal:                        # each scan can carry its own calibration
-            cur_cal = cal; fx, fy, cx, cy = cal
+        if cal != cur_cal or size != cur_size:    # each scan can carry its own calibration and frame size
+            cur_cal = cal; cur_size = size; fx, fy, cx, cy = cal; W, H = size
             if use_t: K = o3d.core.Tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], o3d.core.float64)
             else: intr = o3d.camera.PinholeCameraIntrinsic(W, H, fx, fy, cx, cy)
-        d = np.frombuffer(open(dph, "rb").read(), dtype=np.uint16).reshape(H, W).copy()
+        raw = np.frombuffer(open(dph, "rb").read(), dtype=np.uint16)
+        if raw.size != W * H: emit("warn", msg="frame %s has %d pixels, expected %dx%d; skipped" % (os.path.basename(dph), raw.size, W, H)); continue
+        d = raw.reshape(H, W).copy()
         d[d * a.depth_scale > a.max_depth] = 0
         if a.filter > 0: d = clean_frame(d, cal)
         pose = gp.get(frame_key(dph))            # camera->world (scanner frame), translation in mm
