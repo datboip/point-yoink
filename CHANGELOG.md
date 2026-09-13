@@ -3,6 +3,10 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.12 (dev, 2026-09-13)
+- Startup: the first-run panel waits until the splash is gone; nothing drags the
+  main window onto the screen half-built any more.
+
 ## 0.9.11 (dev, 2026-09-13)
 - **Drift fix for raw scans**: a scan the scanner never fused has only its live
   tracking poses, which wander over a long pass. Build now registers the

@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.11-pre"
+APP = "PointYoink"; VERSION = "0.9.12-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1368,7 +1368,7 @@ class App(ctk.CTk):
         if self.selected and self.selected not in {p["name"] for p in self.projects}: self._clear_selection()
         if not imp:
             self._panel_refresh()
-            if not self.cfg.get("seen_howto") and self.projects and os.environ.get("POINTYOINK_NO_HOWTO")!="1": self.after(900, self._howto_dialog)
+            if not self.cfg.get("seen_howto") and self.projects and os.environ.get("POINTYOINK_NO_HOWTO")!="1": self._howto_when_ready()
     def _clear_selection(self):
         """Nothing selected on this page: the centre goes back to its empty state."""
         self.selected=None; self._film_sel=None; self._film_cells={}
@@ -1832,7 +1832,6 @@ class App(ctk.CTk):
                     if self.projects: self.render_list(self.projects)   # refresh badges if files changed on disk (cheap no-op otherwise)
                 else: self.set_banner("Reading projects off the scanner… (MTP is slow)", AC); self.start_listing()
         self.after(1500, self.refresh_loop)
-        if not getattr(self, "_first_list_started", False): self._first_list_started=True; self.after(30, self.start_listing)   # do not wait for the poll: list at once
     def start_listing(self):
         if self.listing: return
         self.listing=True; dest=self.dest.get() or DEFAULT_DEST; self._listing_src="device" if quick_mounted() else "local"
@@ -2803,6 +2802,11 @@ class App(ctk.CTk):
            ("Combine", "⧉", "Scanned each side separately? Pick a base scan, click three to five matching spots on it and on another scan, Line up, check the orange overlay, Keep. Repeat for each side, then Build one model from all their frames at once. Your points stay editable."),
            ("Prepare", "✦", "Remove floating pieces, smooth, fill small holes, reduce triangles. It runs on a copy and shows before and after; Keep or Discard. Once Combined exists, prepare that one."),
            ("Export", "⬆", "Pick the version, the format (STL for slicers, OBJ, GLB, PLY) and the folder. The size and a mesh check are shown first: open edges and extra pieces mean the surface is not closed."))
+    def _howto_when_ready(self):
+        """The first-run panel waits until the splash is gone and the window is up; a dialog opened earlier drags the
+        main window onto the screen half-built."""
+        if getattr(self, "_splash", None) or not self.winfo_viewable(): self.after(700, self._howto_when_ready); return
+        if not self.cfg.get("seen_howto") and "howto" not in getattr(self, "_dialogs", {}): self._howto_dialog()
     def _howto_dialog(self):
         t=self._top("How PointYoink works", 700, 640, key="howto")
         if t is None: return
