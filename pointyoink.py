@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.14-pre"
+APP = "PointYoink"; VERSION = "0.9.15-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2710,7 +2710,7 @@ class App(ctk.CTk):
             elif cur: self._card_thumb(name, node, cur[2], tl)      # no scanner picture (a model built or combined here): render one
             top=ctk.CTkFrame(card, fg_color="transparent"); top.grid(row=0,column=1, sticky="ew", pady=(12,0))
             ctk.CTkLabel(top, text=self._scan_label(name, node), font=ctk.CTkFont(size=14, weight="bold"), text_color=TX).pack(side="left")
-            ctk.CTkLabel(top, text=(node if node!="combined" else "all aligned scans in one model"), text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=10)
+            ctk.CTkLabel(top, text=("scan %d of %d" % (i+1, len([n for n in nodes if n!="combined"])) if node!="combined" else "all aligned scans in one model"), text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=10)
             if node=="combined": status="%d version%s · built from the scans you lined up" % (len(vs), "" if len(vs)==1 else "s")
             else: status=("no 3D model yet · %d raw frames" % raw) if not vs else ("%d version%s · %d raw frames" % (len(vs), "" if len(vs)==1 else "s", raw) if raw else "%d version%s · no raw data on this PC" % (len(vs), "" if len(vs)==1 else "s"))
             ctk.CTkLabel(top, text=status, text_color=(WARN if not vs else MUT), font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
@@ -2887,7 +2887,8 @@ class App(ctk.CTk):
             if node!="combined":
                 rb=ctk.CTkButton(tr, text="✎", width=26, height=24, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=13), command=lambda n=name,nd=node: self._rename_scan(n, nd)); rb.pack(side="left", padx=(4,0))
                 self._tip(rb, "Name this scan: front, back, left side…")
-            sub=("built from the scans you lined up" if node=="combined" else ("%d raw frames on this PC" % raw if raw else "no raw data on this PC"))
+            order=[n for n in nodes if n!="combined"]; pos=("scan %d of %d · " % (order.index(node)+1, len(order))) if node in order else ""
+            sub=("built from the scans you lined up" if node=="combined" else (pos+("%d raw frames on this PC" % raw if raw else "no raw data on this PC")))
             ctk.CTkLabel(pp, text=sub, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6)
             if node!="combined":
                 stw, stc = self.STAGE_WORDS[self._device_stage(local, node)]
@@ -2981,8 +2982,7 @@ class App(ctk.CTk):
         if custom: return custom
         dev=self._device_scan_names(name).get(node)
         if dev: return dev
-        nodes=[n for n in self._proc_nodes(name) if n!="combined"]
-        return "Scan %02d" % (nodes.index(node)+1) if node in nodes else node
+        return node                                  # the scan's number on the device, the same name it shows there
     def _rename_scan(self, name, node):
         """Give a scan a name like front, back, left side. Shown on the strip, the panel, the cards and in Combine."""
         cur=(self.records.get(name, {}).get("scan_labels", {}) or {}).get(node, "")
@@ -4108,7 +4108,7 @@ class App(ctk.CTk):
                     th.bind("<Button-1>", lambda e, pv=pv, mesh=mesh, i=i, node=node, root=root, n=n: self._peek("scan %02d · %s" % (i+1, node), pv, mesh,
                             frames_dir=os.path.join(root, "cache"), calib=os.path.join(root, "param", "Pl.bin"), key="%s__%s" % (n, node)))
                     self._tip(th, "Click for a bigger look")
-                ctk.CTkLabel(sr, text="scan %02d\n%s" % (i+1, node), text_color=DIM, font=ctk.CTkFont(size=10), width=110, anchor="w", justify="left").pack(side="left")
+                ctk.CTkLabel(sr, text="%s\nscan %d of %d" % (node, i+1, len(keep[n])), text_color=DIM, font=ctk.CTkFont(size=10), width=110, anchor="w", justify="left").pack(side="left")
                 sv=ctk.StringVar(value=self.records.get(n, {}).get("scan_labels", {}).get(node) or self._device_scan_names(n, os.path.join(stage, n) if stage else None).get(node) or ""); scan_vars[(n, node)]=sv
                 ctk.CTkEntry(sr, textvariable=sv, placeholder_text="front, back, left side… (optional)", height=26, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=8, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True, padx=(8,0))
         mode=ctk.StringVar(value="merge")

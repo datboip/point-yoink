@@ -3,6 +3,10 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.15 (dev, 2026-09-13)
+- Scans are called by the name the device shows (its number, or the name you
+  gave it there); "scan 2 of 3" is a hint, not the name.
+
 ## 0.9.14 (dev, 2026-09-13)
 - Version chips: tooltips say that a click only picks the version and that the
   ✕ asks before deleting; rounded ends stay rounded.
