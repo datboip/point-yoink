@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.15-pre"
+APP = "PointYoink"; VERSION = "0.9.16-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -183,7 +183,10 @@ def save_cfg(c):
     except Exception: pass
 
 # ---------------- device / mount ----------------
+NO_DEVICE = os.environ.get("POINTYOINK_NO_DEVICE") == "1"   # test instances must never touch the scanner: two apps on one MTP mount freeze both
+
 def usb_state():
+    if NO_DEVICE: return ("absent", None)
     dev = None
     for d in glob.glob("/sys/bus/usb/devices/*/idVendor"):
         try:
@@ -200,12 +203,14 @@ def usb_state():
     return ("mtp" if "06" in classes else "adb"), serial
 
 def quick_mounted():
+    if NO_DEVICE: return False
     try:
         return subprocess.run(["ls", os.path.join(MOUNT, "Internal shared storage")],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=6).returncode == 0
     except Exception: return False
 
 def do_mount():
+    if NO_DEVICE: return (False, "device access is off in this instance")
     if quick_mounted(): return True, "already mounted"
     # Clear our OWN mountpoint gracefully first (don't blanket-kill MTP for other
     # devices the user may have connected). Release any gvfs claim on the device,

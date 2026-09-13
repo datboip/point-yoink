@@ -3,6 +3,10 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.16 (dev, 2026-09-13)
+- Test and render instances never touch the scanner (POINTYOINK_NO_DEVICE=1):
+  two apps on one MTP mount froze both.
+
 ## 0.9.15 (dev, 2026-09-13)
 - Scans are called by the name the device shows (its number, or the name you
   gave it there); "scan 2 of 3" is a hint, not the name.
