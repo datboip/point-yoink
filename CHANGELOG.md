@@ -3,6 +3,10 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.14 (dev, 2026-09-13)
+- Version chips: tooltips say that a click only picks the version and that the
+  ✕ asks before deleting; rounded ends stay rounded.
+
 ## 0.9.13 (dev, 2026-09-13)
 - Versions are named for what they are: the scanner's model, PC build (from raw
   data), prepared copy. The panel and the Compare window say what they are for.

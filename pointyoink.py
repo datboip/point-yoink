@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.13-pre"
+APP = "PointYoink"; VERSION = "0.9.14-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2726,7 +2726,7 @@ class App(ctk.CTk):
                                 text_color=(AC if is_cur else TX), font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key: self._proc_set_current(n, nd, k)); b.pack(side="left", padx=(6,0))
                 self._tip(b, "%s · %s\nClick to make this the version the preview and exports use." % (os.path.basename(path), human(os.path.getsize(path))))
                 x=ctk.CTkButton(chip, text="✕", width=22, height=22, corner_radius=9, fg_color="transparent", hover_color="#3a2530", text_color=MUT,
-                                font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key,pth=path: self._proc_delete_version(n, nd, k, pth)); x.pack(side="left")
+                                font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key,pth=path: self._proc_delete_version(n, nd, k, pth)); x.pack(side="left", padx=(0,4))
                 self._tip(x, "Delete this version (to the trash)")
             act=ctk.CTkFrame(card, fg_color="transparent"); act.grid(row=0,column=2, rowspan=2, padx=14, pady=12, sticky="e")
             has_prep=any(k=="clean" for k,_,_ in vs)
@@ -2902,9 +2902,10 @@ class App(ctk.CTk):
                     chip=ctk.CTkFrame(pp, fg_color=("#15304d" if is_cur else CARD2), corner_radius=9); chip.pack(fill="x", padx=6, pady=2)
                     b=ctk.CTkButton(chip, text=("✓ " if is_cur else "")+label+"  ·  "+human(os.path.getsize(path)), height=24, corner_radius=9, fg_color="transparent", hover_color=STROKE, anchor="w",
                                     text_color=(AC if is_cur else TX), font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key: self._proc_set_current(n, nd, k)); b.pack(side="left", fill="x", expand=True, padx=(6,0))
+                    self._tip(b, ("This is the version the preview and exports use." if is_cur else "Click to make this the version the preview and exports use. Nothing is changed or deleted.")+"\n"+os.path.basename(path))
                     x=ctk.CTkButton(chip, text="✕", width=24, height=24, corner_radius=9, fg_color="transparent", hover_color="#3a2530", text_color=MUT, font=ctk.CTkFont(size=11),
-                                    command=lambda n=name,nd=node,k=key,pth=path: self._proc_delete_version(n, nd, k, pth)); x.pack(side="right")
-                    self._tip(x, "Delete this version (to the trash)")
+                                    command=lambda n=name,nd=node,k=key,pth=path: self._proc_delete_version(n, nd, k, pth)); x.pack(side="right", padx=(0,5))
+                    self._tip(x, "Delete this version (asks first; it goes to the trash)")
             else: ctk.CTkLabel(pp, text="No 3D model yet", text_color=WARN, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6, pady=(6,0))
             combined_exists=("combined" in nodes and node!="combined")
             primary="build" if (raw and not vs) else ("cut" if (vs and node!="combined" and node not in self._base_planes(name)) else (None if combined_exists else ("prepare" if (vs and not has_prep) else ("export" if vs else None))))
