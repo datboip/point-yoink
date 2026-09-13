@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.9-pre"
+APP = "PointYoink"; VERSION = "0.9.10-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2460,12 +2460,11 @@ class App(ctk.CTk):
             """Set the cut direction. Which way is up: agree with the auto-detected table plane when it points roughly the
             same way, else the end with the bigger flat sheet is the table. The cut starts just above the densest
             height in the lower third (the table), or where asked."""
-            V=st["V"]; n=np.asarray(n, float); n/=np.linalg.norm(n)+1e-9; H=V.dot(n)
-            if ref is not None and abs(float(np.dot(n, ref)))>0.5:
-                if float(np.dot(n, ref))<0: n=-n; H=-H
-            else:
-                lo, hi=np.percentile(H, [3, 97]); band=0.03*(hi-lo)
-                if (H>hi-band).sum() > (H<lo+band).sum(): n=-n; H=-H      # the bigger sheet at the top: flip so it is the bottom
+            V=st["V"]; n=np.asarray(n, float); n/=np.linalg.norm(n)+1e-9
+            # which way is up: the scanner always looks at the table from above, and the first frame's camera sits at the
+            # origin of the scan's coordinates, so the table's normal points from the scan toward the origin
+            if float(np.dot(n, -V.mean(0)))<0: n=-n
+            H=V.dot(n)
             lo=float(H.min()); rng=float(H.max()-lo)
             low=H[H<lo+0.35*rng]; hist,edges=np.histogram(low, bins=60); h_tab=float(0.5*(edges[hist.argmax()]+edges[hist.argmax()+1]))
             st["n"]=n; st["H"]=H; st["Hmin"]=lo; st["Hmax"]=float(H.max())
@@ -2484,8 +2483,9 @@ class App(ctk.CTk):
             # best-fit plane through every spot so far (least squares): more spots average out a wobbly click
             P=np.array(st["picks"]); c=P.mean(0); _,sv,vt=np.linalg.svd(P-c); n=vt[2]
             if len(P)==3 and sv[1]<1e-6: dirhint.configure(text="those spots are in a line, click another"); view.draw(); return
-            n=n/np.linalg.norm(n); level=float(c.dot(n)); spread=float(np.abs((P-c).dot(n)).max())
-            if st["V"].dot(n).mean()<level: n=-n; level=-level              # the object is above the table
+            n=n/np.linalg.norm(n)
+            if float(np.dot(n, -st["V"].mean(0)))<0: n=-n                     # toward the camera = up
+            level=float(c.dot(n)); spread=float(np.abs((P-c).dot(n)).max())
             keep_markers=list(view.markers); use_normal(n, start=level+1.5+spread); view.markers=keep_markers; view.draw()
             dirhint.configure(text="plane through %d spots (they sit within %.1f mm of it); keep clicking to refine" % (len(P), spread))
         dirsel.configure(command=choose_dir)

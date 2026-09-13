@@ -37,6 +37,20 @@ class GLView(OpenGLFrame):
         self.bind("<ButtonRelease-1>", self._release); self.bind("<ButtonRelease-3>", self._release); self.bind("<ButtonRelease-2>", self._release)
         self.bind("<MouseWheel>", self._wheel); self.bind("<Button-4>", lambda e: self._wheel(e, 1)); self.bind("<Button-5>", lambda e: self._wheel(e, -1))
         self.bind("<Double-Button-1>", lambda e: self.reset())
+        # pyopengltk only switches GL context while the widget is on screen. A hidden view must never touch GL
+        # (its calls would land in another view's context and wreck its buffers), so uploads wait for <Map>.
+        self.bind("<Map>", self._on_map, add="+")
+    def _mapped(self):
+        try: return bool(self.winfo_ismapped())
+        except Exception: return False
+    def _on_map(self, e=None):
+        if not self.ready or self.failed: return
+        if self._pending is not None:
+            p = self._pending; self._pending = None; self._upload(*p)
+        elif self._split_req is not None and self._split is None and getattr(self, "_src", None) is not None:
+            self.set_split(*self._split_req)
+        else:
+            self.draw()
     @staticmethod
     def _axis_rot(deg, x, y, z):
         a = np.radians(deg); c, s_ = np.cos(a), np.sin(a); n = np.array([x, y, z], float); n /= np.linalg.norm(n)
@@ -98,6 +112,7 @@ class GLView(OpenGLFrame):
         else: self._pending = (v, n, f, wire)
         (on_ready and on_ready(not self.failed))
     def _upload(self, v, n, f, wire):
+        if not self._mapped(): self._pending = (v, n, f, wire); return       # done on <Map>
         try:
             self.tkMakeCurrent()
             if self._vbo is not None: GL.glDeleteBuffers(5, self._vbo)   # (a numpy array: never test it for truth)
@@ -131,7 +146,7 @@ class GLView(OpenGLFrame):
             except Exception:
                 res = (v, np.ascontiguousarray(f[::max(1, len(f) // 80000)], dtype=np.uint32))
             if gen == self._gen:
-                try: self.after(0, lambda: self._alive() and (self.tkMakeCurrent(), self._upload_wire(*res), self.draw()))
+                try: self.after(0, lambda: self._alive() and self._mapped() and (self.tkMakeCurrent(), self._upload_wire(*res), self.draw()))
                 except Exception: pass
         threading.Thread(target=work, daemon=True).start()
     # ---- drawing ----
@@ -216,7 +231,7 @@ class GLView(OpenGLFrame):
             GL.glColor3f(*col); GL.glVertex3f(0, 0, 0); GL.glVertex3f(*ax)
         GL.glEnd(); GL.glLineWidth(1.0); GL.glEnable(GL.GL_DEPTH_TEST)
     def draw(self, hi=False):
-        if self.ready and not self.failed and self._alive():
+        if self.ready and not self.failed and self._alive() and self._mapped():
             try: self._display()
             except Exception as e: self.failed = True; self._err = e
     def set_wire(self, on):
@@ -230,6 +245,7 @@ class GLView(OpenGLFrame):
         """PNG of the current view read back from the GPU."""
         try:
             from PIL import Image
+            if not self._mapped(): return None
             self.tkMakeCurrent(); w, h = max(1, self.winfo_width()), max(1, self.winfo_height())
             self.redraw(); GL.glReadBuffer(GL.GL_BACK)
             data = GL.glReadPixels(0, 0, w, h, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
@@ -241,7 +257,7 @@ class GLView(OpenGLFrame):
     # ---- picking and overlays ----
     def pick(self, x, y):
         """The 3D point under window pixel (x, y): (world_xyz_mm, view_xyz), or None off the mesh."""
-        if not self.ready or self.failed or not self._n or self.tf is None: return None
+        if not self.ready or self.failed or not self._n or self.tf is None or not self._mapped(): return None
         try:
             self.tkMakeCurrent(); self.redraw()
             h = max(1, self.winfo_height()); yy = h - 1 - y
@@ -253,6 +269,7 @@ class GLView(OpenGLFrame):
             return None
     def set_colors(self, rgb):
         """Per-vertex colours (Nx3 float32, 0..1) for the main mesh; None goes back to the plain material."""
+        if not self._mapped(): return
         try:
             self.tkMakeCurrent()
             if rgb is None:
@@ -268,7 +285,7 @@ class GLView(OpenGLFrame):
         """Draw the mesh as two parts with plain materials (no colour array): faces where the mask is True in
         colour_keep, the rest in colour_gone. None goes back to one part."""
         self._split_req = None if keep_face_mask is None else (np.asarray(keep_face_mask, bool), tuple(colour_keep), tuple(colour_gone))
-        if not self.ready or self.failed: return                       # applied by _upload once the context exists
+        if not self.ready or self.failed or not self._mapped(): return   # applied by _upload / <Map> once the view is on screen
         try:
             self.tkMakeCurrent()
             if self._split is not None:
@@ -300,7 +317,7 @@ class GLView(OpenGLFrame):
             except Exception as e:
                 res = e
             def up():
-                if gen != self._gen or not self._alive(): return
+                if gen != self._gen or not self._alive() or not self._mapped(): return
                 if isinstance(res, Exception): (on_ready and on_ready(False)); return
                 try:
                     self.tkMakeCurrent(); vbo = GL.glGenBuffers(3); v, n, f = res
@@ -315,7 +332,8 @@ class GLView(OpenGLFrame):
         threading.Thread(target=work, daemon=True).start()
     def clear_layers(self, draw=True):
         try:
-            if self.layers and self.ready: self.tkMakeCurrent()
+            if self.layers and self.ready and self._mapped(): self.tkMakeCurrent()
+            elif self.layers: self.layers = []; return
             for L in self.layers: GL.glDeleteBuffers(3, L["vbo"])
         except Exception: pass
         self.layers = []

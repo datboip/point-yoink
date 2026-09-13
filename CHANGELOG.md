@@ -3,6 +3,25 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.10 (dev, 2026-09-13)
+- **Build quality**: per-frame edge and grazing filter, 3-voxel band, 3 views per
+  voxel. Our surface now sits within 0.3 mm of One-tap Edit at the 95th
+  percentile (was 8.7 mm). Fast-mode scans (400x300 frames) build; the
+  calibration is scaled per scan.
+- **Remove base in the app**: table direction from the floor grid, auto-detect,
+  or any number of clicked spots (least-squares plane); up is the side facing
+  the scanner; "No table in this scan" marks the step done.
+- Fixed: a hidden 3D view could run its upload inside another view's GL context
+  and wreck it (garbage triangles in the cut view on first open). Hidden views
+  now wait until they are on screen.
+- Import: optional scan names (front, back, left side) with the scanner's
+  preview per scan and a pop-out that builds a quick draft you can turn; after
+  an import the app jumps to Projects with the project selected; progress line
+  inside the bottom bar; WiFi card keeps trying its thumbnail, stats 2x2; all
+  dialogs titled with the app name; review window sized for its buttons.
+- NEXT bar lays itself out by width; Captures is USB only; empty states fill
+  wide windows.
+
 ## 0.9.9 (pre-release, testing; source on the dev branch, no package)
 - **Import and Projects are separate pages.** Import is the scanner: what is on
   it and the import options. Projects is this PC: the 3D view and scan strip in
