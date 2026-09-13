@@ -3924,23 +3924,51 @@ class App(ctk.CTk):
             threading.Thread(target=self._wifi_finish_worker, args=(stage, keep, dest, mode.get()=="models", fmts, cleanup, replace), daemon=True).start()
         ctk.CTkButton(br, text="Import", width=110, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=go).pack(side="right", padx=6)
         ctk.CTkButton(br, text="Discard", width=100, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=discard).pack(side="right", padx=6)
-    def _peek(self, title, image_path, mesh_path=None):
-        """A bigger look at one scan: the live 3D view when there is a model, otherwise the scanner's preview picture, large."""
-        t=self._top(title, 720, 560, key="peek")
+    def _peek(self, title, image_path, mesh_path=None, frames_dir=None, calib=None, key=None):
+        """A bigger look at one scan: the live 3D view when there is a model; for raw data a quick draft is built
+        (every 3rd frame, 1 mm) so it can still be turned; the scanner's preview picture is the fallback."""
+        t=self._top(title, 820, 640, key="peek")
         if t is None: return
         box=ctk.CTkFrame(t, fg_color="#0a0c10", corner_radius=12); box.pack(fill="both", expand=True, padx=12, pady=12)
         box.grid_columnconfigure(0, weight=1); box.grid_rowconfigure(0, weight=1)
-        if mesh_path and os.path.exists(mesh_path):
+        foot=ctk.CTkLabel(t, text="", text_color=DIM, font=ctk.CTkFont(size=10)); foot.pack(pady=(0,8))
+        def show_image():
+            try:
+                im=Image.open(image_path).convert("RGB")
+                bb=Image.eval(im.convert("L"), lambda x: 255 if x>18 else 0).getbbox()      # crop the black around the object
+                if bb:
+                    m=24; im=im.crop((max(0,bb[0]-m), max(0,bb[1]-m), min(im.width,bb[2]+m), min(im.height,bb[3]+m)))
+                im=im.resize((im.width*max(1, int(700/max(1,im.width))), im.height*max(1, int(700/max(1,im.width)))), Image.LANCZOS) if im.width<700 else im
+                im.thumbnail((780, 560)); self.imgs["peek"]=ctk.CTkImage(light_image=im, dark_image=im, size=im.size)
+                ctk.CTkLabel(box, image=self.imgs["peek"], text="").grid(row=0,column=0)
+            except Exception: ctk.CTkLabel(box, text="No picture for this scan", text_color=MUT).grid(row=0,column=0)
+            foot.configure(text="The scanner's own preview. No 3D model yet: it is raw data until it is built.")
+        def show_mesh(path, note):
             v=self._new_view(box); v.grid(row=0,column=0, sticky="nsew", padx=4, pady=4)
             l=ctk.CTkLabel(box, text="Loading the 3D view…", text_color=MUT, font=ctk.CTkFont(size=13), fg_color="#0a0c10"); l.grid(row=0,column=0, sticky="nsew"); l.lift()
-            v.load(mesh_path, lambda ok: (l.grid_remove() if (ok and t.winfo_exists()) else None), max_faces=600000)
-            ctk.CTkLabel(t, text="Drag to turn, scroll to zoom.", text_color=DIM, font=ctk.CTkFont(size=10)).pack(pady=(0,8))
-        else:
-            try:
-                im=Image.open(image_path); im.thumbnail((680, 500)); self.imgs["peek"]=ctk.CTkImage(light_image=im, dark_image=im, size=im.size)
-                ctk.CTkLabel(box, image=self.imgs["peek"], text="").grid(row=0,column=0)
-            except Exception as e: ctk.CTkLabel(box, text="No picture for this scan", text_color=MUT).grid(row=0,column=0)
-            ctk.CTkLabel(t, text="The scanner's own preview. No 3D model yet: it is raw data until it is built.", text_color=DIM, font=ctk.CTkFont(size=10)).pack(pady=(0,8))
+            v.load(path, lambda ok: (l.grid_remove() if (ok and t.winfo_exists()) else None), max_faces=600000)
+            foot.configure(text=note+"  Drag to turn, scroll to zoom.")
+        if mesh_path and os.path.exists(mesh_path): show_mesh(mesh_path, ""); return
+        if frames_dir and calib and glob.glob(os.path.join(frames_dir, "*.dph")) and os.path.exists(calib) and _has_open3d():
+            os.makedirs(THUMBS, exist_ok=True); draft=os.path.join(THUMBS, "%s__draft.ply" % (key or os.path.basename(frames_dir)))
+            if os.path.exists(draft): show_mesh(draft, "Quick draft (every 3rd frame, 1 mm): the real build is finer."); return
+            busy=ctk.CTkLabel(box, text="Building a quick draft so you can turn it…", text_color=MUT, font=ctk.CTkFont(size=13), fg_color="#0a0c10"); busy.grid(row=0,column=0, sticky="nsew")
+            def work():
+                ok=False
+                try:
+                    cmd=[_sys.executable, os.path.join(HERE,"fuse.py"), "--frames", frames_dir, "--calib", calib, "--out", draft, "--voxel", "1.0", "--every", "3"] + ([] if self.cfg.get("fuse_device","auto")=="cpu" else ["--gpu"])
+                    r=subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
+                    ok=(r.returncode==0 and os.path.exists(draft) and os.path.getsize(draft)>1024)
+                    if not ok: log_line("draft build failed: %s" % (r.stdout+r.stderr)[-300:])
+                except Exception as e: log_error("draft build", e)
+                def done():
+                    if not t.winfo_exists(): return
+                    busy.grid_remove()
+                    if ok: show_mesh(draft, "Quick draft (every 3rd frame, 1 mm): the real build is finer.")
+                    else: show_image()
+                self.q.put(("call", done))
+            threading.Thread(target=work, daemon=True).start(); return
+        show_image()
     def _wifi_confirm(self, keep, dest, then, stage=None):
         """Name the incoming project(s) and, when one is already on this PC, choose keep-and-add or replace."""
         existing=[n for n in keep if os.path.isdir(os.path.join(dest, n))]
@@ -3967,8 +3995,10 @@ class App(ctk.CTk):
                 if pv:
                     try: self.imgs["confirm_"+node]=cimg(pv, 72); th.configure(image=self.imgs["confirm_"+node])
                     except Exception: pass
-                    mesh=next((c for c in [os.path.join(stage or dest, n, "data", node, "fuse_mesh.ply")] if os.path.exists(c)), None)
-                    th.bind("<Button-1>", lambda e, pv=pv, mesh=mesh, i=i, node=node: self._peek("scan %02d · %s" % (i+1, node), pv, mesh))
+                    root=os.path.join(stage or dest, n, "data", node)
+                    mesh=next((c for c in [os.path.join(root, "fuse_mesh.ply")] if os.path.exists(c)), None)
+                    th.bind("<Button-1>", lambda e, pv=pv, mesh=mesh, i=i, node=node, root=root, n=n: self._peek("scan %02d · %s" % (i+1, node), pv, mesh,
+                            frames_dir=os.path.join(root, "cache"), calib=os.path.join(root, "param", "Pl.bin"), key="%s__%s" % (n, node)))
                     self._tip(th, "Click for a bigger look")
                 ctk.CTkLabel(sr, text="scan %02d\n%s" % (i+1, node), text_color=DIM, font=ctk.CTkFont(size=10), width=110, anchor="w", justify="left").pack(side="left")
                 sv=ctk.StringVar(value=self.records.get(n, {}).get("scan_labels", {}).get(node) or ""); scan_vars[(n, node)]=sv
