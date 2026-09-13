@@ -2636,7 +2636,7 @@ class App(ctk.CTk):
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name); out=[]
         for key,label,cands in (("clean","prepared here",[os.path.join(local,"%s_%s_clean.ply"%(name,node)), os.path.join(local,"%s_%s_pcfused_clean.ply"%(name,node))]),
                                 ("scanner","from the scanner",[os.path.join(local,"%s_%s.ply"%(name,node)), os.path.join(local,"data",node,"fuse_mesh.ply")]),
-                                ("pcfused","built here",[os.path.join(local,"%s_%s_pcfused.ply"%(name,node))])):
+                                ("pcfused","built here from raw data",[os.path.join(local,"%s_%s_pcfused.ply"%(name,node))])):
             for c in cands:
                 if os.path.exists(c) and os.path.getsize(c)>1024: out.append((key,label,c)); break
         return out
@@ -2663,7 +2663,7 @@ class App(ctk.CTk):
         except Exception as e:
             log_error("trash", e); return False
     def _proc_delete_version(self, name, node, key, path):
-        if not self._confirm("Delete this version?", "%s: the %s version of scan %s goes to the trash.\nOther versions and the raw data stay." % (self.disp(name), dict(clean="prepared", scanner="scanner's", pcfused="built-here")[key], node)): return
+        if not self._confirm("Delete this version?", "%s: the %s version of scan %s goes to the trash.\nOther versions and the raw data stay." % (self.disp(name), dict(clean="prepared", scanner="scanner's", pcfused="built-from-raw")[key], node)): return
         if self._trash(path):
             self.set_banner("Moved to the trash: %s" % os.path.basename(path), MUT); self._mesh_stats={}; self.gallery_cache.pop(name, None)
             self._proc_render(name)
