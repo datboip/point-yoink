@@ -2775,13 +2775,14 @@ class App(ctk.CTk):
         hb=ctk.CTkButton(ns, text="how this works", width=90, height=20, corner_radius=6, fg_color="transparent", hover_color="#15304d", text_color=DIM, font=ctk.CTkFont(size=10), command=self._howto_dialog)
         hb.grid(row=2,column=0, padx=(8,0), pady=(0,10), sticky="w")
         ctk.CTkLabel(ns, text=title, text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w").grid(row=0,column=1, sticky="w", pady=(10,0))
-        ctk.CTkLabel(ns, text=detail, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=640).grid(row=1,column=1, columnspan=2, sticky="w", padx=(0,14), pady=(0,2))
-        trail=ctk.CTkFrame(ns, fg_color="transparent"); trail.grid(row=2,column=1, columnspan=2, sticky="w", pady=(0,10))
+        dl=ctk.CTkLabel(ns, text=detail, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=520); dl.grid(row=1,column=1, sticky="w", padx=(0,14), pady=(0,2))
+        ns.bind("<Configure>", lambda e: dl.configure(wraplength=max(260, e.width-(300 if btxt else 60))), add="+")   # wrap before the button, whatever the window width
+        trail=ctk.CTkFrame(ns, fg_color="transparent"); trail.grid(row=2,column=1, sticky="w", pady=(0,10))
         for i,nm in enumerate(self.STEPS):
             col=(OK if i<step else (AC if i==step else DIM)); mark=("✓ " if i<step else ("▶ " if i==step else ""))
             ctk.CTkLabel(trail, text=mark+nm, text_color=col, font=ctk.CTkFont(size=11, weight=("bold" if i==step else "normal"))).pack(side="left")
             if i<len(self.STEPS)-1: ctk.CTkLabel(trail, text="  →  ", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left")
-        if btxt: ctk.CTkButton(ns, text=btxt, width=210, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).grid(row=0,column=2, padx=14, pady=(8,0), sticky="e")
+        if btxt: ctk.CTkButton(ns, text=btxt, width=220, height=40, corner_radius=20, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).grid(row=0,column=2, rowspan=3, padx=16, pady=10, sticky="e")
     def _proc_next_strip(self, name, nodes, local):
         title, detail, btxt, cmd, step = self._proc_next(name, nodes, local)
         strip=ctk.CTkFrame(self.proc_cards, fg_color="#0f1a2b", corner_radius=14, border_width=1, border_color="#1f3a5f"); strip.grid(row=0, column=0, sticky="ew", padx=6, pady=(4,10))
