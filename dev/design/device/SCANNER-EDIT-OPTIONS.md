@@ -113,3 +113,9 @@ Cleaned build vs One-tap Edit, voxel 0.4 mm (extra = our surface > 1 mm from the
 Before: 20% extra with 95% at 8.7 mm. Poisson on the scanner's own fuse.ply reproduces their
 fuse_mesh.ply to 0.1 mm, so their meshing is Poisson-like; Poisson on our points is an option
 for later (closes holes, single skin) but the input filtering was the actual gap.
+
+## Device screens added 2026-09-13
+- scanner-project-scans-status.png: the project view lists each scan by its number with a status
+  label, "Meshed" or "Raw Data", the same states our badges show (scanner-edited / raw only).
+- scanner-wifi-sharing.png: Share to PC > Wi-Fi during a transfer: the code, "Sharing, keep the
+  screen on", and the note that shared projects may contain unedited models.
