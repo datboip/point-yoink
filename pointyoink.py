@@ -2190,7 +2190,7 @@ class App(ctk.CTk):
                     self.set_banner("Nothing to import (all already imported).", MUT); return
         self.pulling=True; self.cancel=False; self._pull_list=sel; self._export_fails=[]
         self.import_btn.grid_remove(); self.cancel_btn.grid(row=0,column=3)
-        self.progress.grid(row=1,column=0, columnspan=3, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=3, sticky="w")
+        self.progress.grid(row=1,column=0, columnspan=3, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=3, sticky="w", padx=(20,0), pady=(0,10))
         dest=self.dest.get() or DEFAULT_DEST; mo=self.models_only.get(); cleanup=self.cleanup.get(); self._persist()
         fmts=[]
         if self.exp_stl.get(): fmts.append("stl")
@@ -3917,7 +3917,7 @@ class App(ctk.CTk):
                 if label.strip(): self.records.setdefault(n, {})["label"]=label.strip()
             self.pulling=True; self.cancel=False; self._pull_list=list(keep); self._export_fails=[]
             self.import_btn.grid_remove(); self.cancel_btn.grid(row=0,column=3)
-            self.progress.grid(row=1,column=0, columnspan=3, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=3, sticky="w")
+            self.progress.grid(row=1,column=0, columnspan=3, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=3, sticky="w", padx=(20,0), pady=(0,10))
             cleanup=self.cleanup.get()
             fmts=[e for e,v in (("stl",self.exp_stl),("obj",self.exp_obj),("glb",self.exp_glb)) if v.get()]
             self.set_banner("Saving %s…" % ", ".join(self.disp(n) for n in keep), AC)
@@ -4258,7 +4258,7 @@ class App(ctk.CTk):
     def _start_zip(self, sel, dest, mode):
         self.pulling=True
         self.zip_btn.configure(state="disabled")
-        self.progress.grid(row=1,column=0, columnspan=4, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=4, sticky="w")
+        self.progress.grid(row=1,column=0, columnspan=4, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=4, sticky="w", padx=(20,0), pady=(0,10))
         threading.Thread(target=self._zip_worker, args=(sel,dest,mode), daemon=True).start()
     def _project_meshes(self, base, name):
         """Mesh .ply files for an imported project (flat layout, else nested mirror)."""
@@ -4341,6 +4341,9 @@ class App(ctk.CTk):
                                 % (len(ef), ", ".join(ef[:3]) + ("…" if len(ef)>3 else "")), WARN)
             else:
                 self.progline.configure(text="Done."); self.set_banner("Import complete.", OK)
+            self.after(6000, lambda: self.progline.winfo_exists() and self.progline.grid_remove())
+            done=[n for n in getattr(self, "_pull_list", []) if n not in failed and os.path.isdir(os.path.join(dest, n))]
+            self._select_after_list=done[0] if done else None        # then jump to Projects and show what just arrived
             self.projects_sig=None; self.gallery_cache={}; self.listed=False; self.start_listing()   # new projects appear
             za=getattr(self, "_zip_after", None)
             if za:
@@ -4364,6 +4367,11 @@ class App(ctk.CTk):
                         self._first_listed=True
                         if self.listed_src=="local" and any(p.get("local") for p in rest[0]): self._set_mode("Local")   # no scanner: start on what is on this PC
                     self.render_list(rest[0]); self._proc_refresh()
+                    jump=getattr(self, "_select_after_list", None)
+                    if jump:
+                        self._select_after_list=None; self._set_mode("Local")
+                        if any(p["name"]==jump for p in self.projects): self.select_project(jump)
+                        self._folder_loaded=True; self.refresh_folder()
                     if self.page=="projects": self._panel_refresh()
                     if not getattr(self, "_shots_loaded", False):   # auto-load device screenshots once
                         self._shots_loaded=True; self.refresh_screenshots()
@@ -4385,6 +4393,7 @@ class App(ctk.CTk):
                     if self.selected==n:
                         self.files_box.configure(state="normal"); self.files_box.delete("1.0","end")
                         self.files_box.insert("end","Model files in %s  (total %s)\n\n"%(n,human(tot)))
+                        if not files: self.files_box.insert("end","  No model files yet: this project is raw scan data.\n  Build the models on the Projects page (or One-tap Edit on the scanner and share again).\n")
                         for node,fn,sz in sorted(files,key=lambda x:-x[2]):
                             self.files_box.insert("end","  %-5s %9s   %s/%s\n"%("CLOUD" if (fn=="fuse.ply" or fn.endswith("_cloud.ply")) else "MESH", human(sz), node, fn))
                         self.files_box.configure(state="disabled")
