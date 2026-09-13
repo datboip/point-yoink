@@ -81,13 +81,14 @@ def finish():
     log = os.path.join(cfgdir, "pointyoink.log")
     logged = open(log, errors="replace").read() if os.path.exists(log) else ""
     tb = logged.count("Traceback")
-    try: app.on_close()
-    except Exception: pass
-    print("steps ok: %d  failures: %d  tracebacks in log: %d" % (len(steps), len(failures), tb))
-    for f in failures: print("  FAIL", f)
+    print("steps ok: %d  failures: %d  tracebacks in log: %d" % (len(steps), len(failures), tb), flush=True)
+    for f in failures: print("  FAIL", f, flush=True)
     if tb:
-        print("---- log ----"); print(logged[-3000:])
-    sys.exit(1 if (failures or tb) else 0)
+        print("---- log ----"); print(logged[-3000:], flush=True)
+    rc = 1 if (failures or tb) else 0
+    try: app._persist(); app.withdraw()
+    except Exception: pass
+    os._exit(rc)                         # the app's own on_close leaves the same way
 def when_listed():
     if app.listed or time.time() - t0 > 20: run()
     else: app.after(300, when_listed)

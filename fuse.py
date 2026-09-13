@@ -103,7 +103,10 @@ def main():
         if not dphs: emit("error", msg="no .dph frames in " + frames); return 2
         Wf, Hf = frame_size(frames, dphs)
         gp = {}
-        pose_path = os.path.join(frames, "global_register_pose.pose") if a.poses == "auto" else a.poses
+        if a.poses == "auto":
+            pose_path = os.path.join(frames, "global_register_pose.pose")          # the scanner's own registration
+            if not os.path.exists(pose_path): pose_path = os.path.join(frames, "pointyoink_register_pose.pose")   # ours (register.py)
+        else: pose_path = a.poses
         if a.poses != "none" and os.path.exists(pose_path):
             try: gp = read_global_poses(pose_path)
             except Exception as e: emit("warn", msg="global poses unreadable: %r" % (e,)); gp = {}

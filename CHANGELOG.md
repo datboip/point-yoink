@@ -3,6 +3,14 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.11 (dev, 2026-09-13)
+- **Drift fix for raw scans**: a scan the scanner never fused has only its live
+  tracking poses, which wander over a long pass. Build now registers the
+  frames first (short fragments, ICP between neighbours and every overlapping
+  pair, all poses optimised together) and writes a pose table the way the
+  scanner does. Off in Settings if you prefer. Progress shows on the scan.
+- Closing the app is instant.
+
 ## 0.9.10 (dev, 2026-09-13)
 - **Build quality**: per-frame edge and grazing filter, 3-voxel band, 3 views per
   voxel. Our surface now sits within 0.3 mm of One-tap Edit at the 95th

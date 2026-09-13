@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.10-pre"
+APP = "PointYoink"; VERSION = "0.9.11-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -856,7 +856,7 @@ class App(ctk.CTk):
                 {"pkg":"xdg-utils","fn":lambda:bool(shutil.which("xdg-open")),"req":False,"ok":None},
             ]
             self._splash=sp; self._splash_a=0.0; self._missing=None
-            self._splash_fade(0.12); self.after(400, lambda: self._run_checks(0))
+            self._splash_fade(0.2); self.after(120, lambda: self._run_checks(0))
         except Exception as e:
             log_error("splash", e); self.deiconify()
     def _splash_fade(self, d):
@@ -889,19 +889,19 @@ class App(ctk.CTk):
                 self.after(1700, self._close_splash)
             else:
                 setstatus("everything's here" if not opt else "ready (some optional tools missing)", OK)
-                self.after(750, self._close_splash)
+                self.after(250, self._close_splash)
             return
         c=self._checklist[i]
         setstatus("checking "+c["pkg"]+" …", MUT)
         try: c["ok"]=bool(c["fn"]())
         except Exception: c["ok"]=False
         setbar((i+1)/len(self._checklist))
-        self.after(300, lambda: self._run_checks(i+1))
+        self.after(40, lambda: self._run_checks(i+1))
     def _close_splash(self):
         if self._splash:
             self.deiconify()                                  # reveal the app BEHIND the still-topmost splash
             self.update_idletasks()
-            self.after(140, lambda: self._splash_fade(-0.12)) # let it paint, then dissolve the splash over it
+            self.after(100, lambda: self._splash_fade(-0.25)) # let it paint, then dissolve the splash over it
         else:
             self.deiconify()
         if getattr(self,"_missing",None):
@@ -1660,6 +1660,10 @@ class App(ctk.CTk):
         fdv=ctk.StringVar(value={"cpu":"CPU only"}.get(self.cfg.get("fuse_device","auto"), "NVIDIA GPU when available"))
         ctk.CTkOptionMenu(pr, variable=fdv, values=["NVIDIA GPU when available","CPU only"], width=230, fg_color="#0d0f14", button_color=CARD2,
                           button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=10).pack(side="left", padx=8)
+        rdv=ctk.BooleanVar(value=bool(self.cfg.get("register_drift", True)))
+        rdc=ctk.CTkCheckBox(t, text="Fix drift before building a scan the scanner never fused (registers the frames; a few minutes for a long scan)", variable=rdv,
+                            fg_color=AC, hover_color=AC_H, border_color=DIM, text_color=TX, font=ctk.CTkFont(size=12), checkbox_width=20, checkbox_height=20, corner_radius=5)
+        rdc.pack(anchor="w", padx=20, pady=(6,0))
         ctk.CTkLabel(pr, text="GPU: seconds per scan (needs ~2 GB VRAM) · CPU: minutes", text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left")
         # UI scale (for HiDPI / tiny-window fix)
         sr=ctk.CTkFrame(t, fg_color="transparent"); sr.pack(fill="x", padx=20, pady=(18,0))
@@ -1677,7 +1681,7 @@ class App(ctk.CTk):
             code="".join(ch for ch in wv.get() if ch.isdigit())[:4]
             self.cfg["wifi_code"]=code.zfill(4) if code else ""
             self.cfg["gl_view"]="software" if glv.get().startswith("Software") else "auto"
-            self.cfg["fuse_device"]="cpu" if fdv.get().startswith("CPU") else "auto"
+            self.cfg["fuse_device"]="cpu" if fdv.get().startswith("CPU") else "auto"; self.cfg["register_drift"]=bool(rdv.get())
             self.cfg["ui_scale"]=round(float(sv.get()),2); self._persist(); t.destroy()
             if abs(float(sv.get())-cur)>0.02:
                 self._alert("UI scale changed", "The new UI scale takes effect next time you open PointYoink.")
@@ -1767,7 +1771,14 @@ class App(ctk.CTk):
         try:   # projector off while still streaming; the streams die with us and the RANGE reboots (normal)
             if getattr(self, "_range_on", False) and self._range: self._range.projector(False)
         except Exception: pass
-        self._persist(); self.destroy()
+        self._persist()
+        # tearing down thousands of widgets one by one is what made closing look like popups dying in slow motion:
+        # hide the window first, then leave; daemon threads and child processes go with us
+        try: self.withdraw(); self.update_idletasks()
+        except Exception: pass
+        try: self.quit()
+        except Exception: pass
+        os._exit(0)
 
     # ---- helpers ----
     def browse(self):
@@ -1821,6 +1832,7 @@ class App(ctk.CTk):
                     if self.projects: self.render_list(self.projects)   # refresh badges if files changed on disk (cheap no-op otherwise)
                 else: self.set_banner("Reading projects off the scanner… (MTP is slow)", AC); self.start_listing()
         self.after(1500, self.refresh_loop)
+        if not getattr(self, "_first_list_started", False): self._first_list_started=True; self.after(30, self.start_listing)   # do not wait for the poll: list at once
     def start_listing(self):
         if self.listing: return
         self.listing=True; dest=self.dest.get() or DEFAULT_DEST; self._listing_src="device" if quick_mounted() else "local"
@@ -3512,6 +3524,25 @@ class App(ctk.CTk):
             if not os.path.exists(calib):
                 self.q.put(("fuse_status","Scan %s: no calibration (Pl.bin) - skipping"%node)); continue
             out=os.path.join(local, "%s_%s_pcfused.ply"%(name,node))
+            # a scan the scanner never fused has no registration, only live tracking: fix the drift first (register.py)
+            if self.cfg.get("register_drift", True) and not os.path.exists(os.path.join(lcache, "global_register_pose.pose")) \
+                    and not os.path.exists(os.path.join(lcache, "pointyoink_register_pose.pose")):
+                self.q.put(("fuse_status","Scan %d/%d: registering frames (fixing drift)…"%(ni+1,len(nodes)))); self.q.put(("fuse_node", node, 0.02, "Fixing drift: fusing fragments…"))
+                try:
+                    rp=subprocess.Popen([_sys.executable, os.path.join(HERE,"register.py"), "--frames", lcache, "--calib", calib] + ([] if self.cfg.get("fuse_device","auto")=="cpu" else ["--gpu"]),
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
+                    for ln in rp.stdout:
+                        ln=ln.strip()
+                        if not ln.startswith("STAGE "): continue
+                        parts=ln.split(" ",2); stage=parts[1]
+                        try: payload=json.loads(parts[2]) if len(parts)>2 else {}
+                        except Exception: payload={}
+                        if stage=="fragments": self.q.put(("fuse_node", node, 0.02+0.13*payload.get("done",0)/max(1,payload.get("total",1)), "Fixing drift: fragment %d of %d" % (payload.get("done",0), payload.get("total",0))))
+                        elif stage=="register": self.q.put(("fuse_node", node, 0.15+0.25*payload.get("done",0)/max(1,payload.get("total",1)), "Fixing drift: matching fragments %d of %d (%d loops found)" % (payload.get("done",0), payload.get("total",0), payload.get("loops",0))))
+                        elif stage=="done": self.q.put(("fuse_node", node, 0.4, "Drift fixed: %d loop closures, frames moved %.0f mm on average" % (payload.get("loops",0), payload.get("moved_median_mm",0))))
+                        elif stage=="error": log_line("register %s/%s: %s" % (name, node, payload.get("msg","")))
+                    rp.wait()
+                except Exception as e: log_error("register-launch", e)
             self.q.put(("fuse_status","Scan %d/%d: fusing…"%(ni+1,len(nodes))))
             try:
                 proc=subprocess.Popen([_sys.executable, os.path.join(HERE,"fuse.py"), "--frames", lcache, "--calib", calib,
@@ -3529,7 +3560,7 @@ class App(ctk.CTk):
                     elif stage=="integrate":
                         d,t_=payload.get("done",0),payload.get("total",0) or 1
                         self.q.put(("fuse_status","Scan %d/%d: %s integrating frame %d/%d…"%(ni+1,len(nodes),devname,d,t_)))
-                        self.q.put(("fuse_node", node, 0.9*d/t_, "%s: frame %d of %d" % (devname, d, t_)))
+                        self.q.put(("fuse_node", node, 0.4+0.5*d/t_, "%s: frame %d of %d" % (devname, d, t_)))
                     elif stage=="extract":
                         self.q.put(("fuse_status","Scan %d/%d: building the 3D model…"%(ni+1,len(nodes)))); self.q.put(("fuse_node", node, 0.95, "Building the 3D model…"))
                     elif stage=="done": ok=True
