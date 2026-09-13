@@ -4,6 +4,8 @@ All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
 ## 0.9.12 (dev, 2026-09-13)
+- Scan names given on the scanner are read from the project file and used as
+  the default label (pre-filled at import); your own name still wins.
 - Startup: the first-run panel waits until the splash is gone; nothing drags the
   main window onto the screen half-built any more.
 

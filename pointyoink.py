@@ -2960,10 +2960,26 @@ class App(ctk.CTk):
         if glob.glob(os.path.join(d, "cache", "*.dph")): return "raw"
         return None
     STAGE_WORDS={"meshed": ("edited on the scanner", OK), "fused": ("fused on the scanner, not meshed", WARN), "raw": ("raw only, not edited on the scanner", WARN), None: ("", MUT)}
+    def _device_scan_names(self, name, root=None):
+        """Names given to scans on the scanner: the project's .revo lists each scan with a name (equal to its id unless
+        it was renamed on the device). {id: name} for the renamed ones."""
+        root=root or os.path.join(self.dest.get() or DEFAULT_DEST, name)
+        cache=getattr(self, "_dev_names", {}); key=(root, name)
+        try:
+            revo=os.path.join(root, name+".revo"); mt=os.path.getmtime(revo)
+            if key in cache and cache[key][0]==mt: return cache[key][1]
+            out={}
+            for nd in (json.load(open(revo)).get("nodes") or []):
+                g=str(nd.get("guid") or ""); nm=str(nd.get("name") or "").strip()
+                if g and nm and nm!=g: out[g]=nm
+            cache[key]=(mt, out); self._dev_names=cache; return out
+        except Exception: return {}
     def _scan_label(self, name, node):
         if node=="combined": return "Combined"
         custom=(self.records.get(name, {}).get("scan_labels", {}) or {}).get(node)
         if custom: return custom
+        dev=self._device_scan_names(name).get(node)
+        if dev: return dev
         nodes=[n for n in self._proc_nodes(name) if n!="combined"]
         return "Scan %02d" % (nodes.index(node)+1) if node in nodes else node
     def _rename_scan(self, name, node):
@@ -4092,7 +4108,7 @@ class App(ctk.CTk):
                             frames_dir=os.path.join(root, "cache"), calib=os.path.join(root, "param", "Pl.bin"), key="%s__%s" % (n, node)))
                     self._tip(th, "Click for a bigger look")
                 ctk.CTkLabel(sr, text="scan %02d\n%s" % (i+1, node), text_color=DIM, font=ctk.CTkFont(size=10), width=110, anchor="w", justify="left").pack(side="left")
-                sv=ctk.StringVar(value=self.records.get(n, {}).get("scan_labels", {}).get(node) or ""); scan_vars[(n, node)]=sv
+                sv=ctk.StringVar(value=self.records.get(n, {}).get("scan_labels", {}).get(node) or self._device_scan_names(n, os.path.join(stage, n) if stage else None).get(node) or ""); scan_vars[(n, node)]=sv
                 ctk.CTkEntry(sr, textvariable=sv, placeholder_text="front, back, left side… (optional)", height=26, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=8, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True, padx=(8,0))
         mode=ctk.StringVar(value="merge")
         if existing:
