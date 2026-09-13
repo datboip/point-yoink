@@ -2406,7 +2406,7 @@ class App(ctk.CTk):
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name); out=os.path.join(local, "%s_%s_clean.ply" % (name, node))
         card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
         card.grid_columnconfigure(0, weight=1); card.grid_rowconfigure(1, weight=1)
-        ctk.CTkLabel(card, text="Grey stays, red goes. Drag the slider until only the table is red. Flip if it picked the wrong side. The cut is remembered for combining.",
+        ctk.CTkLabel(card, text="Grey stays, red goes. Drag the slider until only the table is red; Flip if it picked the wrong side. If the plane sits wrong, click three spots on the table. The cut is remembered for combining.",
                      text_color=MUT, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=900).grid(row=0,column=0, sticky="w", padx=16, pady=(12,6))
         box=ctk.CTkFrame(card, fg_color="#0a0c10", corner_radius=10); box.grid(row=1,column=0, sticky="nsew", padx=14, pady=4)
         box.grid_columnconfigure(0, weight=1); box.grid_rowconfigure(0, weight=1)
@@ -2415,15 +2415,20 @@ class App(ctk.CTk):
             t.destroy(); self._dialogs.pop("cut", None); self._basing=True; self._open_loader("Base removal", "Opening the cut-plane tool…")
             threading.Thread(target=self._base_worker, args=(name, src, node), daemon=True).start(); return
         load=ctk.CTkLabel(box, text="Loading the 3D view…", text_color=MUT, font=ctk.CTkFont(size=14), fg_color="#0a0c10"); load.grid(row=0,column=0, sticky="nsew", padx=4, pady=4); load.lift()
-        ctl=ctk.CTkFrame(card, fg_color="transparent"); ctl.grid(row=2,column=0, sticky="ew", padx=14, pady=(6,12)); ctl.grid_columnconfigure(1, weight=1)
+        ctl=ctk.CTkFrame(card, fg_color="transparent"); ctl.grid_columnconfigure(1, weight=1)
+        status=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w")
+        dirrow=ctk.CTkFrame(card, fg_color="transparent"); dirrow.grid(row=2,column=0, sticky="ew", padx=14, pady=(6,0))
+        ctk.CTkLabel(dirrow, text="Table direction", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left", padx=(4,10))
+        dirsel=ctk.CTkSegmentedButton(dirrow, values=["Floor grid", "Auto-detect", "Click 3 spots"], selected_color=AC, selected_hover_color=AC_H, unselected_color=CARD2, unselected_hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=12)); dirsel.pack(side="left")
+        dirhint=ctk.CTkLabel(dirrow, text="", text_color=DIM, font=ctk.CTkFont(size=11)); dirhint.pack(side="left", padx=12)
+        ctl.grid(row=3,column=0, sticky="ew", padx=14, pady=(6,12)); status.grid(row=4,column=0, sticky="w", padx=16, pady=(0,10))
         ctk.CTkLabel(ctl, text="Cut height", text_color=MUT, font=ctk.CTkFont(size=12)).grid(row=0,column=0, padx=(4,10))
         slider=ctk.CTkSlider(ctl, from_=0, to=1000, number_of_steps=1000, progress_color=AC, button_color=AC, button_hover_color=AC_H, fg_color="#0d0f14"); slider.grid(row=0,column=1, sticky="ew")
         val=ctk.CTkLabel(ctl, text="", text_color=TX, font=ctk.CTkFont(size=12), width=150); val.grid(row=0,column=2, padx=10)
         flipb=ctk.CTkButton(ctl, text="Flip side", width=90, height=32, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX); flipb.grid(row=0,column=3, padx=4)
         cancelb=ctk.CTkButton(ctl, text="Cancel", width=90, height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX); cancelb.grid(row=0,column=4, padx=4)
         applyb=ctk.CTkButton(ctl, text="✂  Apply cut", width=130, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=12, weight="bold")); applyb.grid(row=0,column=5, padx=(4,0))
-        status=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w"); status.grid(row=3,column=0, sticky="w", padx=16, pady=(0,10))
-        st={"n":None, "H":None, "Hmin":0.0, "Hmax":1.0, "cut":0.0, "keep_above":True, "V":None, "job":None, "busy":False}
+        st={"n":None, "H":None, "Hmin":0.0, "Hmax":1.0, "cut":0.0, "keep_above":True, "V":None, "job":None, "busy":False, "picks":[], "n_auto":None, "n_grid":None}
         KEEP=np.array([0.74,0.76,0.80], np.float32); GONE=np.array([1.0,0.36,0.42], np.float32)
         def close():
             self._dialogs.pop("cut", None); t.destroy()
@@ -2445,6 +2450,32 @@ class App(ctk.CTk):
         slider.configure(command=on_slide)
         def flip(): st["keep_above"]=not st["keep_above"]; schedule()
         flipb.configure(command=flip)
+        def use_normal(n, start=None):
+            """Set the cut direction; the cut starts at the densest height along it (the table) or where asked."""
+            V=st["V"]; n=np.asarray(n, float); n/=np.linalg.norm(n)+1e-9; H=V.dot(n)
+            hist,edges=np.histogram(H, bins=120); h_tab=float(0.5*(edges[hist.argmax()]+edges[hist.argmax()+1]))
+            if H.mean()<h_tab: n=-n; H=-H; h_tab=-h_tab
+            st["n"]=n; st["H"]=H; st["Hmin"]=float(H.min()); st["Hmax"]=float(H.max())
+            st["cut"]=float(start) if start is not None else min(st["Hmax"], h_tab+0.02*(st["Hmax"]-st["Hmin"])); st["keep_above"]=True
+            slider.set(1000.0*(st["cut"]-st["Hmin"])/max(1e-6, st["Hmax"]-st["Hmin"])); paint()
+        def choose_dir(which):
+            if st["V"] is None: return
+            view.markers=[]; st["picks"]=[]; view.on_pick=None
+            if which=="Floor grid": use_normal(st["n_grid"]); dirhint.configure(text="the view's floor grid is the table")
+            elif which=="Auto-detect": use_normal(st["n_auto"]); dirhint.configure(text="the flattest surface in the scan")
+            else:
+                dirhint.configure(text="click 3 spots on the table in the view"); view.on_pick=on_pick_spot; view.draw()
+        def on_pick_spot(world, viewpt):
+            st["picks"].append(np.asarray(world, float)); view.markers.append((viewpt, self.PAIR_COLOURS[len(st["picks"])-1])); view.draw()
+            dirhint.configure(text="%d of 3 spots" % len(st["picks"]))
+            if len(st["picks"])==3:
+                a,b,c=st["picks"]; n=np.cross(b-a, c-a)
+                if np.linalg.norm(n)<1e-6: dirhint.configure(text="those spots are in a line, try again"); st["picks"]=[]; view.markers=[]; view.draw(); return
+                n/=np.linalg.norm(n); level=float(np.mean([p.dot(n) for p in st["picks"]]))
+                # orient so the object is above the spots, then start 1.5 mm above them
+                if st["V"].dot(n).mean()<level: n=-n; level=-level
+                use_normal(n, start=level+1.5); view.on_pick=None; dirhint.configure(text="plane through your 3 spots")
+        dirsel.configure(command=choose_dir)
         def ready(ok):
             if not t.winfo_exists(): return
             if not ok or getattr(view, "_src", None) is None or view.tf is None:
@@ -2453,19 +2484,16 @@ class App(ctk.CTk):
                 try:
                     import shade, cutplane
                     v_view, f = view._src; V=shade.view_to_world(v_view, view.tf); rng=np.random.default_rng(0)
-                    n=cutplane.ransac_normal(V, rng); H=V.dot(n)
-                    # the table is the densest height; point the normal so the object sits above it
-                    hist, edges=np.histogram(H, bins=120); h_tab=float(0.5*(edges[hist.argmax()]+edges[hist.argmax()+1]))
-                    if H.mean() < h_tab: n=-n; H=-H; h_tab=-h_tab
-                    res=(n, H, V, h_tab)
+                    n_auto=cutplane.ransac_normal(V, rng)
+                    n_grid=np.asarray(view.tf["R"])[2]            # the view's up axis in scan coordinates: the floor grid
+                    res=(V, n_auto, n_grid)
                 except Exception as e: log_error("cut setup", e); res=None
                 def done():
                     if not t.winfo_exists(): return
                     if res is None: load.configure(text="Could not find the table in this scan"); return
-                    n, H, V, h_tab = res; st["n"]=n; st["H"]=H; st["V"]=V; st["Hmin"]=float(H.min()); st["Hmax"]=float(H.max())
-                    st["cut"]=min(st["Hmax"], h_tab+0.02*(st["Hmax"]-st["Hmin"])); st["keep_above"]=True     # just above the table
-                    slider.set(1000.0*(st["cut"]-st["Hmin"])/max(1e-6, st["Hmax"]-st["Hmin"])); load.grid_remove(); paint()
-                    status.configure(text="Starting just above the flattest surface. %s" % ("Drag to rotate, scroll to zoom." ))
+                    V, n_auto, n_grid = res; st["V"]=V; st["n_auto"]=n_auto; st["n_grid"]=n_grid
+                    load.grid_remove(); dirsel.set("Floor grid"); choose_dir("Floor grid")
+                    status.configure(text="Starting just above the table along the floor grid. Drag to rotate, scroll to zoom.")
                 self.q.put(("call", done))
             threading.Thread(target=work, daemon=True).start()
         view.load(src, ready, max_faces=600000)
