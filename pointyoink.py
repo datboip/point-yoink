@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.12-pre"
+APP = "PointYoink"; VERSION = "0.9.13-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2634,9 +2634,9 @@ class App(ctk.CTk):
     def _proc_versions(self, name, node):
         """The model files a scan has on this PC: [(key, label, path)] in default preference order."""
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name); out=[]
-        for key,label,cands in (("clean","prepared here",[os.path.join(local,"%s_%s_clean.ply"%(name,node)), os.path.join(local,"%s_%s_pcfused_clean.ply"%(name,node))]),
-                                ("scanner","from the scanner",[os.path.join(local,"%s_%s.ply"%(name,node)), os.path.join(local,"data",node,"fuse_mesh.ply")]),
-                                ("pcfused","built here from raw data",[os.path.join(local,"%s_%s_pcfused.ply"%(name,node))])):
+        for key,label,cands in (("clean","prepared copy",[os.path.join(local,"%s_%s_clean.ply"%(name,node)), os.path.join(local,"%s_%s_pcfused_clean.ply"%(name,node))]),
+                                ("scanner","the scanner's model",[os.path.join(local,"%s_%s.ply"%(name,node)), os.path.join(local,"data",node,"fuse_mesh.ply")]),
+                                ("pcfused","PC build (from raw data)",[os.path.join(local,"%s_%s_pcfused.ply"%(name,node))])):
             for c in cands:
                 if os.path.exists(c) and os.path.getsize(c)>1024: out.append((key,label,c)); break
         return out
@@ -2663,7 +2663,7 @@ class App(ctk.CTk):
         except Exception as e:
             log_error("trash", e); return False
     def _proc_delete_version(self, name, node, key, path):
-        if not self._confirm("Delete this version?", "%s: the %s version of scan %s goes to the trash.\nOther versions and the raw data stay." % (self.disp(name), dict(clean="prepared", scanner="scanner's", pcfused="built-from-raw")[key], node)): return
+        if not self._confirm("Delete this version?", "%s: the %s version of scan %s goes to the trash.\nOther versions and the raw data stay." % (self.disp(name), dict(clean="prepared copy", scanner="scanner's model", pcfused="PC build")[key], node)): return
         if self._trash(path):
             self.set_banner("Moved to the trash: %s" % os.path.basename(path), MUT); self._mesh_stats={}; self.gallery_cache.pop(name, None)
             self._proc_render(name)
@@ -2896,7 +2896,7 @@ class App(ctk.CTk):
                 pl=self._base_planes(name).get(node)
                 ctk.CTkLabel(pp, text=(("No table in this scan ✓" if pl.get("skip") else "Base cut saved ✓ (applied when combining)") if hasp else "Base not cut yet"), text_color=(OK if hasp else WARN), font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6)
             if vs:
-                ctk.CTkLabel(pp, text="Versions (tick = the one the preview and exports use)", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w").pack(fill="x", padx=6, pady=(8,2))
+                ctk.CTkLabel(pp, text="Versions: the scanner's model (One-tap on the device), the PC build (from raw data), a prepared copy. Tick the one to use.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=230).pack(fill="x", padx=6, pady=(8,2))
                 for key,label,path in vs:
                     is_cur=(cur and cur[0]==key)
                     chip=ctk.CTkFrame(pp, fg_color=("#15304d" if is_cur else CARD2), corner_radius=9); chip.pack(fill="x", padx=6, pady=2)
@@ -3166,7 +3166,7 @@ class App(ctk.CTk):
                 if ok: loads[i].grid_remove()
                 else: loads[i].configure(text="Could not load this model")
             views[i].load(lookup[sels[i].get()], cb, max_faces=600000)
-        ctk.CTkLabel(card, text="Drag either view: both turn together. Scroll to zoom, right-drag to pan, double-click to reset.", text_color=DIM, font=ctk.CTkFont(size=10)).grid(row=2,column=0, columnspan=2, sticky="w", padx=14, pady=(0,10))
+        ctk.CTkLabel(card, text="Two versions side by side, turning together: put the scanner's model on one side and the PC build on the other to judge them at the same angle. Scroll to zoom, right-drag to pan, double-click to reset.", text_color=DIM, font=ctk.CTkFont(size=10), wraplength=1100).grid(row=2,column=0, columnspan=2, sticky="w", padx=14, pady=(0,10))
         load(0); load(1)
     def _export_dialog(self, name, node):
         """Version, format and destination together, with the model's size and a mesh check."""
