@@ -61,7 +61,13 @@ def main():
     ap.add_argument("--every", type=int, default=1, help="use every Nth frame")
     ap.add_argument("--gpu", action="store_true")
     ap.add_argument("--poses", default="auto", help="global pose table: auto (use <frames>/global_register_pose.pose if present), none, or a path")
-    ap.add_argument("--min-weight", type=float, default=1.0, help="GPU: drop voxels seen fewer than N times (raise to cut noise)")
+    # defaults measured against the scanner's One-tap Edit on 2026-09-13 (dev/design/device/SCANNER-EDIT-OPTIONS.md):
+    # frame filter 3 mm / 80 deg removes the edge and grazing pixels that made double skins; a 3-voxel band keeps thin sheets
+    # from cancelling out; 3 views per voxel drops one-frame noise. Our surface then sits within 0.3 mm of the scanner's (95%).
+    ap.add_argument("--min-weight", type=float, default=3.0, help="GPU: drop voxels seen fewer than N times (raise to cut noise)")
+    ap.add_argument("--trunc", type=float, default=3.0, help="truncation band in voxels (wider merges nearby double surfaces, narrower keeps thin sheets)")
+    ap.add_argument("--filter", type=float, default=3.0, help="per-frame clean-up: drop depth pixels at jumps bigger than this many mm and at grazing view angles (0 = off; the scanner does this)")
+    ap.add_argument("--grazing", type=float, default=80.0, help="with --filter: drop pixels whose surface tilts more than this many degrees from the view ray")
     a = ap.parse_args()
     if not a.gpu: apply_mem_cap()
 
@@ -112,10 +118,36 @@ def main():
         K = o3d.core.Tensor(intr.intrinsic_matrix, o3d.core.float64)
     else:
         vol = o3d.pipelines.integration.ScalableTSDFVolume(
-            voxel_length=voxel_m, sdf_trunc=voxel_m * 4,
+            voxel_length=voxel_m, sdf_trunc=voxel_m * a.trunc,
             color_type=o3d.pipelines.integration.TSDFVolumeColorType.NoColor)
 
     n = 0; cur_cal = None; grid = None
+    cos_min = float(np.cos(np.radians(a.grazing)))
+    def clean_frame(d, cal):
+        """Drop the pixels the scanner would not trust: depth jumps (edges, flying pixels) and surfaces seen edge-on."""
+        nonlocal grid
+        fx, fy, cx, cy = cal
+        z = d.astype(np.float32) * a.depth_scale; valid = z > 0
+        # depth jumps to any 4-neighbour
+        jump = np.zeros_like(valid)
+        for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+            zs = np.roll(z, (dy, dx), axis=(0, 1)); vs = np.roll(valid, (dy, dx), axis=(0, 1))
+            jump |= vs & (np.abs(zs - z) > a.filter)
+        edge = jump | ~valid
+        edge = edge | np.roll(edge, 1, 0) | np.roll(edge, -1, 0) | np.roll(edge, 1, 1) | np.roll(edge, -1, 1)   # one-pixel skirt
+        # surface normal from the depth gradient, compared with the view ray
+        if grid is None:
+            u, v = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32)); grid = (u, v)
+        u, v = grid; X = (u - cx) * z / fx; Y = (v - cy) * z / fy
+        dXu = np.roll(X, -1, 1) - np.roll(X, 1, 1); dYu = np.roll(Y, -1, 1) - np.roll(Y, 1, 1); dZu = np.roll(z, -1, 1) - np.roll(z, 1, 1)
+        dXv = np.roll(X, -1, 0) - np.roll(X, 1, 0); dYv = np.roll(Y, -1, 0) - np.roll(Y, 1, 0); dZv = np.roll(z, -1, 0) - np.roll(z, 1, 0)
+        nx = dYu * dZv - dZu * dYv; ny = dZu * dXv - dXu * dZv; nz = dXu * dYv - dYu * dXv
+        nl = np.sqrt(nx * nx + ny * ny + nz * nz) + 1e-9
+        rl = np.sqrt(X * X + Y * Y + z * z) + 1e-9
+        cosang = np.abs((nx * X + ny * Y + nz * z) / (nl * rl))
+        bad = edge | (valid & (cosang < cos_min))
+        d[bad] = 0
+        return d
     def cull_below_plane(d, pose_mm, cal, P):
         """Zero the depth pixels that sit on the removed side of this scan's base plane (plane in the scan's own mm frame)."""
         nonlocal grid
@@ -140,6 +172,7 @@ def main():
             else: intr = o3d.camera.PinholeCameraIntrinsic(W, H, fx, fy, cx, cy)
         d = np.frombuffer(open(dph, "rb").read(), dtype=np.uint16).reshape(H, W).copy()
         d[d * a.depth_scale > a.max_depth] = 0
+        if a.filter > 0: d = clean_frame(d, cal)
         pose = gp.get(frame_key(dph))            # camera->world (scanner frame), translation in mm
         if pose is None: pose = read_pose(inf)
         else: pose = pose.copy()
@@ -150,8 +183,8 @@ def main():
         if use_t:
             dimg = o3d.t.geometry.Image(o3d.core.Tensor(d)).to(dev)
             ext = o3d.core.Tensor(extr, o3d.core.float64)
-            coords = vbg.compute_unique_block_coordinates(dimg, K, ext, o3d_depth_scale, depth_trunc_m)
-            vbg.integrate(coords, dimg, K, ext, o3d_depth_scale, depth_trunc_m)
+            coords = vbg.compute_unique_block_coordinates(dimg, K, ext, o3d_depth_scale, depth_trunc_m, a.trunc)
+            vbg.integrate(coords, dimg, K, ext, o3d_depth_scale, depth_trunc_m, a.trunc)
         else:
             dimg = o3d.geometry.Image(d)
             rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(

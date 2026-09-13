@@ -1453,7 +1453,7 @@ class App(ctk.CTk):
                 if ex.winfo_exists():
                     ex.deiconify(); ex.lift(); ex.focus_force(); return None
             except Exception: pass
-        t=ctk.CTkToplevel(self); t.title(title); t.geometry("%dx%d"%(w,h)); t.configure(fg_color=BG)
+        t=ctk.CTkToplevel(self); t.title("%s · %s" % (APP, title)); t.geometry("%dx%d"%(w,h)); t.configure(fg_color=BG)
         t.transient(self); t.after(60, t.lift)
         self._dialogs[key]=t
         t.protocol("WM_DELETE_WINDOW", lambda: (self._dialogs.pop(key,None), t.destroy()))
@@ -3690,11 +3690,12 @@ class App(ctk.CTk):
         self.wifi_proj=ctk.CTkLabel(row, text="", text_color=TX, font=ctk.CTkFont(size=13, weight="bold"), anchor="w"); self.wifi_proj.pack(side="left", padx=12)
         # speed graph: fills left to right with progress, height = transfer speed (old-school copy dialog)
         self.wifi_graph=tk.Canvas(self.wifi_recv, height=84, bg="#0d0f14", highlightthickness=0); self.wifi_graph.pack(fill="x", padx=24, pady=(12,6))
-        self.wifi_samples=[]; self._wifi_last_sample=0.0
+        self.wifi_samples=[]; self._wifi_last_sample=0.0; self._wifi_thumb_ok=False
         stats=ctk.CTkFrame(self.wifi_recv, fg_color="transparent"); stats.pack(fill="x", padx=24)
         self.wifi_stats={}
-        for key,cap in (("got","received"),("files","files"),("rate","speed"),("eta","time left")):
-            col=ctk.CTkFrame(stats, fg_color="#0d0f14", corner_radius=10); col.pack(side="left", expand=True, fill="x", padx=3)
+        stats.grid_columnconfigure(0, weight=3); stats.grid_columnconfigure(1, weight=1)   # 2 x 2: the wide numbers left, the short ones right
+        for key,cap,r,c in (("got","received",0,0),("files","files",0,1),("rate","speed",1,0),("eta","time left",1,1)):
+            col=ctk.CTkFrame(stats, fg_color="#0d0f14", corner_radius=10); col.grid(row=r, column=c, sticky="nsew", padx=3, pady=3)
             v=ctk.CTkLabel(col, text="-", text_color=TX, font=ctk.CTkFont(size=14, weight="bold")); v.pack(pady=(8,0))
             ctk.CTkLabel(col, text=cap, text_color=MUT, font=ctk.CTkFont(size=10)).pack(pady=(0,8)); self.wifi_stats[key]=v
         self.wifi_hint=ctk.CTkLabel(card, text="Both must be on the same network. If the scanner isn't found within 30 seconds, allow port 9706 (UDP and TCP) in your firewall.",
@@ -3798,14 +3799,14 @@ class App(ctk.CTk):
             self.wifi_stats["rate"].configure(text="%.0f MB/s  ·  peak %.0f" % (rate/1048576, getattr(self, "_wifi_peak", rate)/1048576))
             self.wifi_stats["eta"].configure(text=("%d s" % left if left<90 else "%d min" % (left/60)) if left is not None else "-")
             self.set_status("WiFi: %.0f%%" % (100*frac))
-            if not self.wifi_proj.cget("text"):     # name + thumbnail as soon as they exist in staging
+            if not self.wifi_proj.cget("text") or not getattr(self, "_wifi_thumb_ok", False):   # name as soon as the folder exists; the picture arrives later in the transfer, keep trying
                 try:
                     projs=[d for d in os.listdir(rx.stage) if os.path.isdir(os.path.join(rx.stage, d))]
                     if projs:
-                        self.wifi_proj.configure(text="%s%s" % (self.disp(projs[0]), "  (+%d more)" % (len(projs)-1) if len(projs)>1 else ""))
-                        pv=glob.glob(os.path.join(rx.stage, projs[0], "data", "*", "preview.png"))
-                        if pv:
-                            self.imgs["wifi_thumb"]=cimg(pv[0], 84); self.wifi_thumb.configure(image=self.imgs["wifi_thumb"])
+                        if not self.wifi_proj.cget("text"): self.wifi_proj.configure(text="%s%s" % (self.disp(projs[0]), "  (+%d more)" % (len(projs)-1) if len(projs)>1 else ""))
+                        pv=sorted(glob.glob(os.path.join(rx.stage, projs[0], "data", "*", "preview.png")))
+                        if pv and os.path.getsize(pv[0])>2000:
+                            self.imgs["wifi_thumb"]=cimg(pv[0], 84); self.wifi_thumb.configure(image=self.imgs["wifi_thumb"]); self._wifi_thumb_ok=True
                 except Exception: pass
         elif kind=="done":
             self._wifi=None; threading.Thread(target=rx.stop, daemon=True).start(); self._wifi_close_dialog(); self.wifi_btn.configure(text="📶  WiFi", fg_color="transparent")
@@ -3836,13 +3837,14 @@ class App(ctk.CTk):
                 raw=sum(os.path.getsize(f) for f in glob.glob(os.path.join(nd, "cache", "*")))
                 rows.append({"project":name, "node":os.path.basename(nd), "mesh":sz("fuse_mesh.ply"), "cloud":sz("fuse.ply"),
                              "raw":raw, "frames":len(glob.glob(os.path.join(nd, "cache", "*.dph"))), "thumb":os.path.join(nd, "preview.png")})
-        t=self._top("Received over WiFi", 640, min(720, 215+66*max(1,len(rows))), key="wifipick")
+        t=self._top("Received over WiFi", 660, min(780, 300+66*max(1,len(rows))), key="wifipick")
         if t is None: return
         t.protocol("WM_DELETE_WINDOW", lambda: None)   # decide with the buttons; the data is only in staging
         ctk.CTkLabel(t, text="%s  ·  %d scan%s" % (", ".join(projects), len(rows), "" if len(rows)==1 else "s"),
                      font=ctk.CTkFont(family=WORDMARK, size=15, weight="bold"), text_color=TX).pack(anchor="w", padx=20, pady=(18,2))
         ctk.CTkLabel(t, text="Tick the scans to keep. Formats and clean-up follow the options in the main window.",
                      font=ctk.CTkFont(size=12), text_color=MUT).pack(anchor="w", padx=20)
+        br=ctk.CTkFrame(t, fg_color="transparent"); br.pack(side="bottom", fill="x", padx=16, pady=14)      # buttons claim their space first: never clipped
         lst=ctk.CTkScrollableFrame(t, fg_color=CARD, corner_radius=12); lst.pack(fill="both", expand=True, padx=16, pady=10)
         vars_=[]
         for r in rows:
@@ -3860,7 +3862,7 @@ class App(ctk.CTk):
             if r["mesh"]: parts.append("3D model %s" % human(r["mesh"]))
             if r["cloud"]: parts.append("point cloud %s" % human(r["cloud"]))
             parts.append("%d raw frames %s" % (r["frames"], human(r["raw"])) if r["frames"] else "no raw frames")
-            if not r["mesh"] and not r["cloud"]: parts.insert(0, "raw scan data only, no 3D model yet (Build it on the Projects page, or One-tap Edit on the scanner)")
+            if not r["mesh"] and not r["cloud"]: parts.insert(0, "raw data only, no 3D model yet")
             ctk.CTkLabel(col, text="  ·  ".join(parts), text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(anchor="w")
         any_model=any(r["mesh"] or r["cloud"] for r in rows)
         mode=ctk.StringVar(value=("models" if (self.models_only.get() and any_model) else "full"))
@@ -3871,7 +3873,6 @@ class App(ctk.CTk):
             rb.configure(state="disabled")
             ctk.CTkLabel(t, text="Raw scan data only: there are no 3D models to save yet, so the full project is kept. Build them on the Projects page.",
                          text_color=WARN, font=ctk.CTkFont(size=11), wraplength=580, justify="left").pack(anchor="w", padx=22, pady=(6,0))
-        br=ctk.CTkFrame(t, fg_color="transparent"); br.pack(fill="x", padx=16, pady=14)
         def close():
             self._dialogs.pop("wifipick", None); t.destroy()
         def discard():

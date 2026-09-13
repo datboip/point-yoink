@@ -93,3 +93,23 @@ to 20% extra surface the scanner trims (floor patches), so that is the next
 gap: their trim step, not our fusion. This scan's property.rvproj says
 point_pitch 0.32 mm, so the 1.09 mm in the screenshots was that other
 project's default, not a constant.
+
+## Measured 2026-09-13: what made One-tap Edit look better, and the fix
+Same-orientation renders showed the real difference: our build had a second skin under the
+flat panel and the panel itself came out ragged / inside out. Not smoothing: Taubin and
+Laplacian changed nothing that mattered. Not the two passes: each pass alone had the extra.
+Cause: the voxel fusion took every depth pixel (edges, flying pixels, grazing angles) and the
+8-voxel truncation band let a thin sheet seen from both sides cancel. fuse.py now defaults to
+--filter 3 (drop pixels at depth jumps > 3 mm with a 1-px skirt, and where the surface tilts
+more than --grazing 80 deg from the view ray), --trunc 3 voxels, --min-weight 3.
+Cleaned build vs One-tap Edit, voxel 0.4 mm (extra = our surface > 1 mm from theirs):
+
+| scan | ours extra | 95% | scanner missing from ours |
+|---|---|---|---|
+| 09112026025559 | 1.1% | 0.31 mm | 5.6% |
+| 09112026030031 | 0.7% | 0.29 mm | 7.5% |
+| 09112026030352 | 0.7% | 0.31 mm | 13.8% (half of it is their floor patches) |
+
+Before: 20% extra with 95% at 8.7 mm. Poisson on the scanner's own fuse.ply reproduces their
+fuse_mesh.ply to 0.1 mm, so their meshing is Poisson-like; Poisson on our points is an option
+for later (closes holes, single skin) but the input filtering was the actual gap.
