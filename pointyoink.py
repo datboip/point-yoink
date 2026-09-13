@@ -549,7 +549,7 @@ class SplitButton(ctk.CTkFrame):
 # ---- empty states: a faint ring backsplash, a line illustration, a headline, one line, up to two buttons ----
 ES_BG="#0a0c10"; ES_RING="#1e2634"; ES_LINE="#3a4556"; ES_MESH="#2a3140"
 ES_COPY={   # kind -> (headline, one line of explanation)
-    "captures": ("No captures yet", "Screenshots come over USB only. WiFi sends just the project you share."),
+    "captures": ("No captures yet", "The scanner's screenshots and recordings only come over USB. Plug in and tap File Transfer."),
     "projects": ("No projects yet", "Connect over USB for all of them, or share one over WiFi."),
     "preview":  ("Nothing to preview", "Pick a project: its scans show here as a 3D model you can turn and zoom."),
     "live":     ("Live view is not connected", "Turn on the scanner's WiFi, then find it on your network."),
@@ -1237,7 +1237,7 @@ class App(ctk.CTk):
     def _empty_state(self, parent, kind):
         """The empty-state panel for one area (captures / projects / preview), with its buttons wired to the
         real handlers. Grid it with sticky='nsew'; it centres its content and re-centres on resize."""
-        btns={"captures": [("Connect over USB", self.on_mount), ("Share over WiFi", self.on_wifi)],
+        btns={"captures": [("Connect over USB", self.on_mount)],                       # screenshots only come over USB
               "projects": [("Connect over USB", self.on_mount), ("Share over WiFi", self.on_wifi)],
               "preview":  []}[kind]
         es=EmptyState(parent, kind, btns, scale=self._ui_scale)
@@ -1252,8 +1252,9 @@ class App(ctk.CTk):
         w=getattr(self, attr, None)
         try:
             if w is None or not w.winfo_exists() or not w.winfo_manager(): return
-            h=sf._parent_canvas.winfo_height()
+            h=sf._parent_canvas.winfo_height(); wd=sf._parent_canvas.winfo_width()
             if h>1 and abs(h-w.winfo_height())>2: w.configure(height=h)
+            if wd>1 and abs(wd-w.winfo_width())>2: w.configure(width=wd)       # a scrollable frame does not stretch its content sideways
         except Exception: pass
     def _live_empty(self):
         """Backsplash on the Live canvas until a stream arrives (the trail drawing takes over from there)."""
