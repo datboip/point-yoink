@@ -3910,7 +3910,7 @@ class App(ctk.CTk):
             if mode.get()=="models" and not any((r["mesh"] or r["cloud"]) for r,v in zip(rows, vars_) if v.get()):
                 self.set_banner("The ticked scans have no 3D models yet: choose Full project to keep their raw data.", WARN); return
             dest=self.dest.get() or DEFAULT_DEST
-            self._wifi_confirm(keep, dest, lambda names, replace: start(keep, dest, names, replace))
+            self._wifi_confirm(keep, dest, lambda names, replace: start(keep, dest, names, replace), stage=stage)
         def start(keep, dest, names, replace):
             close()
             for n,label in names.items():
@@ -3924,11 +3924,28 @@ class App(ctk.CTk):
             threading.Thread(target=self._wifi_finish_worker, args=(stage, keep, dest, mode.get()=="models", fmts, cleanup, replace), daemon=True).start()
         ctk.CTkButton(br, text="Import", width=110, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=go).pack(side="right", padx=6)
         ctk.CTkButton(br, text="Discard", width=100, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=discard).pack(side="right", padx=6)
-    def _wifi_confirm(self, keep, dest, then):
+    def _peek(self, title, image_path, mesh_path=None):
+        """A bigger look at one scan: the live 3D view when there is a model, otherwise the scanner's preview picture, large."""
+        t=self._top(title, 720, 560, key="peek")
+        if t is None: return
+        box=ctk.CTkFrame(t, fg_color="#0a0c10", corner_radius=12); box.pack(fill="both", expand=True, padx=12, pady=12)
+        box.grid_columnconfigure(0, weight=1); box.grid_rowconfigure(0, weight=1)
+        if mesh_path and os.path.exists(mesh_path):
+            v=self._new_view(box); v.grid(row=0,column=0, sticky="nsew", padx=4, pady=4)
+            l=ctk.CTkLabel(box, text="Loading the 3D view…", text_color=MUT, font=ctk.CTkFont(size=13), fg_color="#0a0c10"); l.grid(row=0,column=0, sticky="nsew"); l.lift()
+            v.load(mesh_path, lambda ok: (l.grid_remove() if (ok and t.winfo_exists()) else None), max_faces=600000)
+            ctk.CTkLabel(t, text="Drag to turn, scroll to zoom.", text_color=DIM, font=ctk.CTkFont(size=10)).pack(pady=(0,8))
+        else:
+            try:
+                im=Image.open(image_path); im.thumbnail((680, 500)); self.imgs["peek"]=ctk.CTkImage(light_image=im, dark_image=im, size=im.size)
+                ctk.CTkLabel(box, image=self.imgs["peek"], text="").grid(row=0,column=0)
+            except Exception as e: ctk.CTkLabel(box, text="No picture for this scan", text_color=MUT).grid(row=0,column=0)
+            ctk.CTkLabel(t, text="The scanner's own preview. No 3D model yet: it is raw data until it is built.", text_color=DIM, font=ctk.CTkFont(size=10)).pack(pady=(0,8))
+    def _wifi_confirm(self, keep, dest, then, stage=None):
         """Name the incoming project(s) and, when one is already on this PC, choose keep-and-add or replace."""
         existing=[n for n in keep if os.path.isdir(os.path.join(dest, n))]
         nscans=sum(len(v) for v in keep.values())
-        t=self._top("Before importing", 560, min(820, 200+60*len(keep)+34*nscans+(90 if existing else 0)), key="wifiname")
+        t=self._top("Before importing", 600, min(840, 200+60*len(keep)+58*nscans+(90 if existing else 0)), key="wifiname")
         if t is None: return
         t.protocol("WM_DELETE_WINDOW", lambda: (self._dialogs.pop("wifiname", None), t.destroy()))
         ctk.CTkLabel(t, text="Name it (optional)", font=ctk.CTkFont(family=WORDMARK, size=15, weight="bold"), text_color=TX).pack(anchor="w", padx=22, pady=(20,2))
@@ -3943,7 +3960,17 @@ class App(ctk.CTk):
             # the scans too: "front", "back", "left side" is what you want to see when lining them up
             for i,node in enumerate(sorted(keep[n])):
                 sr=ctk.CTkFrame(t, fg_color="transparent"); sr.pack(fill="x", padx=22, pady=(4,0))
-                ctk.CTkLabel(sr, text="   scan %02d · %s" % (i+1, node), text_color=DIM, font=ctk.CTkFont(size=10), width=190, anchor="w").pack(side="left")
+                pv=None
+                for cand in ([os.path.join(stage, n, "data", node, "preview.png")] if stage else [])+[os.path.join(dest, n, "data", node, "preview.png"), os.path.join(dest, n, "%s_%s.png" % (n, node))]:
+                    if os.path.exists(cand): pv=cand; break
+                th=ctk.CTkLabel(sr, text="", width=72, height=48, fg_color="#0a0c10", corner_radius=6); th.pack(side="left", padx=(8,8))
+                if pv:
+                    try: self.imgs["confirm_"+node]=cimg(pv, 72); th.configure(image=self.imgs["confirm_"+node])
+                    except Exception: pass
+                    mesh=next((c for c in [os.path.join(stage or dest, n, "data", node, "fuse_mesh.ply")] if os.path.exists(c)), None)
+                    th.bind("<Button-1>", lambda e, pv=pv, mesh=mesh, i=i, node=node: self._peek("scan %02d · %s" % (i+1, node), pv, mesh))
+                    self._tip(th, "Click for a bigger look")
+                ctk.CTkLabel(sr, text="scan %02d\n%s" % (i+1, node), text_color=DIM, font=ctk.CTkFont(size=10), width=110, anchor="w", justify="left").pack(side="left")
                 sv=ctk.StringVar(value=self.records.get(n, {}).get("scan_labels", {}).get(node) or ""); scan_vars[(n, node)]=sv
                 ctk.CTkEntry(sr, textvariable=sv, placeholder_text="front, back, left side… (optional)", height=26, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=8, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True, padx=(8,0))
         mode=ctk.StringVar(value="merge")
