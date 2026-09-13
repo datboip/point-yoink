@@ -2419,7 +2419,7 @@ class App(ctk.CTk):
         status=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w")
         dirrow=ctk.CTkFrame(card, fg_color="transparent"); dirrow.grid(row=2,column=0, sticky="ew", padx=14, pady=(6,0))
         ctk.CTkLabel(dirrow, text="Table direction", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left", padx=(4,10))
-        dirsel=ctk.CTkSegmentedButton(dirrow, values=["Floor grid", "Auto-detect", "Click 3 spots"], selected_color=AC, selected_hover_color=AC_H, unselected_color=CARD2, unselected_hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=12)); dirsel.pack(side="left")
+        dirsel=ctk.CTkSegmentedButton(dirrow, values=["Floor grid", "Auto-detect", "Click spots on the table"], selected_color=AC, selected_hover_color=AC_H, unselected_color=CARD2, unselected_hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=12)); dirsel.pack(side="left")
         dirhint=ctk.CTkLabel(dirrow, text="", text_color=DIM, font=ctk.CTkFont(size=11)); dirhint.pack(side="left", padx=12)
         ctl.grid(row=3,column=0, sticky="ew", padx=14, pady=(6,12)); status.grid(row=4,column=0, sticky="w", padx=16, pady=(0,10))
         ctk.CTkLabel(ctl, text="Cut height", text_color=MUT, font=ctk.CTkFont(size=12)).grid(row=0,column=0, padx=(4,10))
@@ -2427,6 +2427,11 @@ class App(ctk.CTk):
         val=ctk.CTkLabel(ctl, text="", text_color=TX, font=ctk.CTkFont(size=12), width=150); val.grid(row=0,column=2, padx=10)
         flipb=ctk.CTkButton(ctl, text="Flip side", width=90, height=32, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX); flipb.grid(row=0,column=3, padx=4)
         cancelb=ctk.CTkButton(ctl, text="Cancel", width=90, height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX); cancelb.grid(row=0,column=4, padx=4)
+        def no_table():
+            self.records.setdefault(name,{}).setdefault("base_plane",{})[node]={"skip": True}; self._persist()
+            self.set_banner("%s: no table to cut, step done." % self._scan_label(name, node), OK); self._proc_refresh(); close()
+        skipb=ctk.CTkButton(dirrow, text="No table in this scan", width=150, height=26, corner_radius=13, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=no_table); skipb.pack(side="right", padx=4)
+        self._tip(skipb, "The scanner already dropped the floor (its scan settings can do that), or there was none. Marks the Cut base step done for this scan.")
         applyb=ctk.CTkButton(ctl, text="✂  Apply cut", width=130, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=12, weight="bold")); applyb.grid(row=0,column=5, padx=(4,0))
         st={"n":None, "H":None, "Hmin":0.0, "Hmax":1.0, "cut":0.0, "keep_above":True, "V":None, "job":None, "busy":False, "picks":[], "n_auto":None, "n_grid":None}
         KEEP=np.array([0.74,0.76,0.80], np.float32); GONE=np.array([1.0,0.36,0.42], np.float32)
@@ -2438,6 +2443,7 @@ class App(ctk.CTk):
             if st["H"] is None: return
             keep=(st["H"]>st["cut"]) if st["keep_above"] else (st["H"]<st["cut"])
             f=np.asarray(view._src[1]); view.set_split(keep[f].all(axis=1), tuple(KEEP), tuple(GONE))   # two plain materials: nothing for the card to lose
+            if getattr(view, "_err", None): log_line("cut view: %s" % view._err); view._err=None
             import shade
             n=st["n"]; V=st["V"]; c_w=V.mean(0)+n*(st["cut"]-V.mean(0).dot(n))
             cv=shade.world_to_view(c_w, view.tf); nv=shade.world_to_view(c_w+n*10.0, view.tf)-cv
@@ -2450,31 +2456,38 @@ class App(ctk.CTk):
         slider.configure(command=on_slide)
         def flip(): st["keep_above"]=not st["keep_above"]; schedule()
         flipb.configure(command=flip)
-        def use_normal(n, start=None):
-            """Set the cut direction; the cut starts at the densest height along it (the table) or where asked."""
+        def use_normal(n, start=None, ref=None):
+            """Set the cut direction. Which way is up: agree with the auto-detected table plane when it points roughly the
+            same way, else the end with the bigger flat sheet is the table. The cut starts just above the densest
+            height in the lower third (the table), or where asked."""
             V=st["V"]; n=np.asarray(n, float); n/=np.linalg.norm(n)+1e-9; H=V.dot(n)
-            hist,edges=np.histogram(H, bins=120); h_tab=float(0.5*(edges[hist.argmax()]+edges[hist.argmax()+1]))
-            if H.mean()<h_tab: n=-n; H=-H; h_tab=-h_tab
-            st["n"]=n; st["H"]=H; st["Hmin"]=float(H.min()); st["Hmax"]=float(H.max())
+            if ref is not None and abs(float(np.dot(n, ref)))>0.5:
+                if float(np.dot(n, ref))<0: n=-n; H=-H
+            else:
+                lo, hi=np.percentile(H, [3, 97]); band=0.03*(hi-lo)
+                if (H>hi-band).sum() > (H<lo+band).sum(): n=-n; H=-H      # the bigger sheet at the top: flip so it is the bottom
+            lo=float(H.min()); rng=float(H.max()-lo)
+            low=H[H<lo+0.35*rng]; hist,edges=np.histogram(low, bins=60); h_tab=float(0.5*(edges[hist.argmax()]+edges[hist.argmax()+1]))
+            st["n"]=n; st["H"]=H; st["Hmin"]=lo; st["Hmax"]=float(H.max())
             st["cut"]=float(start) if start is not None else min(st["Hmax"], h_tab+0.02*(st["Hmax"]-st["Hmin"])); st["keep_above"]=True
             slider.set(1000.0*(st["cut"]-st["Hmin"])/max(1e-6, st["Hmax"]-st["Hmin"])); paint()
         def choose_dir(which):
             if st["V"] is None: return
             view.markers=[]; st["picks"]=[]; view.on_pick=None
-            if which=="Floor grid": use_normal(st["n_grid"]); dirhint.configure(text="the view's floor grid is the table")
+            if which=="Floor grid": use_normal(st["n_grid"], ref=st.get("n_auto_up")); dirhint.configure(text="the view's floor grid is the table")
             elif which=="Auto-detect": use_normal(st["n_auto"]); dirhint.configure(text="the flattest surface in the scan")
             else:
-                dirhint.configure(text="click 3 spots on the table in the view"); view.on_pick=on_pick_spot; view.draw()
+                dirhint.configure(text="click spots on the table: 3 sets the plane, more make it truer"); view.on_pick=on_pick_spot; view.draw()
         def on_pick_spot(world, viewpt):
-            st["picks"].append(np.asarray(world, float)); view.markers.append((viewpt, self.PAIR_COLOURS[len(st["picks"])-1])); view.draw()
-            dirhint.configure(text="%d of 3 spots" % len(st["picks"]))
-            if len(st["picks"])==3:
-                a,b,c=st["picks"]; n=np.cross(b-a, c-a)
-                if np.linalg.norm(n)<1e-6: dirhint.configure(text="those spots are in a line, try again"); st["picks"]=[]; view.markers=[]; view.draw(); return
-                n/=np.linalg.norm(n); level=float(np.mean([p.dot(n) for p in st["picks"]]))
-                # orient so the object is above the spots, then start 1.5 mm above them
-                if st["V"].dot(n).mean()<level: n=-n; level=-level
-                use_normal(n, start=level+1.5); view.on_pick=None; dirhint.configure(text="plane through your 3 spots")
+            st["picks"].append(np.asarray(world, float)); view.markers.append((viewpt, self.PAIR_COLOURS[(len(st["picks"])-1) % len(self.PAIR_COLOURS)]))
+            if len(st["picks"])<3: dirhint.configure(text="%d of 3 spots" % len(st["picks"])); view.draw(); return
+            # best-fit plane through every spot so far (least squares): more spots average out a wobbly click
+            P=np.array(st["picks"]); c=P.mean(0); _,sv,vt=np.linalg.svd(P-c); n=vt[2]
+            if len(P)==3 and sv[1]<1e-6: dirhint.configure(text="those spots are in a line, click another"); view.draw(); return
+            n=n/np.linalg.norm(n); level=float(c.dot(n)); spread=float(np.abs((P-c).dot(n)).max())
+            if st["V"].dot(n).mean()<level: n=-n; level=-level              # the object is above the table
+            keep_markers=list(view.markers); use_normal(n, start=level+1.5+spread); view.markers=keep_markers; view.draw()
+            dirhint.configure(text="plane through %d spots (they sit within %.1f mm of it); keep clicking to refine" % (len(P), spread))
         dirsel.configure(command=choose_dir)
         def ready(ok):
             if not t.winfo_exists(): return
@@ -2492,6 +2505,8 @@ class App(ctk.CTk):
                     if not t.winfo_exists(): return
                     if res is None: load.configure(text="Could not find the table in this scan"); return
                     V, n_auto, n_grid = res; st["V"]=V; st["n_auto"]=n_auto; st["n_grid"]=n_grid
+                    Ha=V.dot(n_auto); lo,hi=np.percentile(Ha,[3,97]); band=0.03*(hi-lo)
+                    st["n_auto_up"]=(-n_auto if (Ha>hi-band).sum()>(Ha<lo+band).sum() else n_auto)   # auto plane oriented with its sheet at the bottom
                     load.grid_remove(); dirsel.set("Floor grid"); choose_dir("Floor grid")
                     status.configure(text="Starting just above the table along the floor grid. Drag to rotate, scroll to zoom.")
                 self.q.put(("call", done))
@@ -2813,7 +2828,10 @@ class App(ctk.CTk):
             if nb[0] is not None:
                 if wide: nb[0].grid(row=0,column=2, rowspan=3, padx=16, pady=10, sticky="e")
                 else: nb[0].grid(row=3,column=1, padx=(0,14), pady=(0,12), sticky="w")
-        ns.bind("<Configure>", relayout, add="+")
+        if getattr(self, "_next_cfg_id", None):
+            try: ns.unbind("<Configure>", self._next_cfg_id)
+            except Exception: pass
+        self._next_cfg_id=ns.bind("<Configure>", lambda e: (tl.winfo_exists() and relayout(e)), add="+")
         for i,nm in enumerate(self.STEPS):
             col=(OK if i<step else (AC if i==step else DIM)); mark=("✓ " if i<step else ("▶ " if i==step else ""))
             ctk.CTkLabel(trail, text=mark+nm, text_color=col, font=ctk.CTkFont(size=11, weight=("bold" if i==step else "normal"))).pack(side="left")
@@ -2859,7 +2877,8 @@ class App(ctk.CTk):
                 stw, stc = self.STAGE_WORDS[self._device_stage(local, node)]
                 if stw: ctk.CTkLabel(pp, text="Scanner: "+stw, text_color=stc, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6)
                 hasp=node in self._base_planes(name)
-                ctk.CTkLabel(pp, text=("Base cut saved ✓ (applied when combining)" if hasp else "Base not cut yet"), text_color=(OK if hasp else WARN), font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6)
+                pl=self._base_planes(name).get(node)
+                ctk.CTkLabel(pp, text=(("No table in this scan ✓" if pl.get("skip") else "Base cut saved ✓ (applied when combining)") if hasp else "Base not cut yet"), text_color=(OK if hasp else WARN), font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6)
             if vs:
                 ctk.CTkLabel(pp, text="Versions (tick = the one the preview and exports use)", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w").pack(fill="x", padx=6, pady=(8,2))
                 for key,label,path in vs:
@@ -3413,7 +3432,7 @@ class App(ctk.CTk):
                 tj=os.path.join(local, "align_%s.json" % node); json.dump({"base": base, "matrix": rec[node]["matrix"]}, open(tj, "w"))
             pj=""
             plane=self._base_planes(name).get(node)
-            if plane:
+            if plane and not plane.get("skip"):
                 pj=os.path.join(local, "plane_%s.json" % node); json.dump(plane, open(pj, "w"))
             sets.append("%s,%s,%s,%s" % (cache, calib, tj, pj))
         ncut=sum(1 for sp in sets if sp.split(",")[3])

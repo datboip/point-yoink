@@ -29,6 +29,7 @@ class GLView(OpenGLFrame):
         self._press_at = None
         self._cvbo = None; self._ncol = 0      # optional per-vertex colours (set_colors)
         self._split = None                     # optional (ibo_a, n_a, colour_a, ibo_b, n_b, colour_b): the mesh drawn as two parts
+        self._split_req = None                 # (mask, colour_keep, colour_gone) to (re)apply after an upload
         self.plane = None                      # optional translucent quad: (centre_view_xyz, normal_view_xyz, half_size)
         self.bind("<ButtonPress-1>", self._press); self.bind("<B1-Motion>", self._rotate)
         self.bind("<ButtonPress-3>", self._press); self.bind("<B3-Motion>", self._pan)
@@ -92,7 +93,7 @@ class GLView(OpenGLFrame):
         if isinstance(res, Exception) or self.failed:
             (on_ready and on_ready(False)); return
         v, n, f, wire = res
-        self.markers = []; self.plane = None; self._ncol = 0; self._split = None; self.clear_layers(draw=False); self.reset(draw=False)
+        self.markers = []; self.plane = None; self._ncol = 0; self._split_req = None; self.clear_layers(draw=False); self.reset(draw=False)
         if self.ready: self._upload(v, n, f, wire)
         else: self._pending = (v, n, f, wire)
         (on_ready and on_ready(not self.failed))
@@ -105,8 +106,13 @@ class GLView(OpenGLFrame):
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[1]); GL.glBufferData(GL.GL_ARRAY_BUFFER, n.nbytes, n, GL.GL_STATIC_DRAW)
             GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[2]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, f.nbytes, f, GL.GL_STATIC_DRAW)
             self._n = int(f.size); self._nw = 0; self._zmax = float(v[:, 2].max()); self._src = (v, f); self._wire_gen = None
+            if self._split is not None:                                 # index sets belong to the old vertices: drop them
+                try: GL.glDeleteBuffers(2, [int(self._split[0]), int(self._split[3])])
+                except Exception: pass
+                self._split = None
             if wire: self._upload_wire(*wire)
             self._display()
+            if self._split_req is not None and len(self._split_req[0]) == len(f): self.set_split(*self._split_req)
         except Exception as e:
             self.failed = True; self._err = e
     def _upload_wire(self, wv, wf):
@@ -261,12 +267,16 @@ class GLView(OpenGLFrame):
     def set_split(self, keep_face_mask, colour_keep=(0.74, 0.76, 0.80), colour_gone=(1.0, 0.36, 0.42)):
         """Draw the mesh as two parts with plain materials (no colour array): faces where the mask is True in
         colour_keep, the rest in colour_gone. None goes back to one part."""
+        self._split_req = None if keep_face_mask is None else (np.asarray(keep_face_mask, bool), tuple(colour_keep), tuple(colour_gone))
+        if not self.ready or self.failed: return                       # applied by _upload once the context exists
         try:
             self.tkMakeCurrent()
             if self._split is not None:
                 GL.glDeleteBuffers(2, [int(self._split[0]), int(self._split[3])]); self._split = None
             if keep_face_mask is None or getattr(self, "_src", None) is None: self.draw(); return
             f = np.asarray(self._src[1]); m = np.asarray(keep_face_mask, bool)
+            if len(m) != len(f) or (f.size and int(f.max()) >= len(self._src[0])):
+                self._err = "split mismatch: mask %d faces %d verts %d" % (len(m), len(f), len(self._src[0])); self.draw(); return
             fa = np.ascontiguousarray(f[m], dtype=np.uint32); fb = np.ascontiguousarray(f[~m], dtype=np.uint32)
             ibos = GL.glGenBuffers(2)
             GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, ibos[0]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, max(4, fa.nbytes), fa if fa.size else None, GL.GL_STATIC_DRAW)
