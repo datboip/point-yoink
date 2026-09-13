@@ -2411,7 +2411,7 @@ class App(ctk.CTk):
         box=ctk.CTkFrame(card, fg_color="#0a0c10", corner_radius=10); box.grid(row=1,column=0, sticky="nsew", padx=14, pady=4)
         box.grid_columnconfigure(0, weight=1); box.grid_rowconfigure(0, weight=1)
         view=self._new_view(box); view.grid(row=0,column=0, sticky="nsew", padx=4, pady=4)
-        if not hasattr(view, "set_colors"):
+        if not hasattr(view, "set_split"):
             t.destroy(); self._dialogs.pop("cut", None); self._basing=True; self._open_loader("Base removal", "Opening the cut-plane tool…")
             threading.Thread(target=self._base_worker, args=(name, src, node), daemon=True).start(); return
         load=ctk.CTkLabel(box, text="Loading the 3D view…", text_color=MUT, font=ctk.CTkFont(size=14), fg_color="#0a0c10"); load.grid(row=0,column=0, sticky="nsew", padx=4, pady=4); load.lift()
@@ -2437,7 +2437,7 @@ class App(ctk.CTk):
             st["job"]=None
             if st["H"] is None: return
             keep=(st["H"]>st["cut"]) if st["keep_above"] else (st["H"]<st["cut"])
-            cols=np.where(keep[:,None], KEEP, GONE).astype(np.float32); view.set_colors(cols)
+            f=np.asarray(view._src[1]); view.set_split(keep[f].all(axis=1), tuple(KEEP), tuple(GONE))   # two plain materials: nothing for the card to lose
             import shade
             n=st["n"]; V=st["V"]; c_w=V.mean(0)+n*(st["cut"]-V.mean(0).dot(n))
             cv=shade.world_to_view(c_w, view.tf); nv=shade.world_to_view(c_w+n*10.0, view.tf)-cv

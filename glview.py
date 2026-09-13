@@ -28,6 +28,7 @@ class GLView(OpenGLFrame):
         self.on_pick = None                    # callback(world_xyz_mm, view_xyz) for a plain left click
         self._press_at = None
         self._cvbo = None; self._ncol = 0      # optional per-vertex colours (set_colors)
+        self._split = None                     # optional (ibo_a, n_a, colour_a, ibo_b, n_b, colour_b): the mesh drawn as two parts
         self.plane = None                      # optional translucent quad: (centre_view_xyz, normal_view_xyz, half_size)
         self.bind("<ButtonPress-1>", self._press); self.bind("<B1-Motion>", self._rotate)
         self.bind("<ButtonPress-3>", self._press); self.bind("<B3-Motion>", self._pan)
@@ -91,7 +92,7 @@ class GLView(OpenGLFrame):
         if isinstance(res, Exception) or self.failed:
             (on_ready and on_ready(False)); return
         v, n, f, wire = res
-        self.markers = []; self.plane = None; self._ncol = 0; self.clear_layers(draw=False); self.reset(draw=False)
+        self.markers = []; self.plane = None; self._ncol = 0; self._split = None; self.clear_layers(draw=False); self.reset(draw=False)
         if self.ready: self._upload(v, n, f, wire)
         else: self._pending = (v, n, f, wire)
         (on_ready and on_ready(not self.failed))
@@ -161,7 +162,14 @@ class GLView(OpenGLFrame):
                     GL.glEnableClientState(GL.GL_COLOR_ARRAY); GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._cvbo); GL.glColorPointer(3, GL.GL_FLOAT, 0, None)
                 GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[0]); GL.glVertexPointer(3, GL.GL_FLOAT, 0, None)
                 GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[1]); GL.glNormalPointer(GL.GL_FLOAT, 0, None)
-                GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[2]); GL.glDrawElements(GL.GL_TRIANGLES, self._n, GL.GL_UNSIGNED_INT, None)
+                if self._split is not None:
+                    ia, na, ca, ib, nb, cb = self._split
+                    for ibo, cnt, col in ((ia, na, ca), (ib, nb, cb)):
+                        if not cnt: continue
+                        GL.glMaterialfv(GL.GL_FRONT_AND_BACK, GL.GL_AMBIENT_AND_DIFFUSE, col + (1.0,))
+                        GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, ibo); GL.glDrawElements(GL.GL_TRIANGLES, cnt, GL.GL_UNSIGNED_INT, None)
+                else:
+                    GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[2]); GL.glDrawElements(GL.GL_TRIANGLES, self._n, GL.GL_UNSIGNED_INT, None)
                 GL.glDisableClientState(GL.GL_VERTEX_ARRAY); GL.glDisableClientState(GL.GL_NORMAL_ARRAY)
                 if use_col: GL.glDisableClientState(GL.GL_COLOR_ARRAY); GL.glDisable(GL.GL_COLOR_MATERIAL)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0); GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
@@ -248,6 +256,23 @@ class GLView(OpenGLFrame):
             if self._cvbo is None: self._cvbo = int(GL.glGenBuffers(1))
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._cvbo); GL.glBufferData(GL.GL_ARRAY_BUFFER, rgb.nbytes, rgb, GL.GL_DYNAMIC_DRAW)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0); self._ncol = len(rgb); self.draw()
+        except Exception as e:
+            self._err = e
+    def set_split(self, keep_face_mask, colour_keep=(0.74, 0.76, 0.80), colour_gone=(1.0, 0.36, 0.42)):
+        """Draw the mesh as two parts with plain materials (no colour array): faces where the mask is True in
+        colour_keep, the rest in colour_gone. None goes back to one part."""
+        try:
+            self.tkMakeCurrent()
+            if self._split is not None:
+                GL.glDeleteBuffers(2, [int(self._split[0]), int(self._split[3])]); self._split = None
+            if keep_face_mask is None or getattr(self, "_src", None) is None: self.draw(); return
+            f = np.asarray(self._src[1]); m = np.asarray(keep_face_mask, bool)
+            fa = np.ascontiguousarray(f[m], dtype=np.uint32); fb = np.ascontiguousarray(f[~m], dtype=np.uint32)
+            ibos = GL.glGenBuffers(2)
+            GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, ibos[0]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, max(4, fa.nbytes), fa if fa.size else None, GL.GL_STATIC_DRAW)
+            GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, ibos[1]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, max(4, fb.nbytes), fb if fb.size else None, GL.GL_STATIC_DRAW)
+            GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
+            self._split = (int(ibos[0]), int(fa.size), tuple(colour_keep), int(ibos[1]), int(fb.size), tuple(colour_gone)); self.draw()
         except Exception as e:
             self._err = e
     def add_layer(self, path, matrix=None, colour=(1.0, 0.55, 0.25), on_ready=None):
