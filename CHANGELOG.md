@@ -3,6 +3,12 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.24 (dev, 2026-09-13)
+- **Live view from the MIRACO over USB.** Put the MIRACO in PC mode and Live
+  view shows its depth, both IR cameras and the colour camera, the same panel
+  the RANGE uses. Nothing from Revopoint needed. The WiFi position feed is
+  still there as a separate source.
+
 ## 0.9.23 (dev, 2026-09-13)
 - The window comes in invisible, paints completely, then cross-fades with the
   splash; no more watching it build itself around the splash.

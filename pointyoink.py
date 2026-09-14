@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.23-pre"
+APP = "PointYoink"; VERSION = "0.9.24-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1200,10 +1200,10 @@ class App(ctk.CTk):
         lv.grid_columnconfigure(0, weight=1); lv.grid_rowconfigure(1, weight=1)
         bar=ctk.CTkFrame(lv, fg_color="transparent"); bar.grid(row=0,column=0, sticky="ew", padx=10, pady=(10,4))
         ctk.CTkLabel(bar, text="Source", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
-        self.live_src=ctk.CTkSegmentedButton(bar, values=["MIRACO  (WiFi)", "RANGE  (USB)"], command=self._live_src_changed, height=30, corner_radius=15,
+        self.live_src=ctk.CTkSegmentedButton(bar, values=["MIRACO  (PC mode, USB)", "RANGE  (USB)", "MIRACO position  (WiFi)"], command=self._live_src_changed, height=30, corner_radius=15,
                                              fg_color=CARD2, selected_color=AC, selected_hover_color=AC_H, unselected_color=CARD2, unselected_hover_color=STROKE,
                                              text_color=TX, font=ctk.CTkFont(size=12))
-        self.live_src.pack(side="left", padx=10); self.live_src.set("MIRACO  (WiFi)")
+        self.live_src.pack(side="left", padx=10); self.live_src.set("MIRACO  (PC mode, USB)")
         # -- MIRACO source --
         mf=ctk.CTkFrame(lv, fg_color="transparent"); mf.grid(row=1,column=0, sticky="nsew"); self.live_miraco=mf
         mf.grid_columnconfigure(0, weight=1); mf.grid_rowconfigure(1, weight=1)
@@ -3725,7 +3725,7 @@ class App(ctk.CTk):
 
     # ---- Live tab sources ----
     def _live_src_changed(self, v):
-        if "RANGE" in v: self.live_miraco.grid_remove(); self.live_range.grid()
+        if "USB" in v: self.live_miraco.grid_remove(); self.live_range.grid()      # the camera panel serves the RANGE and the MIRACO in PC mode alike
         else: self.live_range.grid_remove(); self.live_miraco.grid()
     # ---- RANGE: tethered scanner as a live camera source (range.py) ----
     def range_toggle(self):
@@ -3739,18 +3739,24 @@ class App(ctk.CTk):
             import range as R
             dev=R.find_device()
             if not dev or not dev.get("node"):
-                self.q.put(("range_err", "RANGE not detected. Plug it into a direct USB port (not a hub) and try again. If it just disconnected, it's rebooting: give it ~10 s.")); return
-            if dev["on_hub"]:
+                self.q.put(("range_err", "No scanner cameras on USB. MIRACO: choose \"Use MIRACO in PC Mode\" on its screen when you plug it in. RANGE: a direct USB port (not a hub); if it just disconnected, it's rebooting: give it ~10 s.")); return
+            name=dev.get("name","RANGE"); w,h=dev.get("w",640), dev.get("h",400)
+            if dev["on_hub"] and dev.get("pid")=="110c":                 # the MIRACO has its own battery; the RANGE does not
                 self.q.put(("range_err", "RANGE is on a USB hub port (500 mA). It needs 5V/1A: move it to a rear motherboard port.")); return
-            xu=R.XU(dev["node"]); fw=xu.firmware()
-            if not fw:
+            xu=R.XU(dev["node"])
+            try: fw=xu.firmware()
+            except Exception as e: log_line("%s: firmware read failed: %s" % (name, e)); fw=""
+            if not fw and dev.get("pid")=="110c":
                 self.q.put(("range_err", "RANGE is still booting - give it a few seconds and try again.")); return
-            intr=xu.intrinsics()
-            xu.projector(True); time.sleep(2.5)
-            st=R.DepthStream(dev["node"]); st.start()
+            try: intr=xu.intrinsics(w, h)
+            except Exception as e: log_line("%s: intrinsics: %s" % (name, e)); intr=None
+            try: xu.projector(True)
+            except Exception as e: log_line("%s: projector: %s" % (name, e))
+            time.sleep(2.5)
+            st=R.DepthStream(dev["node"], w, h); st.start()
             col=None
             if dev.get("rgb_node"):
-                col=R.ColorStream(dev["rgb_node"]); col.start()
+                col=R.ColorStream(dev["rgb_node"], dev.get("rgb_w",1280), dev.get("rgb_h",800), show=(w, h)); col.start()
             self.q.put(("range_ok", (dev, xu, intr, st, col, fw)))
         except Exception as e:
             log_error("range-connect", e); self.q.put(("range_err", "RANGE connect failed: %s" % e))
@@ -4642,7 +4648,7 @@ class App(ctk.CTk):
                     dev,xu,intr,st,col,fw=rest[0]
                     self._range=xu; self._range_intr=intr; self._range_stream=st; self._range_color=col; self._range_on=True; self._range_busy=False
                     self.range_btn.configure(text="■ Disconnect", fg_color="#3a2530", state="normal")
-                    self.range_status.configure(text="RANGE connected  ·  usb %s  ·  firmware %s  ·  projector on%s" % (dev["usb_path"], fw, "" if col else "  ·  no color camera found"), text_color=OK)
+                    self.range_status.configure(text="%s connected  ·  usb %s  ·  firmware %s  ·  projector on%s" % (dev.get("name","RANGE"), dev["usb_path"], fw or "?", "" if col else "  ·  no color camera found"), text_color=OK)
                     self.set_status("RANGE live"); self._range_layout(); self._range_draw()
                 elif kind=="range_err":
                     self._range_busy=False; self.range_btn.configure(state="normal")

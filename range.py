@@ -14,6 +14,9 @@ import os, glob, struct, fcntl, ctypes, time, subprocess, threading
 import numpy as np
 
 VID, PID = "2207", "110c"
+# the same UVC + extension-unit design serves several Revopoint scanners; PID -> (name, depth w, depth h, rgb w, rgb h)
+DEVICES = {"110c": ("RANGE", 640, 400, 1280, 800),
+           "0005": ("MIRACO (PC mode)", 800, 600, 2000, 1500)}
 W, H = 640, 400
 FRAME_BYTES = W * H * 2
 DEPTH_SCALE = 0.1                    # mm per raw unit
@@ -51,14 +54,17 @@ def find_device():
     """-> {"usb_path","on_hub","node","rgb_node","serial"} or None. on_hub = behind a hub (power risk)."""
     for d in glob.glob("/sys/bus/usb/devices/*/"):
         try:
-            if open(d + "idVendor").read().strip() != VID or open(d + "idProduct").read().strip() != PID:
-                continue
+            if open(d + "idVendor").read().strip() != VID: continue
+            pid = open(d + "idProduct").read().strip()
+            if pid not in DEVICES: continue
+            name, w, h, rw, rh = DEVICES[pid]
             path = os.path.basename(d.rstrip("/"))
             serial = open(d + "serial").read().strip() if os.path.exists(d + "serial") else ""
             on_hub = "." in path.split("-", 1)[1] if "-" in path else False   # "1-5.2" hub vs "3-4" root
             nodes = _revo_nodes()
             return {"usb_path": path, "on_hub": on_hub, "node": _node_with("Y16", nodes),
-                    "rgb_node": _node_with("MJPG", nodes), "serial": serial}
+                    "rgb_node": _node_with("MJPG", nodes), "serial": serial, "pid": pid, "name": name,
+                    "w": w, "h": h, "rgb_w": rw, "rgb_h": rh}
         except Exception:
             continue
     return None
@@ -98,11 +104,11 @@ class XU:
         v = "1" if on else "0"
         for reg in ("0xb00", "0xb01", "0x922"):     # LED master, IR projector, laser enable
             self.execute("echo s %s %s >/dev/rk_preisp" % (reg, v)); time.sleep(0.3)
-    def intrinsics(self):
+    def intrinsics(self, w=W, h=H):
         pl = self.read_file("/data/camparam/Pl.bin")
         if len(pl) < 40: raise RuntimeError("could not read Pl.bin (%d bytes)" % len(pl))
         cw, ch = struct.unpack_from("<HH", pl, 0); m = struct.unpack_from("<9f", pl, 4)
-        sx, sy = W / cw, H / ch
+        sx, sy = w / cw, h / ch
         return {"calib_w": cw, "calib_h": ch, "fx": m[0] * sx, "fy": m[4] * sy, "cx": m[2] * sx, "cy": m[5] * sy}
 
 class _PipeStream:
@@ -148,22 +154,23 @@ class DepthStream(_PipeStream):
     """'Y16 ' 640x800 on the depth node = three images stacked per frame:
     rows 0-399 depth (uint16, x0.1 mm), then left IR (uint8), then right IR (uint8).
     .latest = depth (H,W) uint16, .ir_left / .ir_right = (H,W) uint8."""
-    FRAME = W * H * 2 + W * H * 2            # depth u16 + two u8 IR images
-    def __init__(self, node):
-        super().__init__(node, "Y16 ", W, 2 * H); self.ir_left = None; self.ir_right = None
+    def __init__(self, node, w=W, h=H):
+        super().__init__(node, "Y16 ", w, 2 * h); self.ir_left = None; self.ir_right = None
+        self.w, self.h = w, h; self.FRAME = w * h * 2 + w * h * 2            # depth u16 + two u8 IR images
     def _feed(self, buf):
+        w, h = self.w, self.h
         while len(buf) >= self.FRAME:
             fr = buf[:self.FRAME]; buf = buf[self.FRAME:]
-            d = np.frombuffer(fr, dtype=np.uint16, count=W * H).reshape(H, W).copy()
+            d = np.frombuffer(fr, dtype=np.uint16, count=w * h).reshape(h, w).copy()
             d[0, :HEADER_PIXELS] = 0
-            self.ir_left = np.frombuffer(fr, dtype=np.uint8, count=W * H, offset=W * H * 2).reshape(H, W)
-            self.ir_right = np.frombuffer(fr, dtype=np.uint8, count=W * H, offset=W * H * 3).reshape(H, W)
+            self.ir_left = np.frombuffer(fr, dtype=np.uint8, count=w * h, offset=w * h * 2).reshape(h, w)
+            self.ir_right = np.frombuffer(fr, dtype=np.uint8, count=w * h, offset=w * h * 3).reshape(h, w)
             self.latest = d; self.count += 1
         return buf
 
 class ColorStream(_PipeStream):
     """MJPG 1280x800 from the RGB node, decoded at half size. .latest = (H,W,3) uint8 RGB."""
-    def __init__(self, node): super().__init__(node, "MJPG", 1280, 800)
+    def __init__(self, node, w=1280, h=800, show=(W, H)): super().__init__(node, "MJPG", w, h); self.show = show
     def _feed(self, buf):
         import io
         from PIL import Image
@@ -174,7 +181,7 @@ class ColorStream(_PipeStream):
             if b < 0: return buf[a:]
             jpg = buf[a:b + 2]; buf = buf[b + 2:]
             try:
-                im = Image.open(io.BytesIO(jpg)); im.draft("RGB", (W, H))
+                im = Image.open(io.BytesIO(jpg)); im.draft("RGB", self.show)
                 self.latest = np.asarray(im.convert("RGB")); self.count += 1
             except Exception:
                 pass
@@ -182,7 +189,7 @@ class ColorStream(_PipeStream):
 def backproject(frame, intr):
     """(H,W) uint16 depth -> (N,3) points in mm (camera frame)."""
     Z = frame.astype(np.float32) * DEPTH_SCALE; m = Z > 0
-    v, u = np.mgrid[0:H, 0:W]
+    v, u = np.mgrid[0:frame.shape[0], 0:frame.shape[1]]
     X = (u[m] - intr["cx"]) * Z[m] / intr["fx"]; Y = (v[m] - intr["cy"]) * Z[m] / intr["fy"]
     return np.stack([X, Y, Z[m]], 1)
 
