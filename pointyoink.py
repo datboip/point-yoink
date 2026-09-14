@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.40-pre"
+APP = "PointYoink"; VERSION = "0.9.41-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -866,7 +866,7 @@ class App(ctk.CTk):
             # on a multi-monitor desk the two would otherwise open on different screens
             mx,my,mw,mh=self._pointer_monitor()
             m=re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", self.cfg.get("geometry","") or "")
-            if m:
+            if m and int(m.group(1))>=400 and int(m.group(2))>=400:      # ignore a degenerate saved size (e.g. old "1x1" corruption) rather than centre on it
                 gw,gh,gx,gy=map(int, m.groups()); cx,cy=gx+gw//2, gy+gh//2
             else:
                 cx,cy=mx+mw//2, my+mh//2
@@ -1801,9 +1801,19 @@ class App(ctk.CTk):
         ctk.CTkButton(row, text="Report on GitHub", corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX,
                       command=lambda: subprocess.Popen(["xdg-open", GITHUB+"/issues/new"])).pack(side="right", padx=4)
 
+    def _safe_geometry(self):
+        """self.geometry(), but never a degenerate size (e.g. "1x1") caught mid-startup before the
+        window has actually been sized/mapped - keep whatever was there before instead of
+        overwriting a good saved size with garbage that then loads tiny next time."""
+        g=self.geometry()
+        try:
+            w,h=(int(v) for v in g.split("+")[0].split("x"))
+            if w>=400 and h>=400: return g
+        except Exception: pass
+        return self.cfg.get("geometry", g)
     def _persist(self):
         self.cfg.update(dest=self.dest.get(), models_only=self.models_only.get(),
-                        auto_open=self.auto_open.get(), geometry=self.geometry(),
+                        auto_open=self.auto_open.get(), geometry=self._safe_geometry(),
                         exp_stl=self.exp_stl.get(), exp_obj=self.exp_obj.get(), exp_glb=self.exp_glb.get(),
                         fuse_voxel=round(float(self.fuse_voxel.get() or 0.4),2),
                         clean_isolation=self._num(self.clean_iso,15,0,100), clean_fill_holes=self.clean_holes.get(),
@@ -4061,6 +4071,12 @@ class App(ctk.CTk):
             poly=[(pts[0][0], H-4)]+pts+[(pts[-1][0], H-4)]
             cv.create_polygon(*[c for xy in poly for c in xy], fill="#1d3f66", outline="")
             cv.create_line(*[c for xy in pts for c in xy], fill=AC, width=2, smooth=True)
+        # a thin marker for overall transfer progress, separate from the speed history: the line
+        # above always fills the width (recent activity), so without this the chart reads as
+        # "100% done" no matter how far the transfer actually is.
+        px=4+min(1.0, frac)*(W-8)
+        cv.create_line(px, 0, px, H, fill="#f2c14e", width=2)
+        cv.create_polygon(px-5, 0, px+5, 0, px, 7, fill="#f2c14e", outline="")
         self._wifi_peak=max(r for _,r in sm)          # shown in the stats row, not over the curve
     def _wifi_set_code(self, code):
         for tl,ch in zip(self.wifi_tiles, code): tl.configure(text=ch)

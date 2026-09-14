@@ -3,6 +3,17 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.41 (dev, 2026-09-14)
+- Fixed a corrupted saved window size (a "1x1" geometry got persisted,
+  probably from a restart at the wrong moment) that made the window open
+  tiny and threw the splash's centering off-screen. _persist() now refuses
+  to save a degenerate size and keeps the last good one instead, and the
+  splash ignores a bad saved size rather than centering on it.
+- The WiFi speed graph's 0.9.39 full-width redraw fixed the ugly blank
+  space, but lost any sense of overall progress - it always looked "100%
+  done" regardless of actual transfer percentage. Added a thin marker line
+  showing real progress on top of the speed history.
+
 ## 0.9.40 (dev, 2026-09-14)
 - Fixes from an external audit, each verified against the real code before
   changing anything:
