@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.20-pre"
+APP = "PointYoink"; VERSION = "0.9.21-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -800,7 +800,7 @@ class App(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         _preload()
         self.refresh_loop(); self.drain_loop(); self._pulse()
-        self.after(9000, self._close_splash)   # safety fallback; the setup checks normally close it
+        self.after(60000, self._close_splash)  # last-resort fallback only; the checks close it, and nothing heavy runs before that
         self._when_ready(self._wifi_recover)   # offer a stranded WiFi transfer, if any: after the splash, never before
 
     # ---- splash + animation ----
@@ -1833,6 +1833,8 @@ class App(ctk.CTk):
 
     # ---- polling ----
     def refresh_loop(self):
+        if getattr(self, "_splash", None):                       # the loader owns the main thread until it is at 100%
+            self.after(300, self.refresh_loop); return
         if not self.pulling and not self._wifi:
             st,serial=usb_state(); self.serial=serial; mounted=quick_mounted()
             if not mounted and self.listed_src!="local": self.listed=False; self.start_listing()   # show what's on this PC

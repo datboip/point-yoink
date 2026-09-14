@@ -3,6 +3,10 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.21 (dev, 2026-09-13)
+- The main window never appears before the loader reaches 100%: the project
+  listing and everything after it wait for the splash to close.
+
 ## 0.9.20 (dev, 2026-09-13)
 - The splash opens centred on where the main window will appear, so both are
   on the same monitor.
