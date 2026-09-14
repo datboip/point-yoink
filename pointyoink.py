@@ -9,7 +9,10 @@ import os, re, json, time, glob, shutil, threading, subprocess, queue, faulthand
 # did, so a single call could spawn one BLAS thread per CPU core and peg the whole machine for
 # several seconds (input lag system-wide, even outside this app - GPU video keeps playing since
 # it doesn't need the starved CPU scheduler). setdefault so an explicit user override still wins.
-for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+# RAYON_NUM_THREADS covers fast_simplification (Rust/rayon, used for every mesh-view decimation) -
+# a real gap in the original cap, found 2026-09-14: the BLAS-only vars above never touched it, so a
+# single decimation could still burst every core even with those set.
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "RAYON_NUM_THREADS"):
     os.environ.setdefault(_v, "2")
 faulthandler.register(signal.SIGUSR1, all_threads=True)      # kill -USR1 <pid> prints every thread's stack to stderr: for diagnosing a freeze
 import tkinter as tk
@@ -17,7 +20,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.46-pre"
+APP = "PointYoink"; VERSION = "0.9.47-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2286,7 +2289,7 @@ class App(ctk.CTk):
                 log_line("GL view failed in this window (%s); switching to the software view" % getattr(self.mv, "_err", ""))
                 try: self.mv.destroy()
                 except Exception: pass
-                self.mv=self._make_mv(software=True); self.mv.wire=(self.shade_mode=="wire"); self.mv.load(path, ready); return
+                self.mv=self._make_mv(software=True); self.mv.wire=(self.shade_mode=="wire"); self.mv.load(path, ready, max_faces=300000); return
             self._preview_idle()
             if ok:
                 self.big.grid_remove(); self.mv.grid()
@@ -2296,7 +2299,11 @@ class App(ctk.CTk):
                 # failure was indistinguishable from a load that's just slow - found 2026-09-14.
                 log_line("live 3D view failed to load for %s: %s" % (k, getattr(self.mv, "_err", "unknown")))
                 self.big_hint.configure(text="Still image · couldn't load the live 3D view (see Help > Log)")
-        self.mv.load(path, ready)
+        # GLView's own default cap is 3M faces - for a casual rotate/zoom preview (not the precise
+        # cut-plane tool, which already caps at 600k) that meant a 500-650k triangle mesh never got
+        # decimated at all, paying full uncapped normal-computation cost every time a scan was
+        # selected: measured 16-37s, consistently, not a one-off - found 2026-09-14.
+        self.mv.load(path, ready, max_faces=300000)
     def _show_stats(self, st):
         v,f=st
         if f: self.renders_lbl.configure(text="3D model · %s triangles"%_kfmt(f))

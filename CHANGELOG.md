@@ -3,6 +3,21 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.47 (dev, 2026-09-14)
+- Capped the main interactive 3D preview's mesh detail at 300,000 faces
+  (matching Remove Base's existing cap, which the main preview never had -
+  it fell back to GLView's 3,000,000-face default, meaning a 500-650k
+  triangle scan never got decimated at all). Measured the actual mesh
+  load and normal computation at well under a second either way, so this
+  is a safety margin for larger scans, not a proven fix for tonight's
+  reported stall.
+- Added RAYON_NUM_THREADS to the thread cap set at startup: the BLAS-only
+  variables added earlier never touched fast_simplification (Rust/rayon),
+  a real gap. Measured directly that this library runs single-threaded
+  for a realistic decimation regardless, so it wasn't actually bursting
+  cores either - added anyway since it costs nothing and closes a real
+  hole in the original fix's coverage.
+
 ## 0.9.46 (dev, 2026-09-14)
 - Fixed "Still image - the live 3D view is loading" staying up forever with
   no way to tell whether it's genuinely still loading or already failed:
