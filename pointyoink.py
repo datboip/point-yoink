@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.38-pre"
+APP = "PointYoink"; VERSION = "0.9.39-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -4025,16 +4025,14 @@ class App(ctk.CTk):
         try: W=max(50, cv.winfo_width()); H=int(cv.cget("height"))
         except Exception: return
         cv.delete("all")
-        for gy in (0.25,0.5,0.75): cv.create_line(0, H*gy, W, H*gy, fill="#161a22")
+        for gy in (0.25,0.5,0.75): cv.create_line(0, H*gy, W, H*gy, fill="#161a22")   # always visible - nothing paints over them anymore
         top=max(r for _,r in sm)*1.15 or 1.0
-        pts=[(4+f*(W-8), H-4-(r/top)*(H-14)) for f,r in sm]
+        n=len(sm)
+        pts=[(4+(i/(n-1) if n>1 else 0)*(W-8), H-4-(r/top)*(H-14)) for i,(f,r) in enumerate(sm)]   # spread across the full width by sample, not by overall transfer progress - no blank "not there yet" gap
         if len(pts)>=2:
             poly=[(pts[0][0], H-4)]+pts+[(pts[-1][0], H-4)]
             cv.create_polygon(*[c for xy in poly for c in xy], fill="#1d3f66", outline="")
             cv.create_line(*[c for xy in pts for c in xy], fill=AC, width=2, smooth=True)
-        x=4+min(1.0, frac)*(W-8)
-        cv.create_rectangle(x, 0, W, H, fill="#0d0f14", outline="")       # the unfilled remainder
-        cv.create_line(x, 0, x, H, fill=AC, width=1)
         self._wifi_peak=max(r for _,r in sm)          # shown in the stats row, not over the curve
     def _wifi_set_code(self, code):
         for tl,ch in zip(self.wifi_tiles, code): tl.configure(text=ch)
@@ -4086,7 +4084,7 @@ class App(ctk.CTk):
             self.wifi_state.configure(text="Code accepted  ·  receiving", text_color=OK); self.set_status("WiFi: receiving…")
             try:
                 self.wifi_hint.pack_forget(); self.wifi_recv.pack(fill="x", pady=(14,0)); self.wifi_newcode.configure(state="disabled")
-                self.wifi_top.geometry("520x560")     # room for the thumbnail, progress and stats rows
+                self.wifi_top.geometry("520x600")     # room for the thumbnail, progress and stats rows (measured: card needs ~590 with its padding)
             except Exception: pass
         elif kind=="progress":
             now=time.time()
@@ -4097,7 +4095,7 @@ class App(ctk.CTk):
             left=(tot-info["bytes"])/avg if (tot and avg>0) else None
             self.wifi_stats["got"].configure(text=("%.0f%%  ·  %.0f / %.0f MB" % (100*frac, info["bytes"]/1048576, tot/1048576)) if tot else "%.0f MB" % (info["bytes"]/1048576))
             self.wifi_stats["files"].configure(text=str(info["files"]))
-            self.wifi_stats["rate"].configure(text="%.0f MB/s  ·  peak %.0f" % (rate/1048576, getattr(self, "_wifi_peak", rate)/1048576))
+            self.wifi_stats["rate"].configure(text="%.0f MB/s  ·  peak %.0f MB/s" % (rate/1048576, getattr(self, "_wifi_peak", rate)/1048576))
             self.wifi_stats["eta"].configure(text=("%d s" % left if left<90 else "%d min" % (left/60)) if left is not None else "-")
             self.set_status("WiFi: %.0f%%" % (100*frac))
             if not self.wifi_proj.cget("text") or not getattr(self, "_wifi_thumb_ok", False):   # name as soon as the folder exists; the picture arrives later in the transfer, keep trying

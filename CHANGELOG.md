@@ -3,6 +3,19 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.39 (dev, 2026-09-14)
+- Fixed the WiFi receive dialog's "speed"/"time left" row captions getting
+  clipped: the connected-state window was a fixed 520x560, but the actual
+  content needs ~590px with its padding. Measured the real requirement and
+  set it to 600.
+- Fixed "peak" in the speed stat missing its unit ("peak 44" -> "peak 44
+  MB/s").
+- Redrew the speed graph: it used to scale its x-axis by overall transfer
+  progress, leaving a big painted-over blank rectangle (and hidden
+  reference gridlines) for whatever hadn't arrived yet. It now spreads
+  whatever samples exist across the full width, so the gridlines stay
+  visible throughout and the chart never shows a large empty box.
+
 ## 0.9.38 (dev, 2026-09-14)
 - Fixed the app pegging every CPU core for 10-20 seconds during things like
   a post-delete refresh, freezing keyboard input system-wide (video kept
