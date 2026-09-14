@@ -108,11 +108,10 @@ class GLView(OpenGLFrame):
             (on_ready and on_ready(False)); return
         v, n, f, wire = res
         self.markers = []; self.plane = None; self._ncol = 0; self._split_req = None; self.clear_layers(draw=False); self.reset(draw=False)
-        if self.ready: self._upload(v, n, f, wire)
-        else: self._pending = (v, n, f, wire)
-        (on_ready and on_ready(not self.failed))
-    def _upload(self, v, n, f, wire):
-        if not self._mapped(): self._pending = (v, n, f, wire); return       # done on <Map>
+        if self.ready: self._upload(v, n, f, wire, on_ready)
+        else: self._pending = (v, n, f, wire, on_ready)   # on_ready fires later, from _upload(), once it actually runs (initgl() or _on_map())
+    def _upload(self, v, n, f, wire, on_ready=None):
+        if not self._mapped(): self._pending = (v, n, f, wire, on_ready); return       # done on <Map>
         try:
             self.tkMakeCurrent()
             if self._vbo is not None: GL.glDeleteBuffers(5, self._vbo)   # (a numpy array: never test it for truth)
@@ -128,8 +127,10 @@ class GLView(OpenGLFrame):
             if wire: self._upload_wire(*wire)
             self._display()
             if self._split_req is not None and len(self._split_req[0]) == len(f): self.set_split(*self._split_req)
+            (on_ready and on_ready(True))     # only now is view._src actually set - firing this any earlier is a race (found 2026-09-14)
         except Exception as e:
             self.failed = True; self._err = e
+            (on_ready and on_ready(False))
     def _upload_wire(self, wv, wf):
         GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[3]); GL.glBufferData(GL.GL_ARRAY_BUFFER, wv.nbytes, wv, GL.GL_STATIC_DRAW)
         GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[4]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, wf.nbytes, wf, GL.GL_STATIC_DRAW)
