@@ -3,6 +3,14 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.35 (dev, 2026-09-14)
+- Live view now notices when the scanner disappears mid-session (unplugged,
+  powered off, or a stream that just stopped producing frames) instead of
+  leaving the panel stuck showing the last frame forever with a dead
+  Connect/Disconnect button. It resets its own connection state, cleans up
+  the streams, and tells you to plug the scanner back in and reconnect -
+  the physical USB/device itself is never touched, only our side's state.
+
 ## 0.9.34 (dev, 2026-09-13)
 - Fixed a real ~10 minute stall on MIRACO connect introduced in 0.9.33: the
   three new color-alignment reads (LC_RT.bin/Prgb.bin/Distort.bin) had no

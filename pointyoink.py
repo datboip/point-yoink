@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.34-pre"
+APP = "PointYoink"; VERSION = "0.9.35-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3842,12 +3842,25 @@ class App(ctk.CTk):
         try:
             import numpy as np
             import range as R
+            st=self._range_stream; col=self._range_color
+            # a stream's own pump saw EOF (its v4l2-ctl process died - unplugged, powered off,
+            # crashed) or its device node just vanished. WE didn't ask for this (a deliberate
+            # disconnect already set _range_on False before this could run), so it's a surprise -
+            # reset the connection state instead of leaving stale frames on screen forever.
+            if (st is not None and (not st._on or not os.path.exists(st.node))) or \
+               (col is not None and (not col._on or not os.path.exists(col.node))):
+                self._range_lost("scanner disconnected"); return
+            if st and st.latest is not None:
+                n=st.count
+                if n != getattr(self, "_range_last_n", None):
+                    self._range_last_n=n; self._range_stale_t0=time.time()
+                elif time.time()-getattr(self, "_range_stale_t0", time.time()) > 8:
+                    self._range_lost("no frames for 8s"); return
             v=self.range_view.get()
             if v=="All":
                 for key,lab in self.range_tiles.items(): self._range_show(lab, self._range_frame(key), pad=6)
             else:
                 self._range_show(self.range_single, self._range_frame(v))
-            st=self._range_stream; col=self._range_color
             if st and st.latest is not None:
                 fr=st.latest; nz=fr[fr>0]
                 self.range_info.configure(text="depth frames %d  ·  color frames %d  ·  valid %.0f%%  ·  depth %.0f-%.0f mm (median %.0f)" % (
@@ -3856,6 +3869,26 @@ class App(ctk.CTk):
             else: self._range_last_zones=None; self._range_dist_draw(None)
         except Exception as e: log_error("range-draw", e)
         self.after(80, self._range_draw)
+    def _range_lost(self, reason):
+        """Unexpected loss of the scanner (unplugged, powered off, or a stalled stream) while we
+        thought we were connected: reset all our state and the UI immediately so nothing is left
+        stuck showing stale frames or a dead Connect button - the actual cable/USB is untouched,
+        this only cleans up our own side."""
+        if not self._range_on: return
+        self._range_on=False; self._range_busy=False
+        st=self._range_stream; col=self._range_color
+        self._range=None; self._range_stream=None; self._range_color=None
+        self._range_rgb_intr=None; self._range_extr=None; self._range_rgb_dist=None
+        self.range_btn.configure(text="▶ Connect", fg_color=AC, state="normal")
+        self.range_status.configure(text="Lost connection to the scanner (%s). Plug it back in, then hit Connect." % reason, text_color=WARN)
+        self.set_banner("Lost connection to the scanner - it may have been unplugged or powered off. Reconnect it, then hit Connect again.", WARN)
+        self.set_status("")
+        def _cleanup():                    # the process is already gone in the usual case; this is just belt-and-suspenders
+            for s in (col, st):
+                if not s: continue
+                try: s.stop()
+                except Exception as e: log_error("range-lost-cleanup", e)
+        threading.Thread(target=_cleanup, daemon=True).start()
     def _range_dist_draw(self, zones):
         """The scanner's own distance strip, recreated: a horizontal bar of Too Near/Excellent/Good/
         Far/Too Far, filled by the live share of depth pixels in each zone."""
