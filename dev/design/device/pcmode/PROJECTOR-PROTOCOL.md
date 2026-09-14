@@ -63,3 +63,19 @@ running our own detector on the IR frames.
 
 Full symbol/string dump and SDK source tree are in scratchpad/rp/ from this session
 (sdk/, bin/new_x64.so, bin/syms.txt) — not committed to the repo (large/binary).
+
+## Physical sensor bar (photo from the user, 2026-09-13)
+camera-bar.jpg: the front sensor strip. Top to bottom: a lens with a lit green indicator, a dark
+lens, a black square window (likely the structured-light emitter, not a lens), then more lenses
+below with a second lit green indicator at the bottom. The user counted about 6 lenses and roughly
+10 small lights total. Matches the SDK finding that MIRACO uniquely has near AND far camera pairs
+(FAR_NEAR_CAMERA_STATE), so there are two stereo IR pairs plus the RGB camera plus the emitter,
+not just one pair like the RANGE.
+
+User's observation: during a live PC-mode session using the RANGE's projector command (0xb00/0xb01/
+0x922), no indicator lit; the instant USB was unplugged, one lit. Read: not evidence the command
+did nothing (we measured real depth, 27-41% valid, in that same session) - more likely evidence it
+is triggering the wrong path (a fallback that gives partial depth without the true laser firing hard
+enough to light its own indicator), consistent with the SDK's per-type gating. The light-on-unplug
+is most likely just the documented reboot-on-stream-stop behaviour (see range.py notes), not caused
+by the projector command succeeding or failing.
