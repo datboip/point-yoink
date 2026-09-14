@@ -3,6 +3,13 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.46 (dev, 2026-09-14)
+- Fixed "Still image - the live 3D view is loading" staying up forever with
+  no way to tell whether it's genuinely still loading or already failed:
+  the failure branch reused the exact same text as the in-progress state,
+  and never logged anything either. Now shows a distinct "couldn't load"
+  message and logs the actual reason.
+
 ## 0.9.45 (dev, 2026-09-14)
 - Fixed the exact bug behind the "Drawing the 3D model…" blank right panel,
   found with a Codex audit: `_panel_refresh`, `_proc_render`, `_next_refresh`,

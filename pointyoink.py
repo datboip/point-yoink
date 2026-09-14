@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.45-pre"
+APP = "PointYoink"; VERSION = "0.9.46-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2292,7 +2292,10 @@ class App(ctk.CTk):
                 self.big.grid_remove(); self.mv.grid()
                 self.big_hint.configure(text="Drag to rotate · scroll to zoom · right-drag to pan · double-click to reset")
             else:
-                self.big_hint.configure(text="Still image · the live 3D view is loading")
+                # this used to reuse the exact "...is loading" text shown WHILE still loading, so a real
+                # failure was indistinguishable from a load that's just slow - found 2026-09-14.
+                log_line("live 3D view failed to load for %s: %s" % (k, getattr(self.mv, "_err", "unknown")))
+                self.big_hint.configure(text="Still image · couldn't load the live 3D view (see Help > Log)")
         self.mv.load(path, ready)
     def _show_stats(self, st):
         v,f=st
