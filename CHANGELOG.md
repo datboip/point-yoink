@@ -3,6 +3,37 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.55 (dev, 2026-09-14)
+- Moved automatic Solid/Wireframe shaded preview rendering out of the Tk process and into an app-owned `shade.py` child process with BLAS/OpenMP thread caps. The GUI now keeps the nicer grid preview behavior without importing/running the heavy mesh renderer inside the UI process.
+
+## 0.9.54 (dev, 2026-09-14)
+- Removed the repeating idle USB refresh probe. PointYoink now does one safe startup device-state check, then waits for explicit USB/Rescan/Refresh actions instead of waking every few seconds while the user is working.
+- Fixed misleading `slow ui: refresh_probe took ~5000 ms` logging; slow UI logs now measure the actual queue handler duration instead of time elapsed until the next queue event.
+
+## 0.9.53 (dev, 2026-09-14)
+- Restored automatic Solid/Wireframe mesh previews by default, while keeping the setting hook to disable them if needed.
+- Removed the hidden full Prepare-page rebuild from ordinary project selection; selecting a project now refreshes only the visible right-side panel unless the full cards view is explicitly opened.
+- Replaced click-time raw-frame glob counting with a cached fast existence check, so selecting scans no longer walks thousands of raw frame files just to update labels/buttons.
+- Prevented combined-model gallery tiles from rendering meshes unless mesh previews are enabled, avoiding surprise mesh work in the gallery loader.
+
+## 0.9.52 (dev, 2026-09-14)
+- Disabled automatic mesh rendering in the main preview and Prepare cards by default. Selecting a project, selecting a scan, startup, and Refresh now keep using cheap scanner/static preview images instead of loading/decimating/rendering mesh files inside the GUI process.
+- Kept explicit 3D actions available: View in 3D still loads the model when the user asks, but background preview rendering no longer starts just because selection changed.
+
+## 0.9.51 (dev, 2026-09-14)
+- Stopped passive refresh from touching the MTP/FUSE mountpoint. The 5-second background poll now reads only sysfs and /proc/self/mountinfo, so a stale jmtpfs mount cannot be hammered every 1.5 seconds while the app is open.
+- Disabled automatic USB mounting from the poll loop; scanner filesystem access now starts only from explicit USB/Rescan/listing actions.
+- Removed the automatic screenshots/recordings load after project refresh; Captures now touches MTP only when the user explicitly refreshes/pulls captures.
+- Made Refresh refresh the current safe source and throttled scanner rescans so repeated clicks cannot machine-gun the MTP mount.
+
+## 0.9.50 (dev, 2026-09-14)
+- Added a small lifecycle safety layer for app-owned child processes: View in 3D, Remove Base, align/register/fuse, mesh info, quick draft builds, cleaning, and full imports are now tracked so app close can terminate them instead of leaving heavy work orphaned.
+- Bounded the UI queue pump so event bursts yield back to Tk instead of monopolizing the UI thread.
+- Snapshotted cleanup/build settings on the Tk thread before workers start, so background workers no longer read live Tk variables.
+- Made loader/base/fuse completion events carry ownership context, preventing stale background work from closing a newer loader or updating the wrong project after selection changes.
+- Moved screenshot USB mount probing off the UI thread and made screenshot refresh clear its busy state on every completion path.
+- Moved the optional Open3D dependency probe into an app-owned background check so the first Build/Combine/Auto click cannot freeze the UI while Python imports Open3D.
+
 ## 0.9.49 (dev, 2026-09-14)
 - The interactive live 3D view no longer auto-loads the instant a scan is
   selected. That was firing on every single click regardless of intent, and

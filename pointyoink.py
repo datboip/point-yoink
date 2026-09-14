@@ -20,7 +20,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.49-pre"
+APP = "PointYoink"; VERSION = "0.9.55-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -230,16 +230,37 @@ def _revo_busdev():
         except Exception: pass
     return None
 
-def quick_mounted():
+def _mountinfo_path(s):
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), s)
+
+def mountpoint_seen(path=MOUNT):
+    """True if the mountpoint is present in /proc/self/mountinfo without touching FUSE/MTP.
+
+    Do not replace this with os.listdir(), os.stat(), or `ls` in passive polling. A stale jmtpfs
+    mount can stall in the kernel/userspace FUSE path and make unrelated USB input feel frozen.
+    """
     if NO_DEVICE: return False
+    target=os.path.abspath(path)
+    try:
+        with open("/proc/self/mountinfo", "r", errors="ignore") as fh:
+            for line in fh:
+                parts=line.split()
+                if len(parts)>4 and os.path.abspath(_mountinfo_path(parts[4]))==target: return True
+    except Exception: pass
+    return False
+
+def quick_mounted(probe=False, timeout=2):
+    if NO_DEVICE: return False
+    if not mountpoint_seen(): return False
+    if not probe: return True
     try:
         return subprocess.run(["ls", os.path.join(MOUNT, "Internal shared storage")],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=6).returncode == 0
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout).returncode == 0
     except Exception: return False
 
 def do_mount():
     if NO_DEVICE: return (False, "device access is off in this instance")
-    if quick_mounted(): return True, "already mounted"
+    if quick_mounted(probe=True, timeout=2): return True, "already mounted"
     # Clear our OWN mountpoint gracefully first (don't blanket-kill MTP for other
     # devices the user may have connected). Release any gvfs claim on the device,
     # lazily unmount our path, and only then kill a jmtpfs still holding OUR mount.
@@ -263,7 +284,7 @@ def do_mount():
     try: r = subprocess.run(["jmtpfs",MOUNT], capture_output=True, text=True, timeout=30)
     except subprocess.TimeoutExpired: return False, "jmtpfs timed out -- unplug/replug & re-tap File Transfer"
     time.sleep(2)
-    if quick_mounted(): return True, "mounted"
+    if quick_mounted(probe=True, timeout=2): return True, "mounted"
     err=(r.stderr or r.stdout or "").strip()
     # libmtp's raw panics are noise to a user; say what it actually means
     if any(k in err for k in ("device is busy", "Can't open device", "MtpErrorCantOpenDevice", "Unable to open")):
@@ -273,7 +294,7 @@ def do_mount():
 
 def list_projects():
     out = []
-    if not quick_mounted(): return out
+    if not quick_mounted(probe=True, timeout=2): return out
     try: names = sorted(os.listdir(PROJECTS), reverse=True)
     except Exception: return out
     for name in names:
@@ -306,7 +327,7 @@ def list_projects():
 def list_screenshots():
     """Device screenshots (Internal shared storage/Screenshots), newest first."""
     out=[]
-    if not quick_mounted(): return out
+    if not quick_mounted(probe=True, timeout=2): return out
     try:
         for f in sorted(os.listdir(SCREENSHOTS), reverse=True):
             if f.lower().endswith((".png", ".jpg", ".jpeg")):
@@ -317,7 +338,7 @@ def list_screenshots():
 def list_recordings():
     """Screen recordings (videos) anywhere on the device except the big Projects tree."""
     out=[]; exts=(".mp4",".mkv",".webm",".mov",".avi",".m4v")
-    if not quick_mounted(): return out
+    if not quick_mounted(probe=True, timeout=2): return out
     root=os.path.join(MOUNT, "Internal shared storage")
     try:
         for entry in os.listdir(root):
@@ -386,7 +407,7 @@ def project_model_size(name, local=None):
         except Exception: pass
     return total, files
 
-def gather_gallery(name, local=None):
+def gather_gallery(name, local=None, render_combined=True):
     paths=[]
     try: nodes=sorted(os.listdir(os.path.join(PROJECTS,name,"data")))
     except Exception:
@@ -395,7 +416,7 @@ def gather_gallery(name, local=None):
         for png in sorted(glob.glob(os.path.join(local, name+"_*.png"))): paths.append((os.path.basename(png)[len(name)+1:-4], png))
         if not paths:
             for pv in sorted(glob.glob(os.path.join(local, "data", "*", "preview.png"))): paths.append((os.path.basename(os.path.dirname(pv)), pv))
-        _combined_tile(name, local, paths)
+        _combined_tile(name, local, paths, render=render_combined)
         return paths
     for node in nodes:
         prev=os.path.join(PROJECTS,name,"data",node,"preview.png")
@@ -406,15 +427,19 @@ def gather_gallery(name, local=None):
                 except Exception: continue
             else: continue
         paths.append((node, lp))
-    if local: _combined_tile(name, local, paths)       # also when the scanner is connected (the combined model lives on this PC)
+    if local: _combined_tile(name, local, paths, render=render_combined)       # also when the scanner is connected (the combined model lives on this PC)
     return paths
 
-def _combined_tile(name, local, paths):
-    """The model built from all lined-up scans gets its own tile (rendered here, cached under THUMBS)."""
+def _combined_tile(name, local, paths, render=True):
+    """The model built from all lined-up scans gets its own tile, but only render it when mesh previews are enabled."""
     comb=os.path.join(local, name+"_combined_pcfused.ply")
     if not os.path.exists(comb): return
     tp=os.path.join(THUMBS, "%s__combined__card.png" % name)
-    if not os.path.exists(tp) or os.path.getmtime(tp)<os.path.getmtime(comb):
+    stale=(not os.path.exists(tp) or os.path.getmtime(tp)<os.path.getmtime(comb))
+    if stale:
+        if not render:
+            if os.path.exists(tp): paths.append(("combined", tp))
+            return
         try:
             import shade; os.makedirs(THUMBS, exist_ok=True)
             v,f=shade.load_oriented(comb, 150000); shade.render(v, f, size=(330, 210), grid=False, gizmo=False).save(tp)
@@ -825,7 +850,9 @@ class App(ctk.CTk):
         self.selected=None; self.gallery_cache={}; self.size_cache={}
         self.rows={}; self.serial=None
         self.pulling=False; self.cancel=False; self.listing=False; self.listed=False; self.proc=None
-        self._mounting=False; self.auto_tried=False; self._wifi=None; self.listed_src=None; self._listing_src=None; self._refresh_probe_busy=False
+        self._closing=False; self._children=set(); self._children_lock=threading.Lock(); self._job_seq=0
+        self._mounting=False; self.auto_tried=False; self._wifi=None; self.listed_src=None; self._listing_src=None; self._refresh_probe_busy=False; self._shots_busy=False; self._open3d_probe_busy=False
+        self._device_mounted=False; self._device_touch_cool_until=0.0
         self.report_callback_exception = self._on_tk_error
         log_line("PointYoink %s started" % VERSION)
 
@@ -839,6 +866,111 @@ class App(ctk.CTk):
         self.refresh_loop(); self.drain_loop(); self._pulse()
         self.after(60000, lambda: self._close_splash(force=True))  # last-resort fallback only
         self._when_ready(self._wifi_recover)   # offer a stranded WiFi transfer, if any: after the splash, never before
+
+    # ---- lifecycle helpers ----
+    def _next_job(self, prefix):
+        self._job_seq=getattr(self, "_job_seq", 0)+1
+        return "%s:%d" % (prefix, self._job_seq)
+
+    def _start_thread(self, target, *args, name=None, **kwargs):
+        label=name or getattr(target, "__name__", "worker")
+        def run():
+            try: target(*args, **kwargs)
+            except Exception as e: log_error("thread "+label, e)
+        t=threading.Thread(target=run, daemon=True, name=("PointYoink-"+label)[:64])
+        t.start(); return t
+
+    def _forget_child(self, proc):
+        try:
+            with self._children_lock: self._children.discard(proc)
+        except Exception: pass
+
+    def _popen(self, cmd, watch=False, **kwargs):
+        if os.name=="posix": kwargs.setdefault("start_new_session", True)
+        proc=subprocess.Popen(cmd, **kwargs)
+        try:
+            with self._children_lock: self._children.add(proc)
+        except Exception: pass
+        if watch: self._start_thread(self._watch_child, proc, name="watch-child")
+        return proc
+
+    def _watch_child(self, proc):
+        try: proc.wait()
+        except Exception: pass
+        self._forget_child(proc)
+
+    def _terminate_proc(self, proc, kill=False):
+        if not proc or proc.poll() is not None: return
+        try:
+            if os.name=="posix": os.killpg(os.getpgid(proc.pid), signal.SIGKILL if kill else signal.SIGTERM)
+            elif kill: proc.kill()
+            else: proc.terminate()
+        except Exception:
+            try:
+                if kill: proc.kill()
+                else: proc.terminate()
+            except Exception: pass
+
+    def _terminate_children(self):
+        try:
+            with self._children_lock:
+                children=list(self._children); self._children.clear()
+        except Exception:
+            children=[]
+        for proc in children: self._terminate_proc(proc, kill=False)
+        deadline=time.time()+1.2
+        for proc in children:
+            if proc.poll() is not None: continue
+            try: proc.wait(timeout=max(0.02, min(0.2, deadline-time.time())))
+            except Exception: pass
+        for proc in children:
+            if proc.poll() is None: self._terminate_proc(proc, kill=True)
+
+    def _run_child(self, cmd, timeout=None, **kwargs):
+        kwargs.setdefault("stdout", subprocess.PIPE)
+        kwargs.setdefault("stderr", subprocess.PIPE)
+        kwargs.setdefault("text", True)
+        proc=self._popen(cmd, **kwargs)
+        try:
+            out,err=proc.communicate(timeout=timeout)
+            return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+        except subprocess.TimeoutExpired:
+            self._terminate_proc(proc, kill=False)
+            try: proc.communicate(timeout=3)
+            except Exception: pass
+            if proc.poll() is None: self._terminate_proc(proc, kill=True)
+            raise
+        finally:
+            self._forget_child(proc)
+
+    def _start_open3d_probe(self):
+        global _has_open3d_cache
+        if _has_open3d_cache is not None or getattr(self, "_open3d_probe_busy", False): return
+        self._open3d_probe_busy=True
+        def work():
+            global _has_open3d_cache
+            ok=False
+            try:
+                ok=self._run_child([_sys.executable, "-c", "import open3d"], timeout=60).returncode==0
+            except Exception:
+                ok=False
+            _has_open3d_cache=ok
+            self.q.put(("open3d_checked", ok))
+        self._start_thread(work, name="open3d-probe")
+
+    def _require_open3d(self, action="Building models"):
+        global _has_open3d_cache
+        if _has_open3d_cache is True: return True
+        if _has_open3d_cache is False:
+            self._alert("Open3D needed",
+                ("%s needs Open3D, which isn't installed for this Python.\n\n"
+                 "Install it with:\n  pip3 install --user --break-system-packages open3d\n\n"
+                 "(~400 MB. The GPU is used automatically when available.)") % action)
+            return False
+        self._start_open3d_probe()
+        self.set_status("Checking Open3D…")
+        self.set_banner("Checking Open3D - try again in a moment.", AC)
+        return False
 
     # ---- splash + animation ----
     def _pointer_monitor(self):
@@ -1109,7 +1241,10 @@ class App(ctk.CTk):
         except Exception: pass
     def on_refresh(self):
         self.listed=False; self.projects_sig=None; self.gallery_cache={}
-        self.set_status("Refreshing the project list…"); self.start_listing()
+        source="device" if (self.listed_src=="device" and mountpoint_seen()) else "local"
+        if source=="device": self.set_status("Refreshing the scanner project list…")
+        else: self.set_status("Refreshing projects on this PC…")
+        self.start_listing(source)
 
     # ---- body: three columns (list | preview | import options) plus the other modes ----
     def _body(self):
@@ -1442,6 +1577,7 @@ class App(ctk.CTk):
             else: f.grid_remove()
         self._modes.set("Projects" if m in ("Local","Process") else MODE_LABEL.get(m, m))
         if m in ("Projects","Local"): self._apply_page()
+        elif m=="Process": self._proc_refresh()
         if m=="Projects" and self.tabs.get()=="Files" and not self._folder_loaded: self._folder_loaded=True; self.refresh_folder()
     def _page_filter(self, projs):
         if self.page=="projects": return [p for p in projs if p.get("local") or self.is_imported(p["name"])]
@@ -1884,6 +2020,8 @@ class App(ctk.CTk):
                 if self._range_color: self._range_color.stop()
                 if self._range_stream: self._range_stream.stop()
         except Exception: pass
+        try: self._terminate_children()
+        except Exception as e: log_error("child-cleanup", e)
         self._persist()
         # tearing down thousands of widgets one by one is what made closing look like popups dying in slow motion:
         # hide the window first, then leave; daemon threads and child processes go with us
@@ -1920,28 +2058,25 @@ class App(ctk.CTk):
 
     # ---- polling ----
     def refresh_loop(self):
-        # usb_state() is cheap (sysfs reads only), but quick_mounted() spawns a real subprocess (ls
-        # against the MTP mountpoint) - this ran on the UI thread EVERY 1.5s, for as long as the app
-        # is open, not just on a user action. A stale mount (jmtpfs left over with no scanner
-        # attached) can make that call take seconds, repeating every cycle - this is very likely the
-        # real, systemic explanation for freezes that seemed to correlate with almost anything the
-        # user did, since they were just as likely to click something while a cycle was already
-        # blocking. Found 2026-09-14. Now probed on a background thread; UI updates still happen on
-        # the main thread, just from the "refresh_probe" queue event instead of inline here.
+        # One startup probe only. Periodic idle polling made the app harder to reason about while chasing
+        # keyboard stalls; USB/Rescan/Refresh now perform explicit work when the user asks. This probe
+        # still reads only sysfs and /proc/self/mountinfo, never the MTP/FUSE tree.
         if not self.pulling and not self._wifi and not getattr(self, "_refresh_probe_busy", False):
             self._refresh_probe_busy=True
             def probe():
                 try:
-                    st,serial=usb_state(); mounted=quick_mounted()
+                    st,serial=usb_state(); mounted=mountpoint_seen()
                 except Exception as e:
                     log_error("refresh-probe", e); st,serial,mounted="absent",None,False
                 self.q.put(("refresh_probe", st, serial, mounted))
-            threading.Thread(target=probe, daemon=True).start()
-        self.after(1500, self.refresh_loop)
+            self._start_thread(probe, name="refresh-probe")
     def _refresh_probe_done(self, st, serial, mounted):
-        self._refresh_probe_busy=False
+        self._refresh_probe_busy=False; self._device_mounted=mounted
         self.serial=serial
-        if not mounted and self.listed_src!="local": self.listed=False; self.start_listing()   # show what's on this PC
+        if self.listed_src is None and not self.listing:
+            self.listed=False; self.start_listing("local")   # initial view: local only, no scanner probe
+        elif not mounted and self.listed_src=="device":
+            self.listed=False; self.start_listing("local")   # scanner disappeared; fall back without poking MTP
         if st=="absent":
             self.set_banner("Scanner not detected - plug in the USB-C cable, or use WiFi.", WARN)
             self.action_btn.configure(text="🔌  USB", state="normal"); self.auto_tried=False
@@ -1950,31 +2085,35 @@ class App(ctk.CTk):
             self.action_btn.configure(text="🔌  USB", state="normal"); self.auto_tried=False
         elif st=="mtp" and not mounted:
             self.action_btn.configure(text="🔌  USB", state="normal")
-            if self._mounting:
-                self.set_banner("Connecting…", AC)
-            elif not self.auto_tried:
-                self.auto_tried=True; self.set_banner("MIRACO detected - connecting…", AC); self.on_mount()
-            else:
-                self.set_banner("MIRACO detected · Not connected - click USB →", AC)
+            if self._mounting: self.set_banner("Connecting…", AC)
+            else: self.set_banner("MIRACO detected · click USB when you're ready to read it", AC)
         elif mounted:
             self.action_btn.configure(text="🔌  Rescan", state="normal")
-            if self.listed_src!="device": self.listed=False
-            if self.listed:
+            if self.listed_src=="device" and self.listed:
                 self.set_banner("Connected - tick scans to import, click one to preview.", OK)
                 if self.projects: self.render_list(self.projects)   # refresh badges if files changed on disk (cheap no-op otherwise)
-            else: self.set_banner("Reading projects off the scanner… (MTP is slow)", AC); self.start_listing()
-    def start_listing(self):
+            else:
+                self.set_banner("USB mount detected - click Rescan to read scanner projects.", AC)
+    def start_listing(self, source=None):
         if self.listing: return
-        self.listing=True; dest=self.dest.get() or DEFAULT_DEST
+        dest=self.dest.get() or DEFAULT_DEST
+        if source not in ("device", "local"):
+            source="device" if (self.listed_src=="device" and mountpoint_seen()) else "local"
+        if source=="device":
+            if not mountpoint_seen():
+                self.set_banner("USB is not mounted - click USB after tapping File Transfer on the scanner.", WARN)
+                source="local"
+            else:
+                now=time.time(); cool=getattr(self, "_device_touch_cool_until", 0.0)
+                if now<cool:
+                    self.set_banner("USB was just scanned - waiting a few seconds before touching MTP again.", WARN)
+                    source="local"
+                else:
+                    self._device_touch_cool_until=now+10.0
+        self.listing=True; self._listing_src=source
         def work():
             try:
-                # quick_mounted() spawns a subprocess (ls against the MTP mountpoint) - moved off the UI
-                # thread. A stale/dead mount (e.g. jmtpfs left over from an earlier session with no
-                # scanner attached) can return a real I/O error, but this was still a synchronous
-                # subprocess call blocking the whole app on every Refresh and every listing regardless -
-                # found 2026-09-14, after "even clicking refresh freezes it".
-                self._listing_src="device" if quick_mounted() else "local"
-                dev=list_projects() if self._listing_src=="device" else []
+                dev=list_projects() if source=="device" else []
                 names={p["name"] for p in dev}; local=list_local_projects(dest); lmap={p["name"]: p for p in local}
                 for p in dev:                                  # a project that is also on this PC keeps what the PC knows about it
                     lp=lmap.get(p["name"])
@@ -1984,7 +2123,7 @@ class App(ctk.CTk):
                 self.q.put(("projects", dev+[p for p in local if p["name"] not in names]))
             except Exception as e:
                 log_error("list-projects", e); self.q.put(("projects_failed", str(e)))
-        threading.Thread(target=work, daemon=True).start()
+        self._start_thread(work, name="list-projects")
     def on_mount(self):
         if self._mounting: return
         st,_=usb_state()
@@ -2108,18 +2247,19 @@ class App(ctk.CTk):
         self.renders_lbl.configure(text=""); self.renders_lbl.place(relx=1.0, rely=0.0, x=-12, y=10, anchor="ne")
         if p.get("meshes") or p.get("nodes"): self.tools.grid()   # Process on PC works on unfused scans too
         else: self.tools.grid_remove()
-        self._proc_refresh()
+        if getattr(self, "page", "import")=="projects": self._schedule_panel_refresh(20)
+        else: self._proc_dirty=True
         for w in self.film.winfo_children(): w.destroy()
         if name in self.gallery_cache: self.render_gallery(name, self.gallery_cache[name])
         else:
             ctk.CTkLabel(self.film, text="loading scan renders…", text_color=MUT).pack(side="left", padx=8, pady=40)
-            local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
-            threading.Thread(target=lambda n=name, l=local: self.q.put(("gallery",n,gather_gallery(n, l))), daemon=True).start()
+            local=os.path.join(self.dest.get() or DEFAULT_DEST, name); render_combined=self._auto_mesh_preview()
+            threading.Thread(target=lambda n=name, l=local, rc=render_combined: self.q.put(("gallery",n,gather_gallery(n, l, render_combined=rc))), daemon=True).start()
         self.files_box.configure(state="normal"); self.files_box.delete("1.0","end")
         self.files_box.insert("end","computing model files…\n"); self.files_box.configure(state="disabled")
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
         threading.Thread(target=lambda n=name, l=local: self.q.put(("files",n,project_model_size(n, l))), daemon=True).start()
-        self._schedule_shaded(name, None, 250)
+        self._maybe_schedule_shaded(name, None, 250)
     def _fill_header(self, p, name, counts):
         """Title block for the selected project: name, id, state chip, edited date."""
         self.hdr_name.configure(text=self.disp(name))
@@ -2158,8 +2298,8 @@ class App(ctk.CTk):
         except Exception: pass
     def _pick_scan(self, name, node, path):
         self._film_sel=node; self._mark_scan(node)
-        self._set_big_image(path); self._schedule_shaded(name, node, 350)
-        if self.page=="projects": self._panel_refresh()
+        self._set_big_image(path); self._maybe_schedule_shaded(name, node, 350)
+        if self.page=="projects": self._schedule_panel_refresh()
     def _mark_scan(self, node):
         for nd,cell in self._film_cells.items():
             try: cell.configure(border_color=(AC if nd==node else STROKE))
@@ -2210,7 +2350,7 @@ class App(ctk.CTk):
     def _shade_mode_changed(self, v):
         self.shade_mode="wire" if v=="Wireframe" else "solid"
         if self.mv.winfo_manager(): self.mv.set_wire(self.shade_mode=="wire"); return   # live view: just redraw
-        if self.selected: self._schedule_shaded(self.selected, self._film_sel, 150)
+        if self.selected: self._maybe_schedule_shaded(self.selected, self._film_sel, 150)
     def _schedule_shaded(self, name, node=None, delay=250):
         """Debounce expensive mesh preview work so rapid scan clicks do not start a render/load per click."""
         job=getattr(self, "_shade_job", None)
@@ -2227,6 +2367,18 @@ class App(ctk.CTk):
             try: self.after_cancel(job)
             except Exception: pass
             self._mv_job=None
+    def _auto_mesh_preview(self):
+        return bool(self.cfg.get("auto_shaded_preview", True))
+    def _maybe_schedule_shaded(self, name, node=None, delay=250):
+        if self._auto_mesh_preview():
+            self._schedule_shaded(name, node, delay); return
+        try:
+            job=getattr(self, "_shade_job", None)
+            if job: self.after_cancel(job)
+            self._shade_job=None; self._shade_want=None; self._cancel_mv_start()
+            self._mv_key=None; self.mv.grid_remove(); self.big.grid(); self._preview_idle()
+            self.big_hint.configure(text="Scanner preview · View in 3D loads the model only when you ask")
+        except Exception: pass
     def _request_shaded(self, name, node=None):
         """Show the cached shaded render for this scan, or queue one. Never blocks the UI thread."""
         mesh=self._mesh_for_node(name, node) if node else self._find_mesh(name)
@@ -2278,7 +2430,12 @@ class App(ctk.CTk):
                         self.q.put(("shade_msg", key, "Copying the 3D model off the scanner…")); shutil.copyfile(mesh, path)
                 stats=_ply_counts(path)
                 self.q.put(("mesh_stats", key, stats))
-                _render_mesh_png(path, out, mode)
+                env=dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
+                cmd=[_sys.executable, os.path.join(HERE, "shade.py"), path, out, "--size", "900x600"]
+                if mode=="wire": cmd.append("--wire")
+                r=self._run_child(cmd, timeout=600, env=env)
+                if r.returncode!=0 or not os.path.exists(out) or os.path.getsize(out)<1024:
+                    raise RuntimeError("shade.py failed rc=%s: %s" % (r.returncode, ((r.stdout or "")+(r.stderr or ""))[-500:]))
                 self.q.put(("shaded", key, mode, out))
             except Exception as e:
                 log_error("shaded-preview "+key, e); self.q.put(("shaded", key, mode, None))
@@ -2384,13 +2541,13 @@ class App(ctk.CTk):
         self.pulling=True; self.cancel=False; self._pull_list=sel; self._export_fails=[]
         self.import_btn.grid_remove(); self.cancel_btn.grid(row=0,column=3)
         self.progress.grid(row=1,column=0, columnspan=3, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=3, sticky="w", padx=(20,0), pady=(0,10))
-        dest=self.dest.get() or DEFAULT_DEST; mo=self.models_only.get(); cleanup=self.cleanup.get(); self._persist()
+        dest=self.dest.get() or DEFAULT_DEST; mo=self.models_only.get(); cleanup=self.cleanup.get(); clean_opts=self._clean_options() if cleanup else None; self._persist()
         fmts=[]
         if self.exp_stl.get(): fmts.append("stl")
         if self.exp_obj.get(): fmts.append("obj")
         if self.exp_glb.get(): fmts.append("glb")
-        threading.Thread(target=self._pull_worker, args=(sel,dest,mo,fmts,cleanup), daemon=True).start()
-    def _pull_worker(self, sel, dest, mo, fmts, cleanup):
+        self._start_thread(self._pull_worker, sel, dest, mo, fmts, cleanup, clean_opts, name="pull")
+    def _pull_worker(self, sel, dest, mo, fmts, cleanup, clean_opts=None):
         total=len(sel); failed=[]; no_models=[]
         try:
             os.makedirs(dest, exist_ok=True)
@@ -2398,7 +2555,7 @@ class App(ctk.CTk):
                 if self.cancel: break
                 try:
                     if mo:
-                        n=self._import_flat(name, dest, fmts, cleanup, i, total)   # clean flat layout: <name>/<name>_<node>.ply (+.stl)
+                        n=self._import_flat(name, dest, fmts, cleanup, i, total, clean_opts=clean_opts)   # clean flat layout: <name>/<name>_<node>.ply (+.stl)
                         if not n: no_models.append(name)          # nothing to copy yet (never built) - not an error, but not a real import either
                     else:
                         self._import_full(name, dest, i, total)         # full project incl. raw frames (nested mirror)
@@ -2410,7 +2567,7 @@ class App(ctk.CTk):
             self.proc=None
             self.q.put(("cancelled" if self.cancel else "done", dest, failed, no_models))
 
-    def _import_flat(self, name, dest, fmts, cleanup, i, total, src_root=None, nodes=None):
+    def _import_flat(self, name, dest, fmts, cleanup, i, total, src_root=None, nodes=None, clean_opts=None):
         """Copy just the finished models into <dest>/<name>/ with clean unique names.
         nodes: optional list of scan ids to keep (WiFi picker); default all."""
         keep=nodes
@@ -2437,7 +2594,7 @@ class App(ctk.CTk):
                 try: shutil.copyfile(pv, os.path.join(out, "%s_%s.png"%(name,node)))
                 except Exception: pass
         if (fmts or cleanup) and not self.cancel:
-            self._process_meshes(meshes, name, fmts, cleanup, i, total)
+            self._process_meshes(meshes, name, fmts, cleanup, i, total, clean_opts=clean_opts)
         return len(meshes)
 
     def _ensure_clean_vars(self):
@@ -2456,28 +2613,39 @@ class App(ctk.CTk):
         try: v=float(str(var.get()).strip().rstrip("%"))
         except Exception: v=default
         return max(lo, min(hi, v))
-    def _clean_args(self):
-        """process.py flags for the clean-up knobs shown on the Process page."""
+    def _clean_options(self):
+        """Snapshot cleanup settings on the Tk thread before workers start."""
         self._ensure_clean_vars()
-        args=["--clean", "--isolation-rate", "%g" % (self._num(self.clean_iso,15,0,100) if self.clean_do_iso.get() else 0),
-              "--smooth-times", "%d" % (int(self._num(self.clean_smooth,3,0,50)) if self.clean_do_smooth.get() else 0)]
-        if self.clean_holes.get(): args.append("--fill-holes")
-        if self.clean_do_base.get(): args.append("--base-remove")
-        keep=self._num(self.clean_keep,100,1,100)
-        if self.clean_do_keep.get() and keep<100: args+=["--simplify-pct", "%g" % keep]
+        return {
+            "iso": self._num(self.clean_iso,15,0,100), "holes": bool(self.clean_holes.get()),
+            "smooth": int(self._num(self.clean_smooth,3,0,50)), "keep": self._num(self.clean_keep,100,1,100),
+            "do_iso": bool(self.clean_do_iso.get()), "do_smooth": bool(self.clean_do_smooth.get()),
+            "do_keep": bool(self.clean_do_keep.get()), "do_base": bool(self.clean_do_base.get()),
+        }
+    def _clean_args_from(self, opts):
+        """process.py flags for the clean-up knobs shown on the Process page."""
+        args=["--clean", "--isolation-rate", "%g" % (opts["iso"] if opts.get("do_iso") else 0),
+              "--smooth-times", "%d" % (opts["smooth"] if opts.get("do_smooth") else 0)]
+        if opts.get("holes"): args.append("--fill-holes")
+        if opts.get("do_base"): args.append("--base-remove")
+        keep=opts.get("keep", 100)
+        if opts.get("do_keep") and keep<100: args+=["--simplify-pct", "%g" % keep]
         return args
-    def _clean_subprocess(self, src, out):
+    def _clean_args(self):
+        return self._clean_args_from(self._clean_options())
+    def _clean_subprocess(self, src, out, clean_opts=None):
         """Run process.py --clean in a memory-capped child so a huge mesh cannot take the app down."""
         try:
             env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "10")
-            r=subprocess.run([_sys.executable, os.path.join(HERE, "process.py"), src, out]+self._clean_args(),
-                             capture_output=True, text=True, timeout=1800, env=env)
+            opts=clean_opts if clean_opts is not None else self._clean_options()
+            r=self._run_child([_sys.executable, os.path.join(HERE, "process.py"), src, out]+self._clean_args_from(opts),
+                              timeout=1800, env=env)
             if r.returncode==0 and os.path.exists(out) and os.path.getsize(out)>1024: return True
-            log_line("clean %s failed (rc=%s): %s" % (os.path.basename(src), r.returncode, (r.stdout+r.stderr)[-400:]))
+            log_line("clean %s failed (rc=%s): %s" % (os.path.basename(src), r.returncode, ((r.stdout or "")+(r.stderr or ""))[-400:]))
         except Exception as e: log_error("clean "+os.path.basename(src), e)
         return False
 
-    def _process_meshes(self, plys, name, fmts, cleanup, i, total):
+    def _process_meshes(self, plys, name, fmts, cleanup, i, total, clean_opts=None):
         """Optionally clean each mesh into <stem>_clean.ply (the imported original is kept), then export
         the requested formats from the cleaned copy when there is one. Failures land in self._export_fails."""
         import trimesh
@@ -2487,7 +2655,7 @@ class App(ctk.CTk):
             if cleanup:
                 self.q.put(("prog", (i+1)/total, "Cleaning up %s…"%name))
                 out=ply[:-4]+"_clean.ply"
-                if self._clean_subprocess(ply, out): src=out
+                if self._clean_subprocess(ply, out, clean_opts): src=out
                 else: self._export_fails.append(os.path.basename(out))
             if not fmts: continue
             try: m=trimesh.load(src, force="mesh")
@@ -2506,14 +2674,19 @@ class App(ctk.CTk):
         src=os.path.join(PROJECTS,name)+"/"; dst=os.path.join(dest,name)+"/"; os.makedirs(dst, exist_ok=True)
         cmd=["rsync","-a","--info=progress2",src,dst]
         self.q.put(("prog", i/total, "Project %d of %d - %s (full)"%(i+1,total,name)))
-        self.proc=subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-        for ln in self.proc.stdout:
-            if self.cancel: self.proc.terminate(); break
-            mm=re.search(r"(\d+)%",ln)
-            if mm:
-                fp=int(mm.group(1)); self.q.put(("prog",(i*100+fp)/(total*100),"Project %d of %d - %s (%d%%)"%(i+1,total,name,fp)))
-        self.proc.wait()
-        if self.proc.returncode not in (0,None) and not self.cancel: raise RuntimeError("rsync rc=%s"%self.proc.returncode)
+        proc=self._popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        self.proc=proc
+        try:
+            for ln in proc.stdout:
+                if self.cancel: proc.terminate(); break
+                mm=re.search(r"(\d+)%",ln)
+                if mm:
+                    fp=int(mm.group(1)); self.q.put(("prog",(i*100+fp)/(total*100),"Project %d of %d - %s (%d%%)"%(i+1,total,name,fp)))
+            proc.wait()
+            if proc.returncode not in (0,None) and not self.cancel: raise RuntimeError("rsync rc=%s"%proc.returncode)
+        finally:
+            self._forget_child(proc)
+            if self.proc is proc: self.proc=None
 
 
     def on_cancel(self):
@@ -2544,9 +2717,10 @@ class App(ctk.CTk):
         if not src:
             self.set_banner("This project has no 3D model yet. Build one first.", WARN); return
         self.set_status("Loading 3D view: reading the model…")
-        self._open_loader("Loading 3D view", "Reading the 3D model… large scans take a few seconds.")
-        threading.Thread(target=self._view_worker, args=(name, src), daemon=True).start()
-    def _view_worker(self, name, src):
+        token=self._next_job("view"); self._view_job=token
+        self._open_loader("Loading 3D view", "Reading the 3D model… large scans take a few seconds.", token=token)
+        self._start_thread(self._view_worker, name, src, token, name="view")
+    def _view_worker(self, name, src, token):
         # if the mesh is on the (slow) device mount, copy it to a local cache first
         path=src
         if src.startswith(PROJECTS):
@@ -2554,24 +2728,24 @@ class App(ctk.CTk):
                 cache=os.path.join(THUMBS, "view"); os.makedirs(cache, exist_ok=True)
                 path=os.path.join(cache, name+"_fuse_mesh.ply")
                 if not os.path.exists(path) or os.path.getsize(path)!=os.path.getsize(src):
-                    self.q.put(("loader_msg", "Copying the 3D model from the scanner…"))
+                    self.q.put(("loader_msg", token, "Copying the 3D model from the scanner…"))
                     shutil.copyfile(src, path)
             except Exception as e:
-                log_error("view-copy", e); self.q.put(("view_done", None)); return
+                log_error("view-copy", e); self.q.put(("view_done", token, None)); return
         try:
             viewer=os.path.join(HERE, "viewer.py")
-            proc=subprocess.Popen([_sys.executable, viewer, path, name],
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            proc=self._popen([_sys.executable, viewer, path, name], watch=True,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
             got=False; tail=[]
             for ln in proc.stdout:
                 tail=(tail+[ln.strip()])[-5:]
-                if "PYVIEW_READY" in ln: got=True; self.q.put(("view_done", None)); break
-                if "PYVIEW_ERROR" in ln: got=True; log_line("viewer: "+ln.strip()); self.q.put(("view_done", ln.strip())); break
+                if "PYVIEW_READY" in ln: got=True; self.q.put(("view_done", token, None)); break
+                if "PYVIEW_ERROR" in ln: got=True; log_line("viewer: "+ln.strip()); self.q.put(("view_done", token, ln.strip())); break
             if not got:
                 log_line("viewer exited before drawing: %s" % " | ".join(tail))
-                self.q.put(("view_done", "The 3D viewer closed before it drew anything (see Help > Log)."))
+                self.q.put(("view_done", token, "The 3D viewer closed before it drew anything (see Help > Log)."))
         except Exception as e:
-            log_error("view-launch", e); self.q.put(("view_done", str(e)))
+            log_error("view-launch", e); self.q.put(("view_done", token, str(e)))
 
     # ---- base removal (interactive cut-plane) ----
     def on_remove_base(self, node=None):
@@ -2590,15 +2764,16 @@ class App(ctk.CTk):
         try: self.base_btn.configure(state="disabled")
         except Exception: pass
         self.set_status("Base removal: opening the cut-plane tool…")
-        self._open_loader("Base removal", "Opening the cut-plane tool… large scans take a few seconds.\nDrag the line to just above the table, then Apply cut. The cut is remembered for this scan.")
-        threading.Thread(target=self._base_worker, args=(name, src, node), daemon=True).start()
+        token=self._next_job("base"); self._base_job=token; dest=self.dest.get() or DEFAULT_DEST
+        self._open_loader("Base removal", "Opening the cut-plane tool… large scans take a few seconds.\nDrag the line to just above the table, then Apply cut. The cut is remembered for this scan.", token=token)
+        self._start_thread(self._base_worker, name, src, node, dest, token, name="base")
     def _cut_dialog(self, name, node, src):
         """Remove base inside the app: the scan in the GPU view, the part to keep in grey, the part to remove in red,
         one slider along the table's normal, Flip, Apply. Saves <name>_<node>_clean.ply and remembers the plane."""
         import numpy as np
         t=self._top("Remove base · %s" % self._scan_label(name, node), 980, 780, key="cut")
         if t is None: return
-        local=os.path.join(self.dest.get() or DEFAULT_DEST, name); out=os.path.join(local, "%s_%s_clean.ply" % (name, node))
+        dest=self.dest.get() or DEFAULT_DEST; local=os.path.join(dest, name); out=os.path.join(local, "%s_%s_clean.ply" % (name, node))
         card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
         card.grid_columnconfigure(0, weight=1); card.grid_rowconfigure(1, weight=1)
         ctk.CTkLabel(card, text="Grey stays, red goes. Drag the slider until only the table is red; Flip if it picked the wrong side. If the plane sits wrong, click three spots on the table. The cut is remembered for combining.",
@@ -2607,8 +2782,8 @@ class App(ctk.CTk):
         box.grid_columnconfigure(0, weight=1); box.grid_rowconfigure(0, weight=1)
         view=self._new_view(box); view.grid(row=0,column=0, sticky="nsew", padx=4, pady=4)
         if not hasattr(view, "set_split"):
-            t.destroy(); self._dialogs.pop("cut", None); self._basing=True; self._open_loader("Base removal", "Opening the cut-plane tool…")
-            threading.Thread(target=self._base_worker, args=(name, src, node), daemon=True).start(); return
+            t.destroy(); self._dialogs.pop("cut", None); self._basing=True; token=self._next_job("base"); self._base_job=token; self._open_loader("Base removal", "Opening the cut-plane tool…", token=token)
+            self._start_thread(self._base_worker, name, src, node, dest, token, name="base"); return
         load=ctk.CTkLabel(box, text="Loading the 3D view…", text_color=MUT, font=ctk.CTkFont(size=14), fg_color="#0a0c10"); load.grid(row=0,column=0, sticky="nsew", padx=4, pady=4); load.lift()
         ctl=ctk.CTkFrame(card, fg_color="transparent"); ctl.grid_columnconfigure(1, weight=1)
         status=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w")
@@ -2715,7 +2890,7 @@ class App(ctk.CTk):
                 ok=False; plane=None
                 try:
                     env=dict(os.environ, OPENBLAS_NUM_THREADS="1"); env.setdefault("POINTYOINK_MEM_CAP_GB", "10")
-                    r=subprocess.run([_sys.executable, os.path.join(HERE, "cutplane.py"), src, out, "--plane", spec], capture_output=True, text=True, timeout=1800, env=env)
+                    r=self._run_child([_sys.executable, os.path.join(HERE, "cutplane.py"), src, out, "--plane", spec], timeout=1800, env=env)
                     for ln in r.stdout.splitlines():
                         if ln.startswith("CUT_DONE"):
                             ok=True
@@ -2726,42 +2901,49 @@ class App(ctk.CTk):
                 def done():
                     st["busy"]=False
                     if ok:
-                        self.q.put(("base_done", ("ok", out, node, plane)))
+                        self.q.put(("base_done", ("ok", out, node, plane, name)))
                         if t.winfo_exists(): close()
                     elif t.winfo_exists(): applyb.configure(state="normal"); status.configure(text="The cut failed (see Help > Log).", text_color=WARN)
                 self.q.put(("call", done))
             threading.Thread(target=work, daemon=True).start()
         applyb.configure(command=apply)
-    def _base_worker(self, name, src, node=None):
-        path=src; dest=self.dest.get() or DEFAULT_DEST; outdir=os.path.join(dest, name)
+    def _base_worker(self, name, src, node=None, dest=None, token=None):
+        path=src; dest=dest or DEFAULT_DEST; outdir=os.path.join(dest, name)
+        def done(payload):
+            if len(payload)<5: payload=tuple(payload)+(name,)
+            self.q.put(("base_done", token, payload) if token else ("base_done", payload))
         if src.startswith(PROJECTS):   # on the slow device mount - copy locally first
             try:
                 os.makedirs(outdir, exist_ok=True)
                 path=os.path.join(outdir, name+"_fuse_mesh.ply")
                 if not os.path.exists(path) or os.path.getsize(path)!=os.path.getsize(src):
-                    self.q.put(("loader_msg", "Copying the 3D model from the scanner…"))
+                    self.q.put(("loader_msg", token, "Copying the 3D model from the scanner…"))
                     shutil.copyfile(src, path)
             except Exception as e:
-                log_error("base-copy", e); self.q.put(("base_done", ("err", "copy failed"))); return
+                log_error("base-copy", e); done(("err", "copy failed", node, None, name)); return
         out=os.path.join(outdir, "%s_%s_clean.ply" % (name, node)) if node else os.path.splitext(path)[0]+"_clean.ply"
         try:
             os.makedirs(outdir, exist_ok=True)
             tool=os.path.join(HERE, "cutplane.py")
             env=dict(os.environ, OPENBLAS_NUM_THREADS="1",
                      POINTYOINK_MEM_CAP_GB=os.environ.get("POINTYOINK_MEM_CAP_GB", "10"))
-            proc=subprocess.Popen([_sys.executable, tool, path, out],
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
-            for ln in proc.stdout:
-                ln=ln.strip()
-                if ln.startswith("CUT_READY"): self.q.put(("loader_close", None))
-                elif ln.startswith("CUT_DONE"):
-                    try: payload=json.loads(ln[9:])
-                    except Exception: payload={}
-                    self.q.put(("base_done", ("ok", out, node, payload.get("plane")))); break
-                elif ln.startswith("CUT_CANCELLED"): self.q.put(("base_done", ("cancel", None))); break
-                elif ln.startswith("CUT_ERROR"): log_line("cutplane: "+ln); self.q.put(("base_done", ("err", ln))); break
+            proc=self._popen([_sys.executable, tool, path, out],
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
+            try:
+                for ln in proc.stdout:
+                    ln=ln.strip()
+                    if ln.startswith("CUT_READY"): self.q.put(("loader_close", token))
+                    elif ln.startswith("CUT_DONE"):
+                        try: payload=json.loads(ln[9:])
+                        except Exception: payload={}
+                        done(("ok", out, node, payload.get("plane"), name)); break
+                    elif ln.startswith("CUT_CANCELLED"): done(("cancel", None, node, None, name)); break
+                    elif ln.startswith("CUT_ERROR"): log_line("cutplane: "+ln); done(("err", ln, node, None, name)); break
+                proc.wait()
+            finally:
+                self._forget_child(proc)
         except Exception as e:
-            log_error("base-launch", e); self.q.put(("base_done", ("err", str(e))))
+            log_error("base-launch", e); done(("err", str(e), node, None, name))
 
     # ---- process on PC: raw depth frames -> fused mesh, via fuse.py (Open3D TSDF) ----
     # ---- Process page ----
@@ -2805,6 +2987,22 @@ class App(ctk.CTk):
     def _proc_pick(self, label):
         for n in self._proc_names:
             if self.disp(n)==label: self.select_project(n); return
+    def _has_raw_frames(self, local, node):
+        cache=getattr(self, "_raw_frame_cache", {})
+        d=os.path.join(local, "data", node, "cache")
+        try: sig=(d, os.path.getmtime(d))
+        except Exception: sig=(d, None)
+        if sig in cache: return cache[sig]
+        found=False
+        try:
+            with os.scandir(d) as it:
+                for ent in it:
+                    if ent.name.endswith(".dph"):
+                        found=True; break
+        except Exception: found=False
+        cache[sig]=found; self._raw_frame_cache=cache
+        return found
+
     def _proc_nodes(self, name):
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name); nodes=set()
         for d in glob.glob(os.path.join(local, "data", "*")):
@@ -2835,7 +3033,7 @@ class App(ctk.CTk):
     def _proc_set_current(self, name, node, key):
         self.records.setdefault(name,{}).setdefault("current",{})[node]=key; self._persist(); self._mesh_stats={}
         self._proc_render(name)
-        if self.selected==name: self._mv_key=None; self._schedule_shaded(name, node, 250)
+        if self.selected==name: self._mv_key=None; self._maybe_schedule_shaded(name, node, 250)
     def _trash(self, path):
         """Move a file or folder to the desktop trash (gio), else into <dest>/.trash. Can be slow
         for a big folder (the gio call is timeout-bounded, but its own fallback move is a real
@@ -2910,7 +3108,7 @@ class App(ctk.CTk):
         self._proc_next_strip(name, nodes, local)
         for i,node in enumerate(nodes):
             vs=self._proc_versions(name, node); cur=self._proc_current(name, node)
-            raw=len(glob.glob(os.path.join(local, "data", node, "cache", "*.dph")))
+            raw=self._has_raw_frames(local, node)
             card=ctk.CTkFrame(self.proc_cards, fg_color=CARD, corner_radius=14); card.grid(row=i+1, column=0, sticky="ew", padx=6, pady=6)
             card.grid_columnconfigure(1, weight=1)
             thumb=os.path.join(local, "data", node, "preview.png")
@@ -2919,12 +3117,12 @@ class App(ctk.CTk):
             if os.path.exists(thumb):
                 try: self.imgs["proc_"+node]=cimg(thumb, 110); tl.configure(image=self.imgs["proc_"+node])
                 except Exception: pass
-            elif cur: self._card_thumb(name, node, cur[2], tl)      # no scanner picture (a model built or combined here): render one
+            elif cur and self._auto_mesh_preview(): self._card_thumb(name, node, cur[2], tl)      # no scanner picture: optional mesh render only
             top=ctk.CTkFrame(card, fg_color="transparent"); top.grid(row=0,column=1, sticky="ew", pady=(12,0))
             ctk.CTkLabel(top, text=self._scan_label(name, node), font=ctk.CTkFont(size=14, weight="bold"), text_color=TX).pack(side="left")
             ctk.CTkLabel(top, text=("scan %d of %d" % (i+1, len([n for n in nodes if n!="combined"])) if node!="combined" else "all aligned scans in one model"), text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=10)
             if node=="combined": status="%d version%s · built from the scans you lined up" % (len(vs), "" if len(vs)==1 else "s")
-            else: status=("no 3D model yet · %d raw frames" % raw) if not vs else ("%d version%s · %d raw frames" % (len(vs), "" if len(vs)==1 else "s", raw) if raw else "%d version%s · no raw data on this PC" % (len(vs), "" if len(vs)==1 else "s"))
+            else: status=("no 3D model yet · raw data on this PC" if raw else "no 3D model yet · no raw data on this PC") if not vs else ("%d version%s · raw data on this PC" % (len(vs), "" if len(vs)==1 else "s") if raw else "%d version%s · no raw data on this PC" % (len(vs), "" if len(vs)==1 else "s"))
             ctk.CTkLabel(top, text=status, text_color=(WARN if not vs else MUT), font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
             if node!="combined":
                 stw, stc = self.STAGE_WORDS[self._device_stage(local, node)]
@@ -2979,7 +3177,7 @@ class App(ctk.CTk):
     def _proc_next(self, name, nodes, local):
         """What to do now for this project: (title, detail, button text, command, step index into STEPS)."""
         scans=[n for n in nodes if n!="combined"]
-        unbuilt=[n for n in scans if not self._proc_versions(name, n) and glob.glob(os.path.join(local,"data",n,"cache","*.dph"))]
+        unbuilt=[n for n in scans if not self._proc_versions(name, n) and self._has_raw_frames(local, n)]
         built=[n for n in scans if self._proc_versions(name, n)]
         planes=self._base_planes(name); nobase=[n for n in built if n not in planes]
         if built and nobase:
@@ -3006,7 +3204,7 @@ class App(ctk.CTk):
         """Select a scan tile the way a click on the strip would (so Remove base and the preview follow)."""
         if self.selected!=name: self.select_project(name)
         self._film_sel=node; self._mark_scan(node)
-        try: self._schedule_shaded(name, node, 250)
+        try: self._maybe_schedule_shaded(name, node, 250)
         except Exception: pass
     HOWTO=(("Import", "⬇", "Get the project off the scanner: USB lists everything on it, WiFi Share to PC sends one project. Finished models is quick; Full project also brings the raw frames you need for building and combining here."),
            ("Build", "⚙", "A scan is raw frames until something fuses them into a 3D model. The scanner does that with One-tap Edit; this PC does it with Build, in seconds on a graphics card, using the scanner's own registration. Easiest: One-tap Edit on the scanner when it turns out fine, Build here when it does not."),
@@ -3091,6 +3289,13 @@ class App(ctk.CTk):
             if i<len(self.STEPS)-1: ctk.CTkLabel(trail, text="  →  ", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left")
         if btxt:
             ctk.CTkButton(strip, text=btxt, width=190, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).grid(row=0,column=2, rowspan=3, padx=16, pady=12)
+    def _schedule_panel_refresh(self, delay=80):
+        job=getattr(self, "_panel_job", None)
+        if job:
+            try: self.after_cancel(job)
+            except Exception: pass
+        self._panel_job=self.after(delay, lambda: (setattr(self, "_panel_job", None), self._panel_refresh()))
+
     def _panel_refresh(self):
         """The right column on the Projects page: what to do next, the selected scan's versions and actions, project actions."""
         pp=self.projpanel
@@ -3116,14 +3321,14 @@ class App(ctk.CTk):
         node=self._film_sel if self._film_sel in nodes else (nodes[0] if nodes else None)
         if node:
             vs=self._proc_versions(name, node); cur=self._proc_current(name, node)
-            raw=len(glob.glob(os.path.join(local, "data", node, "cache", "*.dph"))); has_prep=any(k=="clean" for k,_,_ in vs)
+            raw=self._has_raw_frames(local, node); has_prep=any(k=="clean" for k,_,_ in vs)
             tr=ctk.CTkFrame(pp, fg_color="transparent"); tr.pack(fill="x", padx=6, pady=(10,0))
             ctk.CTkLabel(tr, text=self._scan_label(name, node), text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w").pack(side="left")
             if node!="combined":
                 rb=ctk.CTkButton(tr, text="✎", width=26, height=24, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=13), command=lambda n=name,nd=node: self._rename_scan(n, nd)); rb.pack(side="left", padx=(4,0))
                 self._tip(rb, "Name this scan: front, back, left side…")
             order=[n for n in nodes if n!="combined"]; pos=("scan %d of %d · " % (order.index(node)+1, len(order))) if node in order else ""
-            sub=("built from the scans you lined up" if node=="combined" else (pos+("%d raw frames on this PC" % raw if raw else "no raw data on this PC")))
+            sub=("built from the scans you lined up" if node=="combined" else (pos+("raw data on this PC" if raw else "no raw data on this PC")))
             ctk.CTkLabel(pp, text=sub, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6)
             if node!="combined":
                 stw, stc = self.STAGE_WORDS[self._device_stage(local, node)]
@@ -3180,21 +3385,21 @@ class App(ctk.CTk):
         except Exception: pass
     def _proc_build(self, name, nodes):
         if getattr(self, "_fusing", False): self.set_banner("A build is already running.", WARN); return
-        if not _has_open3d():
-            self._alert("Open3D needed", "Building models needs Open3D, which isn't installed for this Python.\n\nInstall it with:\n  pip3 install --user --break-system-packages open3d\n\n(~400 MB. The GPU is used automatically when available.)"); return
+        if not self._require_open3d("Building models"): return
         self._fusing=True
         try: self.proc_btn.configure(state="disabled")
         except Exception: pass
         for nd in nodes: self._proc_progress(nd, None, "Starting…")
         self.set_status("Building 3D model%s…" % ("" if len(nodes)==1 else "s"))
-        threading.Thread(target=self._fuse_worker, args=(name, nodes), daemon=True).start()
+        dest=self.dest.get() or DEFAULT_DEST; voxel=float(self.fuse_voxel.get() or 0.4); fuse_device=self.cfg.get("fuse_device","auto"); register_drift=bool(self.cfg.get("register_drift", True)); self._fuse_name=name
+        self._start_thread(self._fuse_worker, name, nodes, dest, voxel, fuse_device, register_drift, name="fuse")
     def _device_stage(self, local, node):
         """How far the scanner itself took this scan: 'meshed' (One-tap Edit or Mesh was run there), 'fused'
         (point cloud only), 'raw' (frames only), or None (nothing on this PC for it)."""
         d=os.path.join(local, "data", node)
         if os.path.exists(os.path.join(d, "fuse_mesh.ply")) or os.path.exists(os.path.join(local, "%s_%s.ply" % (os.path.basename(local), node))): return "meshed"
         if os.path.exists(os.path.join(d, "fuse.ply")) or os.path.exists(os.path.join(local, "%s_%s_cloud.ply" % (os.path.basename(local), node))): return "fused"
-        if glob.glob(os.path.join(d, "cache", "*.dph")): return "raw"
+        if self._has_raw_frames(local, node): return "raw"
         return None
     STAGE_WORDS={"meshed": ("edited on the scanner", OK), "fused": ("fused on the scanner, not meshed", WARN), "raw": ("raw only, not edited on the scanner", WARN), None: ("", MUT)}
     def _device_scan_names(self, name, root=None):
@@ -3243,7 +3448,7 @@ class App(ctk.CTk):
             info=None
             try:
                 env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "10")
-                r=subprocess.run([_sys.executable, os.path.join(HERE, "process.py"), path, "--info"], capture_output=True, text=True, timeout=600, env=env)
+                r=self._run_child([_sys.executable, os.path.join(HERE, "process.py"), path, "--info"], timeout=600, env=env)
                 for ln in r.stdout.splitlines():
                     if ln.startswith("STAGE info "): info=json.loads(ln[11:])
             except Exception as e: log_error("mesh info", e)
@@ -3334,14 +3539,14 @@ class App(ctk.CTk):
         def run():
             if not (self.clean_do_iso.get() or self.clean_do_smooth.get() or self.clean_holes.get() or self.clean_do_keep.get() or self.clean_do_base.get()):
                 status.configure(text="Tick at least one action.", text_color=WARN); return
-            self._persist(); able(runb, False); keepb.pack_forget(); discb.pack_forget()
+            clean_opts=self._clean_options(); self._persist(); able(runb, False); keepb.pack_forget(); discb.pack_forget()
             loads[1].configure(text="Working…"); loads[1].grid(); loads[1].lift(); t0=time.time()
             status.configure(text="Working on a copy… (a big model takes a minute)", text_color=MUT)
             def tick():
                 if t.winfo_exists() and runb.cget("state")=="disabled": status.configure(text="Working on a copy… %ds (a big model takes a minute)" % int(time.time()-t0)); t.after(1000, tick)
             t.after(1000, tick)
             def work():
-                ok=self._clean_subprocess(src, tmp)
+                ok=self._clean_subprocess(src, tmp, clean_opts)
                 def done():
                     if not t.winfo_exists(): return
                     able(runb, True)
@@ -3618,7 +3823,7 @@ class App(ctk.CTk):
                 bar.stop(); bar.grid_remove(); able(alignb, len(st["pairs"])>=3); autob.configure(state="normal"); refresh_chips()
         def run_align(auto):
             if st["busy"] or not st["moving"]: return
-            if not _has_open3d() and auto: self._alert("Open3D needed", "Auto and the fine adjustment need Open3D.\n  pip3 install --user --break-system-packages open3d"); return
+            if auto and not self._require_open3d("Auto alignment"): return
             st["busy"]=True; keepb.pack_forget(); busy_on("Starting…" if not auto else "Starting Auto… this takes a minute or two")
             base_p=self._proc_current(name, st["base"])[2]; mov_p=self._proc_current(name, st["moving"])[2]
             os.makedirs(THUMBS, exist_ok=True); pj=os.path.join(THUMBS, "align_pairs.json"); oj=os.path.join(THUMBS, "align_result.json")
@@ -3630,7 +3835,7 @@ class App(ctk.CTk):
                     cmd=[_sys.executable, os.path.join(HERE, "align.py"), "--base", base_p, "--moving", mov_p, "--out", oj]
                     if st["pairs"]: cmd+=["--pairs", pj]
                     if auto: cmd.append("--auto")
-                    proc=subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env); tail=[]
+                    proc=self._popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env); tail=[]
                     for ln in proc.stdout:
                         ln=ln.strip(); tail=(tail+[ln])[-6:]
                         if ln.startswith("STAGE error "): err=ln[12:]
@@ -3638,7 +3843,7 @@ class App(ctk.CTk):
                             try: msg=json.loads(ln.split(" ",2)[2]).get("msg")
                             except Exception: msg=None
                             if msg: self.q.put(("call", lambda m=msg: busy_text(m)))
-                    proc.wait()
+                    proc.wait(); self._forget_child(proc)
                     if proc.returncode==0 and os.path.exists(oj): res=json.load(open(oj))
                     else: log_line("align failed: %s %s" % (err, " | ".join(tail)))
                 except Exception as e: log_error("align", e)
@@ -3688,7 +3893,7 @@ class App(ctk.CTk):
     def _combine(self, name, base, aligned, status=None):
         """Fuse the base scan's frames and every aligned scan's frames (moved by its saved transform) into <name>_combined_pcfused.ply."""
         if getattr(self, "_fusing", False): self.set_banner("A build is already running.", WARN); return
-        if not _has_open3d(): self._alert("Open3D needed", "Building models needs Open3D.\n  pip3 install --user --break-system-packages open3d"); return
+        if not self._require_open3d("Building models"): return
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name); rec=self.records.get(name,{}).get("align",{})
         sets=[]
         for node in [base]+list(aligned):
@@ -3704,7 +3909,7 @@ class App(ctk.CTk):
                 pj=os.path.join(local, "plane_%s.json" % node); json.dump(plane, open(pj, "w"))
             sets.append("%s,%s,%s,%s" % (cache, calib, tj, pj))
         ncut=sum(1 for sp in sets if sp.split(",")[3])
-        out=os.path.join(local, "%s_combined_pcfused.ply" % name); voxel=float(self.fuse_voxel.get() or 0.4)
+        out=os.path.join(local, "%s_combined_pcfused.ply" % name); voxel=float(self.fuse_voxel.get() or 0.4); fuse_device=self.cfg.get("fuse_device","auto"); self._fuse_name=name
         self._fusing=True; self.set_status("Building one model from %d scans%s…" % (len(sets), (", dropping the base of %d" % ncut) if ncut else ""))
         if ncut<len(sets): self.set_banner("%d of %d scans have no base cut saved: their table will be in the combined model. Remove base on each scan first for a clean result." % (len(sets)-ncut, len(sets)), WARN)
         def say(txt):
@@ -3713,9 +3918,9 @@ class App(ctk.CTk):
         def work():
             ok=False
             try:
-                cmd=[_sys.executable, os.path.join(HERE,"fuse.py"), "--out", out, "--voxel", str(voxel)] + ([] if self.cfg.get("fuse_device","auto")=="cpu" else ["--gpu"])
+                cmd=[_sys.executable, os.path.join(HERE,"fuse.py"), "--out", out, "--voxel", str(voxel)] + ([] if fuse_device=="cpu" else ["--gpu"])
                 for sp in sets: cmd+=["--set", sp]
-                proc=subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
+                proc=self._popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
                 for ln in proc.stdout:
                     ln=ln.strip()
                     if not ln.startswith("STAGE "): continue
@@ -3726,30 +3931,26 @@ class App(ctk.CTk):
                     elif stage=="extract": say("Building the combined 3D model…")
                     elif stage=="done": ok=True
                     elif stage=="error": log_line("combine %s: %s" % (name, payload.get("msg","")))
-                proc.wait()
+                proc.wait(); self._forget_child(proc)
             except Exception as e: log_error("combine", e)
-            self.q.put(("fuse_done", ("ok", os.path.basename(out)) if (ok and os.path.exists(out)) else ("err", "the combined model could not be built - see the log")))
+            self.q.put(("fuse_done", name, ("ok", os.path.basename(out)) if (ok and os.path.exists(out)) else ("err", "the combined model could not be built - see the log")))
             if ok: say("Done: %s. It shows in the project as Combined." % os.path.basename(out))
-        threading.Thread(target=work, daemon=True).start()
+        self._start_thread(work, name="combine")
 
     def on_process_pc(self):
         if getattr(self, "_fusing", False): return
         name=self.selected
         if not name: return
-        if not _has_open3d():
-            self._alert("Open3D needed",
-                "Building models needs Open3D, which isn't installed for this Python.\n\n"
-                "Install it with:\n  pip3 install --user --break-system-packages open3d\n\n"
-                "(~400 MB. The GPU is used automatically when available.)")
-            return
+        if not self._require_open3d("Building models"): return
         self._fusing=True
         try: self.proc_btn.configure(state="disabled")
         except Exception: pass
         self.set_status("Building 3D models…")
         for nd in self._proc_nodes(name): self._proc_progress(nd, None, "Waiting…")
-        threading.Thread(target=self._fuse_worker, args=(name,), daemon=True).start()
-    def _fuse_worker(self, name, only_nodes=None):
-        dest=self.dest.get() or DEFAULT_DEST; local=os.path.join(dest, name)
+        dest=self.dest.get() or DEFAULT_DEST; voxel=float(self.fuse_voxel.get() or 0.4); fuse_device=self.cfg.get("fuse_device","auto"); register_drift=bool(self.cfg.get("register_drift", True)); self._fuse_name=name
+        self._start_thread(self._fuse_worker, name, None, dest, voxel, fuse_device, register_drift, name="fuse")
+    def _fuse_worker(self, name, only_nodes=None, dest=None, voxel=None, fuse_device="auto", register_drift=True):
+        dest=dest or DEFAULT_DEST; local=os.path.join(dest, name)
         nodes=[]
         for base in (os.path.join(PROJECTS, name), local):          # device listing first, else local
             try:
@@ -3758,8 +3959,8 @@ class App(ctk.CTk):
             except Exception: pass
         if only_nodes: nodes=[n for n in nodes if n in only_nodes]
         if not nodes:
-            self.q.put(("fuse_done", ("err","no scan data found"))); return
-        outs=[]; voxel=float(self.fuse_voxel.get() or 0.4)
+            self.q.put(("fuse_done", name, ("err","no scan data found"))); return
+        outs=[]; voxel=float(voxel or 0.4)
         for ni,node in enumerate(nodes):
             self.q.put(("fuse_node", node, None, "Preparing…"))
             lcache=os.path.join(local,"data",node,"cache"); lparam=os.path.join(local,"data",node,"param")
@@ -3781,12 +3982,12 @@ class App(ctk.CTk):
                 self.q.put(("fuse_status","Scan %s: no calibration (Pl.bin) - skipping"%node)); continue
             out=os.path.join(local, "%s_%s_pcfused.ply"%(name,node))
             # a scan the scanner never fused has no registration, only live tracking: fix the drift first (register.py)
-            if self.cfg.get("register_drift", True) and not os.path.exists(os.path.join(lcache, "global_register_pose.pose")) \
+            if register_drift and not os.path.exists(os.path.join(lcache, "global_register_pose.pose")) \
                     and not os.path.exists(os.path.join(lcache, "pointyoink_register_pose.pose")):
                 self.q.put(("fuse_status","Scan %d/%d: registering frames (fixing drift)…"%(ni+1,len(nodes)))); self.q.put(("fuse_node", node, 0.02, "Fixing drift: fusing fragments…"))
                 try:
-                    rp=subprocess.Popen([_sys.executable, os.path.join(HERE,"register.py"), "--frames", lcache, "--calib", calib] + ([] if self.cfg.get("fuse_device","auto")=="cpu" else ["--gpu"]),
-                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
+                    rp=self._popen([_sys.executable, os.path.join(HERE,"register.py"), "--frames", lcache, "--calib", calib] + ([] if fuse_device=="cpu" else ["--gpu"]),
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
                     for ln in rp.stdout:
                         ln=ln.strip()
                         if not ln.startswith("STAGE "): continue
@@ -3797,14 +3998,14 @@ class App(ctk.CTk):
                         elif stage=="register": self.q.put(("fuse_node", node, 0.15+0.25*payload.get("done",0)/max(1,payload.get("total",1)), "Fixing drift: matching fragments %d of %d (%d loops found)" % (payload.get("done",0), payload.get("total",0), payload.get("loops",0))))
                         elif stage=="done": self.q.put(("fuse_node", node, 0.4, "Drift fixed: %d loop closures, frames moved %.0f mm on average" % (payload.get("loops",0), payload.get("moved_median_mm",0))))
                         elif stage=="error": log_line("register %s/%s: %s" % (name, node, payload.get("msg","")))
-                    rp.wait()
+                    rp.wait(); self._forget_child(rp)
                 except Exception as e: log_error("register-launch", e)
             self.q.put(("fuse_status","Scan %d/%d: fusing…"%(ni+1,len(nodes))))
             try:
-                proc=subprocess.Popen([_sys.executable, os.path.join(HERE,"fuse.py"), "--frames", lcache, "--calib", calib,
-                                       "--out", out, "--voxel", str(voxel)] + ([] if self.cfg.get("fuse_device","auto")=="cpu" else ["--gpu"]),
-                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-                                      env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
+                proc=self._popen([_sys.executable, os.path.join(HERE,"fuse.py"), "--frames", lcache, "--calib", calib,
+                                  "--out", out, "--voxel", str(voxel)] + ([] if fuse_device=="cpu" else ["--gpu"]),
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                 env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
                 ok=False; devname="GPU"
                 for ln in proc.stdout:
                     ln=ln.strip()
@@ -3821,13 +4022,13 @@ class App(ctk.CTk):
                         self.q.put(("fuse_status","Scan %d/%d: building the 3D model…"%(ni+1,len(nodes)))); self.q.put(("fuse_node", node, 0.95, "Building the 3D model…"))
                     elif stage=="done": ok=True
                     elif stage=="error": log_line("fuse %s/%s: %s"%(name,node,payload.get("msg","")))
-                proc.wait()
+                proc.wait(); self._forget_child(proc)
                 if ok and os.path.exists(out): outs.append(os.path.basename(out)); self.q.put(("fuse_node", node, 1.0, "Built: %s" % os.path.basename(out)))
                 else: log_line("fuse produced no mesh for %s/%s"%(name,node)); self.q.put(("fuse_node", node, 0.0, "Could not build this scan (see Help > Log)"))
             except Exception as e:
                 log_error("fuse-launch", e)
-        if outs: self.q.put(("fuse_done", ("ok", ", ".join(outs))))
-        else: self.q.put(("fuse_done", ("err", "no scans could be processed - see the log")))
+        if outs: self.q.put(("fuse_done", name, ("ok", ", ".join(outs))))
+        else: self.q.put(("fuse_done", name, ("err", "no scans could be processed - see the log")))
 
     # ---- live: pose + IMU over TCP 9999 (60-byte packets: 8-byte header + 13 float32) ----
     def live_find(self):
@@ -4345,10 +4546,10 @@ class App(ctk.CTk):
             self.pulling=True; self.cancel=False; self._pull_list=list(keep); self._export_fails=[]
             self.import_btn.grid_remove(); self.cancel_btn.grid(row=0,column=3)
             self.progress.grid(row=1,column=0, columnspan=3, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=3, sticky="w", padx=(20,0), pady=(0,10))
-            cleanup=self.cleanup.get()
+            cleanup=self.cleanup.get(); clean_opts=self._clean_options() if cleanup else None
             fmts=[e for e,v in (("stl",self.exp_stl),("obj",self.exp_obj),("glb",self.exp_glb)) if v.get()]
             self.set_banner("Saving %s…" % ", ".join(self.disp(n) for n in keep), AC)
-            threading.Thread(target=self._wifi_finish_worker, args=(stage, keep, dest, mode.get()=="models", fmts, cleanup, replace), daemon=True).start()
+            self._start_thread(self._wifi_finish_worker, stage, keep, dest, mode.get()=="models", fmts, cleanup, replace, clean_opts, name="wifi-import")
         ctk.CTkButton(br, text="Import", width=110, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=go).pack(side="right", padx=6)
         ctk.CTkButton(br, text="Discard", width=100, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=discard).pack(side="right", padx=6)
     def _peek(self, title, image_path, mesh_path=None, frames_dir=None, calib=None, key=None):
@@ -4376,7 +4577,7 @@ class App(ctk.CTk):
             v.load(path, lambda ok: (l.grid_remove() if (ok and t.winfo_exists()) else None), max_faces=600000)
             foot.configure(text=note+"  Drag to turn, scroll to zoom.")
         if mesh_path and os.path.exists(mesh_path): show_mesh(mesh_path, ""); return
-        if frames_dir and calib and glob.glob(os.path.join(frames_dir, "*.dph")) and os.path.exists(calib) and _has_open3d():
+        if frames_dir and calib and glob.glob(os.path.join(frames_dir, "*.dph")) and os.path.exists(calib) and _has_open3d_cache is True:
             os.makedirs(THUMBS, exist_ok=True); draft=os.path.join(THUMBS, "%s__draft.ply" % (key or os.path.basename(frames_dir)))
             if os.path.exists(draft): show_mesh(draft, "Quick draft (every 3rd frame, 1 mm): the real build is finer."); return
             busy=ctk.CTkLabel(box, text="Building a quick draft so you can turn it…", text_color=MUT, font=ctk.CTkFont(size=13), fg_color="#0a0c10"); busy.grid(row=0,column=0, sticky="nsew")
@@ -4384,7 +4585,7 @@ class App(ctk.CTk):
                 ok=False
                 try:
                     cmd=[_sys.executable, os.path.join(HERE,"fuse.py"), "--frames", frames_dir, "--calib", calib, "--out", draft, "--voxel", "1.0", "--every", "3"] + ([] if self.cfg.get("fuse_device","auto")=="cpu" else ["--gpu"])
-                    r=subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
+                    r=self._run_child(cmd, timeout=600, env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
                     ok=(r.returncode==0 and os.path.exists(draft) and os.path.getsize(draft)>1024)
                     if not ok: log_line("draft build failed: %s" % (r.stdout+r.stderr)[-300:])
                 except Exception as e: log_error("draft build", e)
@@ -4449,14 +4650,14 @@ class App(ctk.CTk):
         ctk.CTkButton(br, text="Import", width=110, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=ok).pack(side="right", padx=6)
         ctk.CTkButton(br, text="Back", width=90, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX,
                       command=lambda: (self._dialogs.pop("wifiname", None), t.destroy())).pack(side="right", padx=6)
-    def _wifi_finish_worker(self, stage, keep, dest, mo, fmts, cleanup, replace=False):
+    def _wifi_finish_worker(self, stage, keep, dest, mo, fmts, cleanup, replace=False, clean_opts=None):
         failed=[]; no_models=[]; total=len(keep)
         for i,(name,nodes) in enumerate(keep.items()):
             if self.cancel: break
             try:
                 if mo:
                     if replace and os.path.isdir(os.path.join(dest, name)): shutil.rmtree(os.path.join(dest, name), ignore_errors=True)
-                    n=self._import_flat(name, dest, fmts, cleanup, i, total, src_root=stage, nodes=nodes)
+                    n=self._import_flat(name, dest, fmts, cleanup, i, total, src_root=stage, nodes=nodes, clean_opts=clean_opts)
                     if not n: no_models.append(name)
                 else:
                     self.q.put(("prog", i/total, "Saving %s (full project)" % name))
@@ -4491,27 +4692,31 @@ class App(ctk.CTk):
 
     # ---- screenshots ----
     def refresh_screenshots(self):
-        if not quick_mounted():
-            self.set_banner("Screenshots come over USB: plug in, tap File Transfer, click USB.", WARN); return
-        self.set_status("Reading screenshots off the device…")
-        threading.Thread(target=self._shots_worker, daemon=True).start()
+        if getattr(self, "_shots_busy", False): return
+        self._shots_busy=True; self.set_status("Reading screenshots off the device…")
+        self._start_thread(self._shots_worker, name="shots")
     def _shots_worker(self):
-        items=list_screenshots(); local=[]
-        cache=os.path.join(THUMBS, "shots"); os.makedirs(cache, exist_ok=True)
-        for i,(nm,path) in enumerate(items):
-            dst=os.path.join(cache, nm)
-            try:
-                if not os.path.exists(dst) or os.path.getsize(dst)!=os.path.getsize(path):
-                    self.q.put(("status", "Loading screenshot %d/%d…"%(i+1, len(items))))
-                    shutil.copyfile(path, dst)
-                local.append((nm, dst))
-            except Exception as e: log_error("shot-copy "+nm, e)
-        # recordings: don't copy the (large) video for display - keep the device path + size
-        recs=[]
-        for nm,path in list_recordings():
-            try: recs.append((nm, path, os.path.getsize(path)))
-            except Exception: recs.append((nm, path, 0))
-        self.q.put(("shots", (local, recs)))
+        try:
+            if not quick_mounted(probe=True, timeout=2):
+                self.q.put(("shots_unmounted", None)); return
+            items=list_screenshots(); local=[]
+            cache=os.path.join(THUMBS, "shots"); os.makedirs(cache, exist_ok=True)
+            for i,(nm,path) in enumerate(items):
+                dst=os.path.join(cache, nm)
+                try:
+                    if not os.path.exists(dst) or os.path.getsize(dst)!=os.path.getsize(path):
+                        self.q.put(("status", "Loading screenshot %d/%d…"%(i+1, len(items))))
+                        shutil.copyfile(path, dst)
+                    local.append((nm, dst))
+                except Exception as e: log_error("shot-copy "+nm, e)
+            # recordings: don't copy the (large) video for display - keep the device path + size
+            recs=[]
+            for nm,path in list_recordings():
+                try: recs.append((nm, path, os.path.getsize(path)))
+                except Exception: recs.append((nm, path, 0))
+            self.q.put(("shots", (local, recs)))
+        except Exception as e:
+            log_error("shots", e); self.q.put(("shots_failed", str(e)))
     def render_shots(self, data):
         """Screenshots live on the device's slow MTP transport: every thumbnail is a full file read
         over that link (and Tk only actually reads the pixels when the image is first drawn, so this
@@ -4581,7 +4786,8 @@ class App(ctk.CTk):
             except Exception as e: log_error("pull-rec "+nm, e)
         self.q.put(("shots_pulled", (n, dest)))
 
-    def _open_loader(self, title, msg):
+    def _open_loader(self, title, msg, token=None):
+        token=token or self._next_job("loader")
         if getattr(self,"_loader",None):
             try: self._loader.destroy()
             except Exception: pass
@@ -4599,13 +4805,15 @@ class App(ctk.CTk):
         self._loader_msg=ctk.CTkLabel(card, text=msg, text_color=MUT, font=ctk.CTkFont(size=12), wraplength=320, justify="left")
         self._loader_msg.pack(anchor="w", padx=18)
         pb=ctk.CTkProgressBar(card, mode="indeterminate", height=6, corner_radius=3, progress_color=AC); pb.pack(fill="x", padx=18, pady=(14,16)); pb.start()
-        self._loader=t
-    def _close_loader(self):
+        self._loader=t; self._loader_token=token
+        return token
+    def _close_loader(self, token=None):
+        if token is not None and token!=getattr(self, "_loader_token", None): return
         t=getattr(self,"_loader",None)
         if t:
             try: t.destroy()
             except Exception: pass
-            self._loader=None
+            self._loader=None; self._loader_token=None
 
     # ---- export zip ----
     def on_export_zip(self):
@@ -4816,15 +5024,15 @@ class App(ctk.CTk):
 
     # ---- queue ----
     def _slow_watch(self, kind, t0):
-        """Log any queue event whose handling took more than 150 ms: the UI thread must never stall for long."""
-        prev=getattr(self, "_slow_prev", None)
-        if prev and time.time()-prev[1]>0.15: log_line("slow ui: %s took %.0f ms" % (prev[0], (time.time()-prev[1])*1000))
-        self._slow_prev=(kind, t0)
+        """Log queue handlers that actually spend too long on the UI thread."""
+        dt=time.time()-t0
+        if dt>0.15: log_line("slow ui: %s handler took %.0f ms" % (kind, dt*1000))
     def drain_loop(self):
+        more=False; processed=0; deadline=time.monotonic()+0.045
         try:
-            while True:
-                kind,*rest=self.q.get_nowait()
-                _t_ev=time.time(); self._slow_watch(kind, _t_ev)
+            while processed<64 and time.monotonic()<deadline:
+                kind,*rest=self.q.get_nowait(); processed+=1
+                _t_ev=time.time()
                 try:
                     self._handle_event(kind, rest)
                 except Exception as e:
@@ -4834,13 +5042,20 @@ class App(ctk.CTk):
                     # stopped it forever - the window would sit frozen (the splash never closes, nothing ever
                     # updates again) with no error visible anywhere but the log. Seen 2026-09-13.
                     log_error("drain_loop event %r" % (kind,), e)
+                finally:
+                    self._slow_watch(kind, _t_ev)
         except queue.Empty: pass
         finally:
-            self.after(200, self.drain_loop)      # ALWAYS reschedule, even if something above raised
+            try: more=not self.q.empty()
+            except Exception: more=False
+            self.after(10 if more else 80, self.drain_loop)      # bounded pump: large bursts yield back to Tk
     def _handle_event(self, kind, rest):
                 if kind=="mounted":
-                    ok,msg=rest; self._mounting=False
-                    if ok: self.listed=False
+                    ok,msg=rest; self._mounting=False; self._device_mounted=ok
+                    if ok:
+                        self.listed=False; self.projects_sig=None
+                        self.set_banner("Connected - reading scanner projects…", AC)
+                        self.start_listing("device")
                     else: self.set_banner("Couldn't connect: "+msg, WARN); log_line("mount failed: "+msg)
                 elif kind=="refresh_probe":
                     self._refresh_probe_done(*rest)
@@ -4849,7 +5064,10 @@ class App(ctk.CTk):
                     if not getattr(self, "_first_listed", False):
                         self._first_listed=True
                         if self.listed_src=="local" and any(p.get("local") for p in rest[0]): self._set_mode("Local")   # no scanner: start on what is on this PC
-                    self.render_list(rest[0]); self._proc_refresh()
+                    self.render_list(rest[0])
+                    if self.mode_frames.get("Process") and self.mode_frames["Process"].winfo_ismapped(): self._proc_refresh()
+                    elif getattr(self, "page", "import")=="projects": self._schedule_panel_refresh(20)
+                    else: self._proc_dirty=True
                     if not getattr(self, "_first_render_done", False):
                         self._first_render_done=True                      # the splash may go now (see _close_splash)
                     jump=getattr(self, "_select_after_list", None)
@@ -4858,8 +5076,8 @@ class App(ctk.CTk):
                         if any(p["name"]==jump for p in self.projects): self.select_project(jump)
                         self._folder_loaded=True; self.refresh_folder()
                     if self.page=="projects": self._panel_refresh()
-                    if not getattr(self, "_shots_loaded", False):   # auto-load device screenshots once
-                        self._shots_loaded=True; self.refresh_screenshots()
+                    # Device screenshots are explicit-only. Auto-loading them here made every startup
+                    # touch the same MTP/FUSE mount that can stall USB input when jmtpfs is unhealthy.
                 elif kind=="projects_failed":
                     self.listing=False; self.set_status(""); self.set_banner("Couldn't refresh projects - see Help > Log.", WARN)
                 elif kind=="sizes": self.projects_sig=None; self.update_summary()
@@ -4910,16 +5128,27 @@ class App(ctk.CTk):
                     self.pulling=False; self.zip_btn.configure(state="normal"); self.progress.grid_remove()
                     self.set_banner("ZIP failed: "+rest[0], WARN)
                 elif kind=="loader_msg":
+                    token,msg=(rest[0], rest[1]) if len(rest)>1 else (None, rest[0])
+                    if token is not None and token!=getattr(self, "_loader_token", None): return
                     if getattr(self,"_loader_msg",None):
-                        try: self._loader_msg.configure(text=rest[0])
+                        try: self._loader_msg.configure(text=msg)
                         except Exception: pass
                 elif kind=="view_done":
-                    self._close_loader(); self.set_status("")
-                    if rest[0]: self.set_banner("3D view failed - see Help > Log.", WARN)
+                    token,err=(rest[0], rest[1]) if len(rest)>1 else (None, rest[0])
+                    if token is not None and token!=getattr(self, "_view_job", None): return
+                    self._close_loader(token); self.set_status("")
+                    if err: self.set_banner("3D view failed - see Help > Log.", WARN)
                 elif kind=="status":
                     self.set_status(rest[0])
+                elif kind=="open3d_checked":
+                    self._open3d_probe_busy=False
+                    if self._status_msg=="Checking Open3D…": self.set_status("")
                 elif kind=="shots":
-                    self.render_shots(rest[0]); self.set_status("")
+                    self._shots_busy=False; self.render_shots(rest[0]); self.set_status("")
+                elif kind=="shots_unmounted":
+                    self._shots_busy=False; self.set_status(""); self.set_banner("Screenshots come over USB: plug in, tap File Transfer, click USB.", WARN)
+                elif kind=="shots_failed":
+                    self._shots_busy=False; self.set_status(""); self.set_banner("Couldn't read screenshots - see Help > Log.", WARN)
                 elif kind=="shots_pulled":
                     n, d = rest[0]; self.set_status("")
                     self.set_banner("Pulled %d screenshot%s -> %s" % (n, "" if n==1 else "s", d), OK)
@@ -4940,10 +5169,11 @@ class App(ctk.CTk):
                         try: self._loader_msg.configure(text=rest[0])
                         except Exception: pass
                 elif kind=="fuse_done":
+                    job_name,payload=(rest[0], rest[1]) if len(rest)>1 else (getattr(self, "_fuse_name", None), rest[0])
                     self._close_loader(); self._fusing=False
                     try: self.proc_btn.configure(state="normal")
                     except Exception: pass
-                    status, info = rest[0]
+                    status, info = payload
                     if status=="ok":
                         n=len(info.split(", ")); self.set_banner("Built %d 3D model%s on this PC" % (n, "" if n==1 else "s"), OK); self.set_status("3D model%s built: %s" % ("" if n==1 else "s", info))
                         self.projects_sig=None; self.gallery_cache={}; self._mesh_stats={}
@@ -4991,21 +5221,26 @@ class App(ctk.CTk):
                     if self.auto_open.get(): subprocess.Popen(["xdg-open", os.path.dirname(out)])
                 elif kind=="wifi": self._wifi_event(rest[0], rest[1])
                 elif kind=="loader_close":
-                    self._close_loader()
+                    self._close_loader(rest[0] if rest else None)
                 elif kind=="base_done":
-                    self._close_loader(); self._basing=False
+                    token,payload=(rest[0], rest[1]) if len(rest)>1 else (None, rest[0])
+                    if token is not None and token!=getattr(self, "_base_job", None): return
+                    self._close_loader(token); self._basing=False
                     try: self.base_btn.configure(state="normal")
                     except Exception: pass
-                    status, info = rest[0][0], rest[0][1]
+                    status, info = payload[0], payload[1]
                     if status=="ok":
-                        node=rest[0][2] if len(rest[0])>2 else None; plane=rest[0][3] if len(rest[0])>3 else None
-                        nm=self.selected
+                        node=payload[2] if len(payload)>2 else None; plane=payload[3] if len(payload)>3 else None; nm=payload[4] if len(payload)>4 else self.selected
                         if nm and node and plane:
                             self.records.setdefault(nm,{}).setdefault("base_plane",{})[node]=plane; self._persist()
                         self.set_banner("Base removed from %s: saved as the prepared version%s." % (self._scan_label(nm, node) if (nm and node) else "the model", ", and the cut is remembered for combining" if plane else ""), OK)
                         self.set_status("")
                         self.projects_sig=None; self._mesh_stats={}; self.gallery_cache.pop(nm, None)
-                        if nm and node: self._proc_set_current(nm, node, "clean")
+                        if nm and node:
+                            self.records.setdefault(nm,{}).setdefault("current",{})[node]="clean"; self._persist()
+                            if self.selected==nm:
+                                self._proc_render(nm); self._mv_key=None; self._maybe_schedule_shaded(nm, node, 250)
+                            else: self._proc_refresh()
                         else: self._proc_refresh()
                     elif status=="cancel":
                         self.set_banner("Base removal cancelled.", MUT); self.set_status("")
