@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.27-pre"
+APP = "PointYoink"; VERSION = "0.9.28-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3769,7 +3769,7 @@ class App(ctk.CTk):
             log_error("range-connect", e); self.q.put(("range_err", "RANGE connect failed: %s" % e))
     def _range_disconnect(self):
         self._range_on=False; self._range_busy=True; st=self._range_stream; col=self._range_color; xu=self._range
-        self.range_btn.configure(text="▶ Connect", fg_color=AC, state="disabled"); self.set_status("RANGE - stopping…")
+        self.range_btn.configure(text="▶ Connect", fg_color=AC, state="disabled"); self.set_status("Stopping…")
         def _off():
             try:
                 if xu: xu.projector(False)        # while still streaming; the reboot below would also kill it

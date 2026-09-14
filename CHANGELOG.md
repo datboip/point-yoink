@@ -3,6 +3,10 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.28 (dev, 2026-09-13)
+- Fixed: the status bar said "RANGE live" even when connected to the MIRACO in
+  PC mode.
+
 ## 0.9.27 (dev, 2026-09-13)
 - Fixed a real deadlock behind the frozen splash: the first import of
   trimesh/shapely could be started by two threads at once (the main thread's
