@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.33-pre"
+APP = "PointYoink"; VERSION = "0.9.34-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3761,24 +3761,39 @@ class App(ctk.CTk):
                 self.q.put(("range_err", "RANGE is still booting - give it a few seconds and try again.")); return
             try: intr=xu.intrinsics(w, h)
             except Exception as e: log_line("%s: intrinsics: %s" % (name, e)); intr=None
-            rgb_intr=extr=rgb_dist=None
-            rw,rh=dev.get("rgb_w",1280), dev.get("rgb_h",800)
-            try: rgb_intr=xu.rgb_intrinsics(rw, rh)
-            except Exception as e: log_line("%s: rgb intrinsics: %s" % (name, e))
-            try: extr=xu.extrinsics()
-            except Exception as e: log_line("%s: extrinsics: %s" % (name, e))
-            try: rgb_dist=xu.rgb_distort()
-            except Exception as e: log_line("%s: rgb distort: %s" % (name, e))
             try: xu.projector(True)
             except Exception as e: log_line("%s: projector: %s" % (name, e))
             time.sleep(2.5)
             st=R.DepthStream(dev["node"], w, h); st.start()
             col=None
+            rw,rh=dev.get("rgb_w",1280), dev.get("rgb_h",800)
             if dev.get("rgb_node"):
                 col=R.ColorStream(dev["rgb_node"], rw, rh, show=(w, h)); col.start()
-            self.q.put(("range_ok", (dev, xu, intr, st, col, fw, rgb_intr, extr, rgb_dist)))
+            self.q.put(("range_ok", (dev, xu, intr, st, col, fw)))
+            threading.Thread(target=self._range_calib_worker, args=(xu, rw, rh), daemon=True).start()
         except Exception as e:
             log_error("range-connect", e); self.q.put(("range_err", "RANGE connect failed: %s" % e))
+    def _range_calib_worker(self, xu, rw, rh):
+        """Color-alignment calibration (LC_RT.bin/Prgb.bin/Distort.bin) is a nice-to-have for the
+        Combined view, not needed to stream - fetched after connect, off the critical path, each
+        read capped so a missing file on this device/firmware can't stall anything for minutes."""
+        def _bounded(fn, timeout=4):
+            box={}
+            def _run():
+                try: box["v"]=fn()
+                except Exception as e: box["e"]=e
+            t=threading.Thread(target=_run, daemon=True); t.start(); t.join(timeout)
+            if t.is_alive(): return None            # timed out - thread is abandoned, harmless (read-only)
+            if "e" in box: raise box["e"]
+            return box.get("v")
+        rgb_intr=extr=rgb_dist=None
+        try: rgb_intr=_bounded(lambda: xu.rgb_intrinsics(rw, rh))
+        except Exception as e: log_line("rgb intrinsics: %s" % e)
+        try: extr=_bounded(lambda: xu.extrinsics())
+        except Exception as e: log_line("extrinsics: %s" % e)
+        try: rgb_dist=_bounded(lambda: xu.rgb_distort())
+        except Exception as e: log_line("rgb distort: %s" % e)
+        if rgb_intr and extr: self.q.put(("range_calib", (rgb_intr, extr, rgb_dist)))
     def _range_disconnect(self):
         self._range_on=False; self._range_busy=True; st=self._range_stream; col=self._range_color; xu=self._range
         self.range_btn.configure(text="▶ Connect", fg_color=AC, state="disabled"); self.set_status("Stopping…")
@@ -4714,13 +4729,19 @@ class App(ctk.CTk):
                     self.live_btn.configure(text="▶ Connect", fg_color=AC); self.live_rate.configure(text="")
                     self.live_txt.configure(text=rest[0], text_color=WARN); self.set_banner(rest[0], WARN); self._live_empty()
                 elif kind=="range_ok":
-                    dev,xu,intr,st,col,fw,rgb_intr,extr,rgb_dist=rest[0]
+                    dev,xu,intr,st,col,fw=rest[0]
                     self._range=xu; self._range_intr=intr; self._range_stream=st; self._range_color=col; self._range_on=True; self._range_busy=False
-                    self._range_rgb_intr=rgb_intr; self._range_extr=extr; self._range_rgb_dist=rgb_dist
+                    self._range_rgb_intr=None; self._range_extr=None; self._range_rgb_dist=None
+                    self._range_dev_name=dev.get("name","RANGE"); self._range_usb_path=dev["usb_path"]; self._range_fw=fw or "?"; self._range_has_col=bool(col)
                     self.range_btn.configure(text="■ Disconnect", fg_color="#3a2530", state="normal")
-                    aligned=" (aligned)" if (rgb_intr and extr) else ""
-                    self.range_status.configure(text="%s connected  ·  usb %s  ·  firmware %s  ·  projector on%s%s" % (dev.get("name","RANGE"), dev["usb_path"], fw or "?", "" if col else "  ·  no color camera found", aligned), text_color=OK)
+                    self.range_status.configure(text="%s connected  ·  usb %s  ·  firmware %s  ·  projector on%s" % (dev.get("name","RANGE"), dev["usb_path"], fw or "?", "" if col else "  ·  no color camera found"), text_color=OK)
                     self.set_status("RANGE live"); self._range_layout(); self._range_draw()
+                elif kind=="range_calib":
+                    rgb_intr,extr,rgb_dist=rest[0]
+                    if self._range_on:
+                        self._range_rgb_intr=rgb_intr; self._range_extr=extr; self._range_rgb_dist=rgb_dist
+                        self.range_status.configure(text="%s connected  ·  usb %s  ·  firmware %s  ·  projector on  ·  aligned" %
+                                                     (getattr(self,"_range_dev_name","RANGE"), getattr(self,"_range_usb_path","?"), getattr(self,"_range_fw","?")), text_color=OK)
                 elif kind=="range_err":
                     self._range_busy=False; self.range_btn.configure(state="normal")
                     self.set_banner(rest[0], WARN); self.set_status(""); self.range_status.configure(text=rest[0], text_color=WARN)

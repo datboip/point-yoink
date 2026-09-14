@@ -3,6 +3,15 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.34 (dev, 2026-09-13)
+- Fixed a real ~10 minute stall on MIRACO connect introduced in 0.9.33: the
+  three new color-alignment reads (LC_RT.bin/Prgb.bin/Distort.bin) had no
+  timeout, so a device/firmware without one of those files could hang the
+  whole connect sequence for minutes before the projector even turned on or
+  streaming started. They now run after the stream is already live, each
+  capped at 4 seconds, and update the status to "aligned" if they succeed
+  instead of blocking anything if they don't.
+
 ## 0.9.33 (dev, 2026-09-13)
 - MIRACO PC-mode Live view: the Combined panel now does a real depth-to-color
   reprojection using the scanner's own factory calibration (LC_RT.bin
