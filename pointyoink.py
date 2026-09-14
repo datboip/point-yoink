@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.28-pre"
+APP = "PointYoink"; VERSION = "0.9.29-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1264,7 +1264,10 @@ class App(ctk.CTk):
             lab=ctk.CTkLabel(cell, text=""); lab.grid(row=1,column=0, sticky="nsew"); self.range_tiles[key]=lab
         self.range_single=ctk.CTkLabel(rf, text="", fg_color="#0a0c10", corner_radius=12); self.range_single.grid(row=1,column=0, sticky="nsew", padx=10, pady=(0,4)); self.range_single.grid_remove()
         self.range_info=ctk.CTkLabel(rf, text="The RANGE draws 5V/1A: hub ports (500 mA) make it reset when the projector fires. It also reboots itself whenever the stream stops (that's normal).",
-                                     text_color=MUT, font=ctk.CTkFont(size=11), anchor="w"); self.range_info.grid(row=2,column=0, sticky="ew", padx=14, pady=(0,10))
+                                     text_color=MUT, font=ctk.CTkFont(size=11), anchor="w"); self.range_info.grid(row=2,column=0, sticky="ew", padx=14, pady=(2,4))
+        self.range_dist=tk.Canvas(rf, height=26, bg="#0a0c10", highlightthickness=0); self.range_dist.grid(row=3,column=0, sticky="ew", padx=14, pady=(0,10))
+        self._tip(self.range_dist, "How far the object is, live: the same Too Near / Excellent / Good / Far / Too Far the scanner itself shows.")
+        self.range_dist.bind("<Configure>", lambda e: self._range_dist_draw(getattr(self, "_range_last_zones", None)))
         self._range=None; self._range_stream=None; self._range_color=None; self._range_intr=None; self._range_on=False; self._range_busy=False
 
     # ---- import options (right column) + the save folder browser (Files tab) ----
@@ -3813,6 +3816,7 @@ class App(ctk.CTk):
         if not self._range_on: return
         try:
             import numpy as np
+            import range as R
             v=self.range_view.get()
             if v=="All":
                 for key,lab in self.range_tiles.items(): self._range_show(lab, self._range_frame(key), pad=6)
@@ -3821,10 +3825,28 @@ class App(ctk.CTk):
             st=self._range_stream; col=self._range_color
             if st and st.latest is not None:
                 fr=st.latest; nz=fr[fr>0]
-                self.range_info.configure(text="depth frames %d  ·  color frames %d  ·  valid %.0f%%  ·  depth %.0f-%.0f mm (median %.0f)  ·  sweet spot 300-800 mm" % (
+                self.range_info.configure(text="depth frames %d  ·  color frames %d  ·  valid %.0f%%  ·  depth %.0f-%.0f mm (median %.0f)" % (
                     st.count, col.count if col else 0, 100*(fr>0).mean(), (nz.min()*0.1 if nz.size else 0), (nz.max()*0.1 if nz.size else 0), (np.median(nz)*0.1 if nz.size else 0)))
+                self._range_last_zones=R.distance_histogram(fr); self._range_dist_draw(self._range_last_zones)
+            else: self._range_last_zones=None; self._range_dist_draw(None)
         except Exception as e: log_error("range-draw", e)
         self.after(80, self._range_draw)
+    def _range_dist_draw(self, zones):
+        """The scanner's own distance strip, recreated: a horizontal bar of Too Near/Excellent/Good/
+        Far/Too Far, filled by the live share of depth pixels in each zone."""
+        cv=self.range_dist; cv.delete("z")
+        w=max(1, cv.winfo_width()); h=cv.winfo_height() or 26
+        if not zones:
+            cv.create_text(6, h//2, text="no depth yet", fill=MUT, font=("", 10), anchor="w", tags="z"); return
+        cols={"Too Near": WARN, "Excellent": OK, "Good": AC, "Far": WARN, "Too Far": DANGER}
+        x=0
+        for lab, share in zones:
+            seg=max(1, w/len(zones))
+            fill=cols.get(lab, MUT); on=share>0.005
+            cv.create_rectangle(x, 2, x+seg-2, h-2, fill=(fill if on else "#1a1e28"), outline="", tags="z")
+            cv.create_text(x+seg/2, h//2, text=("%s %.0f%%" % (lab, share*100)) if seg>70 else ("%.0f%%" % (share*100)),
+                           fill=(BG if on else DIM), font=("", 9, "bold" if on else "normal"), tags="z")
+            x+=seg
     def range_capture(self):
         st=self._range_stream
         if not self._range_on or st is None or st.latest is None:

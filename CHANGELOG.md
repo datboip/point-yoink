@@ -3,6 +3,13 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.29 (dev, 2026-09-13)
+- **Live view: a distance-quality strip**, recreated from the scanner's own
+  screen (Too Near / Excellent / Good / Far / Too Far), computed live from
+  the depth stream. Works for the MIRACO in PC mode and the RANGE.
+- Device screenshots of the scanner's live-scanning screen and its Scan
+  Settings saved for reference.
+
 ## 0.9.28 (dev, 2026-09-13)
 - Fixed: the status bar said "RANGE live" even when connected to the MIRACO in
   PC mode.

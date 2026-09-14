@@ -219,6 +219,15 @@ def depth_to_image(frame):
     img[frame == 0] = (10, 12, 16)
     return img.astype(np.uint8)
 
+DIST_ZONES = (("Too Near", 0, 300), ("Excellent", 300, 500), ("Good", 500, 800), ("Far", 800, 1000), ("Too Far", 1000, 1e9))
+
+def distance_histogram(depth):
+    """Share of valid depth pixels in each of the scanner's own distance zones (mm), matching its
+    live Too Near/Excellent/Good/Far/Too Far strip. Returns [(label, share 0..1), ...]."""
+    nz = depth[depth > 0].astype(np.float32) * 0.1        # raw units -> mm
+    if nz.size == 0: return [(lab, 0.0) for lab, _, _ in DIST_ZONES]
+    return [(lab, float(((nz >= lo) & (nz < hi)).mean())) for lab, lo, hi in DIST_ZONES]
+
 def combined_image(depth, rgb):
     """Depth heat map blended over the color frame. The depth and color cameras have different
     lenses and offsets, so this is a rough overlay for framing, not a registration."""
