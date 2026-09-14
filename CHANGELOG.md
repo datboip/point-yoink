@@ -3,6 +3,14 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.27 (dev, 2026-09-13)
+- Fixed a real deadlock behind the frozen splash: the first import of
+  trimesh/shapely could be started by two threads at once (the main thread's
+  preload and a thumbnail-render thread spawned the moment the project list
+  arrived), and one could hang forever finalising a Tk object from the wrong
+  thread while holding the import lock the other needed. The import now runs
+  before any other thread, or any Tk font, exists.
+
 ## 0.9.26 (dev, 2026-09-13)
 - The splash appears solid at once; the heavy imports run after it has painted
   instead of stalling its fade-in.

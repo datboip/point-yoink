@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.26-pre"
+APP = "PointYoink"; VERSION = "0.9.27-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -879,7 +879,14 @@ class App(ctk.CTk):
             ]
             self._splash=sp; self._splash_a=0.0; self._missing=None
             self._splash_a=1.0; sp.update_idletasks()
-            self.after(60, lambda: (_preload(), self._run_checks(0)))     # the heavy imports run once the splash is on screen, solid
+            # Blocking, synchronous, HERE: no other thread and no Tk font has been created yet (that happens in
+            # _header/_body, called after this returns), so the first import of trimesh/shapely cannot race a
+            # worker thread (e.g. a thumbnail render spawned the moment the project list arrives) and cannot
+            # finalise a Tk object from the wrong thread. That race was a real deadlock, seen 2026-09-13: two
+            # threads both doing "import shapely" for the first time, one hung forever in Font.__del__ while
+            # holding the module's import lock, the other blocked forever waiting for that same lock.
+            _preload()
+            self.after(60, lambda: self._run_checks(0))
         except Exception as e:
             log_error("splash", e); self.deiconify()
     def _splash_fade(self, d):
