@@ -3,6 +3,10 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.25 (dev, 2026-09-13)
+- Live view: IR views shown with a soft stretch so the lit surfaces and the
+  dim room are both visible.
+
 ## 0.9.24 (dev, 2026-09-13)
 - **Live view from the MIRACO over USB.** Put the MIRACO in PC mode and Live
   view shows its depth, both IR cameras and the colour camera, the same panel
