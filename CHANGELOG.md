@@ -3,6 +3,15 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.42 (dev, 2026-09-14)
+- Reverted the WiFi speed graph's x-axis back to overall progress (grows
+  left to right as the transfer completes, like the old Windows copy
+  dialog) instead of 0.9.39's always-full-width sample scaling and 0.9.41's
+  added progress marker - both were solving a problem the user didn't
+  actually have and introduced a more confusing one. Kept the one real fix
+  from 0.9.39: the reference gridlines are never painted over on the
+  not-yet-reached side anymore.
+
 ## 0.9.41 (dev, 2026-09-14)
 - Fixed a corrupted saved window size (a "1x1" geometry got persisted,
   probably from a restart at the wrong moment) that made the window open

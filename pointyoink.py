@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.41-pre"
+APP = "PointYoink"; VERSION = "0.9.42-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -4063,20 +4063,13 @@ class App(ctk.CTk):
         try: W=max(50, cv.winfo_width()); H=int(cv.cget("height"))
         except Exception: return
         cv.delete("all")
-        for gy in (0.25,0.5,0.75): cv.create_line(0, H*gy, W, H*gy, fill="#161a22")   # always visible - nothing paints over them anymore
+        for gy in (0.25,0.5,0.75): cv.create_line(0, H*gy, W, H*gy, fill="#161a22")   # always visible now - nothing paints over the unfilled side
         top=max(r for _,r in sm)*1.15 or 1.0
-        n=len(sm)
-        pts=[(4+(i/(n-1) if n>1 else 0)*(W-8), H-4-(r/top)*(H-14)) for i,(f,r) in enumerate(sm)]   # spread across the full width by sample, not by overall transfer progress - no blank "not there yet" gap
+        pts=[(4+f*(W-8), H-4-(r/top)*(H-14)) for f,r in sm]   # x = overall progress, like the old Windows copy dialog - grows left to right as the transfer completes
         if len(pts)>=2:
             poly=[(pts[0][0], H-4)]+pts+[(pts[-1][0], H-4)]
             cv.create_polygon(*[c for xy in poly for c in xy], fill="#1d3f66", outline="")
             cv.create_line(*[c for xy in pts for c in xy], fill=AC, width=2, smooth=True)
-        # a thin marker for overall transfer progress, separate from the speed history: the line
-        # above always fills the width (recent activity), so without this the chart reads as
-        # "100% done" no matter how far the transfer actually is.
-        px=4+min(1.0, frac)*(W-8)
-        cv.create_line(px, 0, px, H, fill="#f2c14e", width=2)
-        cv.create_polygon(px-5, 0, px+5, 0, px, 7, fill="#f2c14e", outline="")
         self._wifi_peak=max(r for _,r in sm)          # shown in the stats row, not over the curve
     def _wifi_set_code(self, code):
         for tl,ch in zip(self.wifi_tiles, code): tl.configure(text=ch)
