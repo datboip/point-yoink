@@ -3788,8 +3788,8 @@ class App(ctk.CTk):
         import range as R
         st=self._range_stream; col=self._range_color
         if key=="Depth":  return Image.fromarray(R.depth_to_image(st.latest)) if st and st.latest is not None else None
-        if key=="IR L":   return Image.fromarray(st.ir_left) if st and st.ir_left is not None else None
-        if key=="IR R":   return Image.fromarray(st.ir_right) if st and st.ir_right is not None else None
+        if key=="IR L":   return Image.fromarray(R.ir_to_image(st.ir_left)) if st and st.ir_left is not None else None
+        if key=="IR R":   return Image.fromarray(R.ir_to_image(st.ir_right)) if st and st.ir_right is not None else None
         if key=="Color":  return Image.fromarray(col.latest) if col and col.latest is not None else None
         if key=="Combined":
             if st and st.latest is not None and col and col.latest is not None: return Image.fromarray(R.combined_image(st.latest, col.latest))

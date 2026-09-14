@@ -44,3 +44,12 @@ RANGE driver as the starting point. Full descriptor dump and inspection notes: t
 Next steps: XU reads first (GET_LEN on selectors 1,2,7,14; read_file /tmp/inited and /data/camparam/Pl.bin), then
 try the projector line through selector 7 and stream Y16 800x1200 with depth present; then look for the marker
 stream/property.
+
+## Projector and IR, verified with the cup (2026-09-13)
+The RANGE projector recipe (selector 7: `echo s 0xb00 1`, `0xb01 1`, `0x922 1 >/dev/rk_preisp`) DOES work on the
+MIRACO: depth went from ~0.4% to 27-41% valid with a cup at 280 mm. The earlier "dark IR" was just IR auto-exposure
+adapting to the speckle. The Y16 800x1200 frame layout is confirmed from the bytes: depth u16 800x600, then IR
+left u8 800x600, then IR right u8 800x600 (row smoothness 0.8 at width 800 vs 58 at 400; bright centres of the two
+planes sit near the depth silhouette with a horizontal offset between them = a stereo pair). IR frames are raw camera
+views (wider, unrectified); depth is in the rectified left frame. IR-dark materials (this shiny black part) show
+black in IR while the lit table around them is bright. Firmware string via /tmp/inited: v301.2.15.1204.

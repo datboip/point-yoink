@@ -202,6 +202,13 @@ def rotate_cloud(points, deg):
     elif deg % 360 == 270: P[:, 0], P[:, 1] = -points[:, 1], points[:, 0]
     return P
 
+def ir_to_image(ir):
+    """IR camera frame for display: the projector's speckle is bright, everything else near black, so a mild
+    gamma and a percentile stretch (not a hard one) keep both the lit surfaces and the dim room visible."""
+    a = ir.astype(np.float32); hi = max(8.0, float(np.percentile(a, 99.0)))
+    a = np.clip(a / hi, 0.0, 1.0) ** 0.5
+    return (a * 255).astype(np.uint8)
+
 def depth_to_image(frame):
     """uint8 RGB preview, near = warm/bright, invalid = dark."""
     nz = frame[frame > 0]
