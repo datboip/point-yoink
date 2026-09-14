@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.29-pre"
+APP = "PointYoink"; VERSION = "0.9.30-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -4275,24 +4275,25 @@ class App(ctk.CTk):
             except Exception: recs.append((nm, path, 0))
         self.q.put(("shots", (local, recs)))
     def render_shots(self, data):
+        """Screenshots live on the device's slow MTP transport: every thumbnail is a full file read
+        over that link (and Tk only actually reads the pixels when the image is first drawn, so this
+        used to freeze the whole window for as long as all of them took - minutes, once a lot of
+        screenshots pile up). Cells appear at once; each thumbnail is decoded in a worker thread and
+        the already-decoded picture is dropped in as it arrives, one at a time, main thread untouched."""
         images, recs = data
-        self._shots_items=images; self._recs=recs
+        self._shots_items=images; self._recs=recs; self._shots_gen=getattr(self, "_shots_gen", 0)+1; gen=self._shots_gen
         for w in self.shots.winfo_children(): w.destroy()
         self.shots_lbl.configure(text="%d screenshot%s · %d recording%s on the device"
                                  % (len(images), "" if len(images)==1 else "s", len(recs), "" if len(recs)==1 else "s"))
         if not images and not recs:
             ctk.CTkLabel(self.shots, text="Nothing found on the device.\n(Take a screenshot or recording on the scanner, then Refresh.)",
                          text_color=MUT, justify="left").grid(row=0,column=0, padx=20, pady=20, sticky="w"); return
-        idx=0
+        idx=0; labels={}
         for nm,path in images:
             r,c=divmod(idx, 4); idx+=1
             cell=ctk.CTkFrame(self.shots, fg_color=CARD2, corner_radius=10); cell.grid(row=r,column=c, padx=6, pady=6, sticky="nsew")
-            try:
-                self.imgs["shot_"+nm]=cimg(path, 150)
-                lbl=ctk.CTkLabel(cell, image=self.imgs["shot_"+nm], text=""); lbl.pack(padx=6, pady=(6,2))
-                lbl.bind("<Button-1>", lambda e,p=path: self._enlarge(p))
-            except Exception:
-                ctk.CTkLabel(cell, text="(image)", text_color=MUT).pack(padx=20, pady=20)
+            lbl=ctk.CTkLabel(cell, text="loading…", text_color=DIM, width=150, height=110); lbl.pack(padx=6, pady=(6,2))
+            lbl.bind("<Button-1>", lambda e,p=path: self._enlarge(p)); labels[path]=lbl
             ctk.CTkLabel(cell, text=nm[:20], text_color=MUT, font=ctk.CTkFont(size=9)).pack(pady=(0,6))
         for nm,path,sz in recs:
             r,c=divmod(idx, 4); idx+=1
@@ -4300,6 +4301,22 @@ class App(ctk.CTk):
             ctk.CTkLabel(cell, text="▶", text_color=AC, font=ctk.CTkFont(size=40)).pack(padx=6, pady=(14,2))
             ctk.CTkLabel(cell, text=nm[:20], text_color=MUT, font=ctk.CTkFont(size=9)).pack()
             ctk.CTkLabel(cell, text=human(sz), text_color="#5a6474", font=ctk.CTkFont(size=9)).pack(pady=(0,8))
+        def work():
+            for nm,path in images:
+                if gen!=self._shots_gen: return                # a newer refresh replaced this one: stop early
+                try:
+                    im=Image.open(path).convert("RGB"); r=150/im.width; im=im.resize((150,int(im.height*r)))
+                except Exception: im=None
+                def put(nm=nm, path=path, im=im):
+                    if gen!=self._shots_gen: return
+                    lbl=labels.get(path)
+                    if lbl is None or not lbl.winfo_exists(): return
+                    if im is None: lbl.configure(text="(image)")
+                    else:
+                        self.imgs["shot_"+nm]=ctk.CTkImage(light_image=im, dark_image=im, size=im.size)
+                        lbl.configure(image=self.imgs["shot_"+nm], text="")
+                self.q.put(("call", put))
+        threading.Thread(target=work, daemon=True).start()
     def pull_screenshots(self):
         imgs=getattr(self, "_shots_items", []); recs=getattr(self, "_recs", [])
         if not imgs and not recs:

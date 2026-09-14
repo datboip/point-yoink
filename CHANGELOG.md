@@ -3,6 +3,12 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.30 (dev, 2026-09-13)
+- Fixed a real freeze in Captures: every screenshot thumbnail was read over the
+  scanner's slow MTP link one at a time, on the UI thread, so a device with a
+  lot of screenshots and recordings could lock the window for minutes. Cells
+  now appear at once and thumbnails load in the background, one by one.
+
 ## 0.9.29 (dev, 2026-09-13)
 - **Live view: a distance-quality strip**, recreated from the scanner's own
   screen (Too Near / Excellent / Good / Far / Too Far), computed live from
