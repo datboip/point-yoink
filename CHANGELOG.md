@@ -3,6 +3,21 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.43 (dev, 2026-09-14)
+- Found and fixed the real cause of tonight's recurring "app is frozen, I can
+  move the window but can't click anything" reports. `_modal()` (used by
+  every confirm/alert dialog) and `_ask_zip_format()` are the only two
+  dialogs in the app that take an input grab, and neither had a
+  WM_DELETE_WINDOW handler - closing one via the dialog's own window-manager
+  close button skipped the code path that destroys it, so the grab was
+  never released. Everything else in the app kept running fine (that's why
+  the process never looked hung), but all clicks and keystrokes were
+  silently swallowed by the dead dialog's grab. Both now handle the window
+  manager's close button the same way as clicking a button, and release
+  the grab explicitly in a finally block as a second safety net. Verified
+  directly: simulating a window-manager close request now destroys the
+  dialog and releases the grab every time.
+
 ## 0.9.42 (dev, 2026-09-14)
 - Reverted the WiFi speed graph's x-axis back to overall progress (grows
   left to right as the transfer completes, like the old Windows copy

@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.42-pre"
+APP = "PointYoink"; VERSION = "0.9.43-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1600,9 +1600,16 @@ class App(ctk.CTk):
             ctk.CTkButton(row, text=label, width=96, height=34, corner_radius=17,
                           fg_color=(AC if accent else CARD2), hover_color=(AC_H if accent else STROKE),
                           text_color=("#04121f" if accent else TX), command=lambda v=val: choose(v)).pack(side="right", padx=6)
+        # without this, closing via the window's own X button skips choose() entirely, so
+        # wait_window() below can return through the except (or never) with the grab still held
+        # on a dialog that's gone - the whole app then looks frozen (found 2026-09-14).
+        dlg.protocol("WM_DELETE_WINDOW", lambda: choose(None))
         try:
             dlg.grab_set(); dlg.wait_window()
         except Exception: pass
+        finally:
+            try: dlg.grab_release()
+            except Exception: pass
         return res["v"]
     def _confirm(self, title, message):
         return self._modal(title, message, [("Yes",True,True),("No",False,False)]) is True
@@ -4541,9 +4548,13 @@ class App(ctk.CTk):
             ctk.CTkLabel(row, text=hint, text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=10)
         ctk.CTkLabel(card, text="Sizes are rough estimates before compression - the real zip is smaller.",
                      text_color=MUT, font=ctk.CTkFont(size=10), wraplength=410, justify="left").pack(anchor="w", padx=18, pady=(8,0))
+        t.protocol("WM_DELETE_WINDOW", lambda: pick(None))   # same fix as _modal(): closing via the X button must still release the grab
         try:
             t.grab_set(); t.wait_window()
         except Exception: pass
+        finally:
+            try: t.grab_release()
+            except Exception: pass
         return res["v"]
     def _mesh_cloud_sources(self, name, dest):
         """(mesh_plys, cloud_plys) for a project: local flat > local nested > device nested."""
