@@ -4,13 +4,20 @@
 # Unofficial. Not affiliated with or endorsed by Revopoint.
 # "Revopoint" and "MIRACO" are trademarks of their respective owners.
 import os, re, json, time, glob, shutil, threading, subprocess, queue, faulthandler, signal
+# Every subprocess we spawn for heavy work (fuse.py, process.py, align.py, cutplane.py) already
+# caps BLAS threading - but in-process numpy/scipy/trimesh calls (mesh stats, thumbnails) never
+# did, so a single call could spawn one BLAS thread per CPU core and peg the whole machine for
+# several seconds (input lag system-wide, even outside this app - GPU video keeps playing since
+# it doesn't need the starved CPU scheduler). setdefault so an explicit user override still wins.
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_v, "2")
 faulthandler.register(signal.SIGUSR1, all_threads=True)      # kill -USR1 <pid> prints every thread's stack to stderr: for diagnosing a freeze
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.37-pre"
+APP = "PointYoink"; VERSION = "0.9.38-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")

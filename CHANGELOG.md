@@ -3,6 +3,16 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.38 (dev, 2026-09-14)
+- Fixed the app pegging every CPU core for 10-20 seconds during things like
+  a post-delete refresh, freezing keyboard input system-wide (video kept
+  playing fine since that's GPU-driven, but typing anywhere froze). Every
+  subprocess we spawn for heavy work already capped BLAS threading
+  (OPENBLAS_NUM_THREADS=1), but in-process numpy/scipy/trimesh calls never
+  did, so a single mesh-stats or thumbnail pass could spawn one thread per
+  core. Capped OMP/OPENBLAS/MKL/NUMEXPR threads to 2 for the whole app at
+  startup; verified OpenBLAS actually honors it before shipping.
+
 ## 0.9.37 (dev, 2026-09-14)
 - Found and fixed the same freeze pattern as 0.9.36 in four WiFi receive
   spots (cancel, an empty/no-project finish, the orphaned-transfer
