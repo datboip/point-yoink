@@ -3,6 +3,18 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.44 (dev, 2026-09-14)
+- Fixed "Could not load this model" in Remove Base and other GPU-view
+  dialogs: GLView.load() could report success before the mesh was actually
+  uploaded to the GPU, if the view widget wasn't mapped/ready yet at the
+  moment loading finished (a real timing race, not a bad file - confirmed
+  the same mesh loads fine outside the app). The dialog's own check for a
+  missing view._src would then wrongly show "Could not load this model"
+  for a load that was actually still in progress. on_ready now only fires
+  once the upload genuinely completes, success or failure, never before.
+  Verified directly: on_ready no longer fires while the upload is still
+  deferred, only once it actually runs.
+
 ## 0.9.43 (dev, 2026-09-14)
 - Found and fixed the real cause of tonight's recurring "app is frozen, I can
   move the window but can't click anything" reports. `_modal()` (used by
