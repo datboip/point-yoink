@@ -30,3 +30,6 @@ config.json
 
 # deb build output
 packaging/build/
+dev/prof/*.log
+dev/prof/*.csv
+dev/prof/*.svg
