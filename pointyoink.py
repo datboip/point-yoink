@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.31-pre"
+APP = "PointYoink"; VERSION = "0.9.32-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1212,7 +1212,7 @@ class App(ctk.CTk):
                                              text_color=TX, font=ctk.CTkFont(size=12))
         self.live_src.pack(side="left", padx=10); self.live_src.set("MIRACO  (PC mode, USB)")
         # -- MIRACO source --
-        mf=ctk.CTkFrame(lv, fg_color="transparent"); mf.grid(row=1,column=0, sticky="nsew"); self.live_miraco=mf
+        mf=ctk.CTkFrame(lv, fg_color="transparent"); mf.grid(row=1,column=0, sticky="nsew"); mf.grid_remove(); self.live_miraco=mf
         mf.grid_columnconfigure(0, weight=1); mf.grid_rowconfigure(1, weight=1)
         top=ctk.CTkFrame(mf, fg_color="transparent"); top.grid(row=0,column=0,columnspan=2, sticky="ew", padx=10, pady=(0,4))
         ctk.CTkLabel(top, text="Scanner IP", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
@@ -1235,7 +1235,7 @@ class App(ctk.CTk):
         self.live_txt.pack(fill="both", expand=True, padx=12, pady=12)
         self._live_on=False; self._live_last=None; self._live_n=0; self._live_t=time.time(); self._live_trail=[]
         # -- RANGE source --
-        rf=ctk.CTkFrame(lv, fg_color="transparent"); rf.grid(row=1,column=0, sticky="nsew"); rf.grid_remove(); self.live_range=rf
+        rf=ctk.CTkFrame(lv, fg_color="transparent"); rf.grid(row=1,column=0, sticky="nsew"); self.live_range=rf   # matches the default-selected source above
         rf.grid_columnconfigure(0, weight=1); rf.grid_rowconfigure(1, weight=1)
         rtop=ctk.CTkFrame(rf, fg_color="transparent"); rtop.grid(row=0,column=0, sticky="ew", padx=10, pady=(0,4))
         self.range_status=ctk.CTkLabel(rtop, text="Not connected - plug the RANGE into a direct USB port (not a hub), then Connect",

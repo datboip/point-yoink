@@ -3,6 +3,11 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.32 (dev, 2026-09-13)
+- Fixed Live view opening with "MIRACO (PC mode, USB)" shown as selected but
+  the WiFi position panel showing underneath (the source picker's default
+  selection never told the panel to match it).
+
 ## 0.9.31 (dev, 2026-09-13)
 - Fixed a real freeze at the root: an exception in ANY background-result
   handler (project listing, thumbnails, WiFi, builds, ...) used to silently
