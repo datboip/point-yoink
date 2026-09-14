@@ -3,6 +3,14 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.33 (dev, 2026-09-13)
+- MIRACO PC-mode Live view: the Combined panel now does a real depth-to-color
+  reprojection using the scanner's own factory calibration (LC_RT.bin
+  extrinsics, Prgb.bin intrinsics, Distort.bin lens distortion - read the
+  same safe way we already read the depth calibration file) instead of a
+  plain resize-and-blend guess. Falls back to the old overlay if any of that
+  calibration can't be read.
+
 ## 0.9.32 (dev, 2026-09-13)
 - Fixed Live view opening with "MIRACO (PC mode, USB)" shown as selected but
   the WiFi position panel showing underneath (the source picker's default

@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.32-pre"
+APP = "PointYoink"; VERSION = "0.9.33-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1269,6 +1269,7 @@ class App(ctk.CTk):
         self._tip(self.range_dist, "How far the object is, live: the same Too Near / Excellent / Good / Far / Too Far the scanner itself shows.")
         self.range_dist.bind("<Configure>", lambda e: self._range_dist_draw(getattr(self, "_range_last_zones", None)))
         self._range=None; self._range_stream=None; self._range_color=None; self._range_intr=None; self._range_on=False; self._range_busy=False
+        self._range_rgb_intr=None; self._range_extr=None; self._range_rgb_dist=None  # color-alignment calibration, when the device has it
 
     # ---- import options (right column) + the save folder browser (Files tab) ----
     def _opt(self, parent, kind, title, sub, var, value=None, command=None, tip=None):
@@ -3760,14 +3761,22 @@ class App(ctk.CTk):
                 self.q.put(("range_err", "RANGE is still booting - give it a few seconds and try again.")); return
             try: intr=xu.intrinsics(w, h)
             except Exception as e: log_line("%s: intrinsics: %s" % (name, e)); intr=None
+            rgb_intr=extr=rgb_dist=None
+            rw,rh=dev.get("rgb_w",1280), dev.get("rgb_h",800)
+            try: rgb_intr=xu.rgb_intrinsics(rw, rh)
+            except Exception as e: log_line("%s: rgb intrinsics: %s" % (name, e))
+            try: extr=xu.extrinsics()
+            except Exception as e: log_line("%s: extrinsics: %s" % (name, e))
+            try: rgb_dist=xu.rgb_distort()
+            except Exception as e: log_line("%s: rgb distort: %s" % (name, e))
             try: xu.projector(True)
             except Exception as e: log_line("%s: projector: %s" % (name, e))
             time.sleep(2.5)
             st=R.DepthStream(dev["node"], w, h); st.start()
             col=None
             if dev.get("rgb_node"):
-                col=R.ColorStream(dev["rgb_node"], dev.get("rgb_w",1280), dev.get("rgb_h",800), show=(w, h)); col.start()
-            self.q.put(("range_ok", (dev, xu, intr, st, col, fw)))
+                col=R.ColorStream(dev["rgb_node"], rw, rh, show=(w, h)); col.start()
+            self.q.put(("range_ok", (dev, xu, intr, st, col, fw, rgb_intr, extr, rgb_dist)))
         except Exception as e:
             log_error("range-connect", e); self.q.put(("range_err", "RANGE connect failed: %s" % e))
     def _range_disconnect(self):
@@ -3802,7 +3811,8 @@ class App(ctk.CTk):
         if key=="IR R":   return Image.fromarray(R.ir_to_image(st.ir_right)) if st and st.ir_right is not None else None
         if key=="Color":  return Image.fromarray(col.latest) if col and col.latest is not None else None
         if key=="Combined":
-            if st and st.latest is not None and col and col.latest is not None: return Image.fromarray(R.combined_image(st.latest, col.latest))
+            if st and st.latest is not None and col and col.latest is not None:
+                return Image.fromarray(R.combined_image(st.latest, col.latest, self._range_intr, self._range_rgb_intr, self._range_extr, self._range_rgb_dist))
             return self._range_raw("Depth")
         return None
     def _range_show(self, label, pil, pad=16):
@@ -4704,10 +4714,12 @@ class App(ctk.CTk):
                     self.live_btn.configure(text="▶ Connect", fg_color=AC); self.live_rate.configure(text="")
                     self.live_txt.configure(text=rest[0], text_color=WARN); self.set_banner(rest[0], WARN); self._live_empty()
                 elif kind=="range_ok":
-                    dev,xu,intr,st,col,fw=rest[0]
+                    dev,xu,intr,st,col,fw,rgb_intr,extr,rgb_dist=rest[0]
                     self._range=xu; self._range_intr=intr; self._range_stream=st; self._range_color=col; self._range_on=True; self._range_busy=False
+                    self._range_rgb_intr=rgb_intr; self._range_extr=extr; self._range_rgb_dist=rgb_dist
                     self.range_btn.configure(text="■ Disconnect", fg_color="#3a2530", state="normal")
-                    self.range_status.configure(text="%s connected  ·  usb %s  ·  firmware %s  ·  projector on%s" % (dev.get("name","RANGE"), dev["usb_path"], fw or "?", "" if col else "  ·  no color camera found"), text_color=OK)
+                    aligned=" (aligned)" if (rgb_intr and extr) else ""
+                    self.range_status.configure(text="%s connected  ·  usb %s  ·  firmware %s  ·  projector on%s%s" % (dev.get("name","RANGE"), dev["usb_path"], fw or "?", "" if col else "  ·  no color camera found", aligned), text_color=OK)
                     self.set_status("RANGE live"); self._range_layout(); self._range_draw()
                 elif kind=="range_err":
                     self._range_busy=False; self.range_btn.configure(state="normal")
@@ -4715,6 +4727,7 @@ class App(ctk.CTk):
                 elif kind=="range_off":
                     if self._range_busy or self._range_on:
                         self._range=None; self._range_stream=None; self._range_color=None; self._range_on=False; self._range_busy=False; self.set_status("")
+                        self._range_rgb_intr=None; self._range_extr=None; self._range_rgb_dist=None
                         self.range_btn.configure(text="▶ Connect", fg_color=AC, state="normal")
                         self.range_status.configure(text="Disconnected. The RANGE reboots itself now (normal after a stream stops) - back in about 10 s.", text_color=MUT)
                 elif kind=="range_captured":

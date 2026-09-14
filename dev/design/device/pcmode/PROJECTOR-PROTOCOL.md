@@ -79,3 +79,54 @@ is triggering the wrong path (a fallback that gives partial depth without the tr
 enough to light its own indicator), consistent with the SDK's per-type gating. The light-on-unplug
 is most likely just the documented reboot-on-stream-stop behaviour (see range.py notes), not caused
 by the projector command succeeding or failing.
+
+## `laserEnableCtrl` 0x4a0 command - traced but NOT sent (2026-09-13)
+Full disassembly trace of `cs::Camera::laserEnableCtrl(LED_CTRL_TYPE)` (0x248cce) and
+`cs::Camera::readLaserFrequ(FAR_NEAR_STATE&)` (0x237c3c), done because the app's existing
+projector command (0xb00/0xb01/0x922) already gives usable depth, and this was purely an
+attempt to verify a more targeted MIRACO-specific command before ever considering sending it.
+
+Confirmed exactly, byte-for-byte, via string-table + argument-register tracing:
+- Calibration bytes come from `/data/g_resonant_frequency` on the device (2 raw bytes, read
+  earlier this session as `0x0D51`), copied verbatim into the command.
+- Two full command templates exist in rodata, each preceded by its own debug-log string:
+  `"near camera larser freque, %02x %02x"` -> `echo s 0x4a0 8 0x5a 0xf1 0x06 0x%02x 0x%02x 0x00 0x00 0xA5 > /dev/rk_preisp`
+  `"far camera larser freque, %02x %02x"`  -> same with `0x16` instead of `0x06`.
+
+NOT resolved, and this is why nothing was sent:
+- `FAR_NEAR_STATE` (0/1/2) is a raw pass-through of the `XU_NEAR_FAR_STATE_CHANGE` extension-unit
+  register (see `cs::UvcCamera::getFarNearCameraState`) with no symbolic near=X/far=Y label
+  anywhere in the binary - it's whatever the firmware source calls it, which didn't leak.
+- The actual near/far *template* choice inside `laserEnableCtrl` is gated on comparing two
+  characters (position 13, length 2) of the connected unit's own serial number against the
+  literal string `"2M"` - a hardware-variant check, not a live distance-mode switch - plus a
+  second, separately-flagged code path ([this+0x380], set elsewhere, not yet traced) that can
+  reach the same template through a different stored byte pair.
+- Confirmed empirically instead (2026-09-13, live device, read-only, no writes): the device's
+  own scan screen has a literal Near/Far toggle button (see the two screenshots pulled this
+  session) - proves the mode is real and user-facing, but doesn't by itself resolve which raw
+  register value maps to which label without a supervised live read-back while toggling it.
+- Conclusion: not enough to respons­ibly send. Since the existing 0xb00/0xb01/0x922 projector
+  command already works, this is parked rather than guessed at.
+
+## Real depth-to-color calibration files found (2026-09-13)
+Tracing `cs::Camera::getExtrinsics(Extrinsics&)` (0x235b1e) and `getDistort(STREAM_TYPE, Distort&)`
+(0x235dc0) turned up the on-device calibration files needed for genuine pixel-accurate depth-to-color
+alignment (as opposed to the resize-and-blend "Combined" view we shipped before), all readable with
+the exact same safe file-read mechanism already used for the depth intrinsics (`Pl.bin`):
+
+- `/data/camparam/Prgb.bin` - color camera intrinsics, identical binary layout to `Pl.bin`
+  (u16 calib width, u16 calib height, then 9x float32 row-major K matrix).
+- `/data/camparam/LC_RT.bin` - 48 bytes: 9x float32 row-major rotation + 3x float32 translation
+  (mm), confirmed via `memcpy(..., 0x30)`. "LC" = left(depth)-to-color. Transform convention
+  assumed as `P_color = R @ P_depth + T` (matches a synthetic identity-calibration round-trip
+  test in range.py, not yet confirmed against the device's real file contents).
+- `/data/camparam/Distort.bin` - 20 bytes = 5x float32 (k1, k2, p1, p2, k3), confirmed via
+  `memcpy(..., 0x14)` and the "get distort of rgb failed" log string right next to the path.
+- Also seen but not yet used: `/data/camparam/camparamLR/P.bin`, `Q.bin` (stereo rectification),
+  `mapparamL.bin`, `mapparamR.bin` (rectification maps), `metroExtra.bin`.
+
+Implemented in `range.py` (`XU.rgb_intrinsics`, `XU.extrinsics`, `XU.rgb_distort`,
+`reproject_color_to_depth`) and wired into the Live view's Combined mode in `pointyoink.py`
+(0.9.33-pre). Falls back to the old blend if any of the three reads fail. Not yet verified
+against a live read of the real files - only unit-tested with synthetic identity calibration.

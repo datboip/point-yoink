@@ -110,6 +110,25 @@ class XU:
         cw, ch = struct.unpack_from("<HH", pl, 0); m = struct.unpack_from("<9f", pl, 4)
         sx, sy = w / cw, h / ch
         return {"calib_w": cw, "calib_h": ch, "fx": m[0] * sx, "fy": m[4] * sy, "cx": m[2] * sx, "cy": m[5] * sy}
+    def rgb_intrinsics(self, w, h):
+        """Same layout as Pl.bin but for the color camera (/data/camparam/Prgb.bin)."""
+        pr = self.read_file("/data/camparam/Prgb.bin")
+        if len(pr) < 40: raise RuntimeError("could not read Prgb.bin (%d bytes)" % len(pr))
+        cw, ch = struct.unpack_from("<HH", pr, 0); m = struct.unpack_from("<9f", pr, 4)
+        sx, sy = w / cw, h / ch
+        return {"calib_w": cw, "calib_h": ch, "fx": m[0] * sx, "fy": m[4] * sy, "cx": m[2] * sx, "cy": m[5] * sy}
+    def extrinsics(self):
+        """Depth/left-IR camera -> color camera rigid transform (/data/camparam/LC_RT.bin):
+        9 floats row-major rotation then 3 floats translation (mm)."""
+        rt = self.read_file("/data/camparam/LC_RT.bin")
+        if len(rt) < 48: raise RuntimeError("could not read LC_RT.bin (%d bytes)" % len(rt))
+        m = struct.unpack_from("<12f", rt, 0)
+        return {"R": np.array(m[0:9], dtype=np.float64).reshape(3, 3), "T": np.array(m[9:12], dtype=np.float64)}
+    def rgb_distort(self):
+        """Color camera lens distortion (/data/camparam/Distort.bin): k1,k2,p1,p2,k3."""
+        db = self.read_file("/data/camparam/Distort.bin")
+        if len(db) < 20: raise RuntimeError("could not read Distort.bin (%d bytes)" % len(db))
+        return struct.unpack_from("<5f", db, 0)
 
 class _PipeStream:
     """Raw frames piped from `v4l2-ctl --stream-to=-`; subclasses parse the byte stream.
@@ -228,11 +247,52 @@ def distance_histogram(depth):
     if nz.size == 0: return [(lab, 0.0) for lab, _, _ in DIST_ZONES]
     return [(lab, float(((nz >= lo) & (nz < hi)).mean())) for lab, lo, hi in DIST_ZONES]
 
-def combined_image(depth, rgb):
-    """Depth heat map blended over the color frame. The depth and color cameras have different
-    lenses and offsets, so this is a rough overlay for framing, not a registration."""
+def reproject_color_to_depth(depth, rgb, intr, rgb_intr, extr, dist=None):
+    """Warp the color frame into the depth camera's own view, using the scanner's own factory
+    calibration (LC_RT.bin extrinsics + Prgb.bin intrinsics + Distort.bin lens distortion),
+    the same geometry the scanner's own app uses - not a crop/resize guess.
+    depth: (H,W) uint16 raw units. rgb: (h,w,3) uint8, any resolution (its own intrinsics must
+    match its actual shape). Returns (H,W,3) uint8, black where nothing maps into the color frame."""
+    H_, W_ = depth.shape
+    out = np.zeros((H_, W_, 3), np.uint8)
+    m = depth > 0
+    if not m.any(): return out
+    Z = depth[m].astype(np.float64) * DEPTH_SCALE
+    v, u = np.nonzero(m)
+    X = (u - intr["cx"]) * Z / intr["fx"]; Y = (v - intr["cy"]) * Z / intr["fy"]
+    P = np.stack([X, Y, Z], 1)                                   # (N,3) in the depth camera's frame
+    Pc = P @ extr["R"].T + extr["T"]                              # into the color camera's frame
+    zc = Pc[:, 2]; front = zc > 1e-6
+    x = np.zeros_like(zc); y = np.zeros_like(zc)
+    x[front] = Pc[front, 0] / zc[front]; y[front] = Pc[front, 1] / zc[front]
+    if dist is not None:
+        k1, k2, p1, p2, k3 = dist
+        r2 = x * x + y * y; radial = 1 + k1 * r2 + k2 * r2 * r2 + k3 * r2 * r2 * r2
+        xd = x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x)
+        yd = y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y
+        x, y = xd, yd
+    uc = rgb_intr["fx"] * x + rgb_intr["cx"]; vc = rgb_intr["fy"] * y + rgb_intr["cy"]
+    rh, rw = rgb.shape[:2]
+    ui = np.round(uc).astype(np.int32); vi = np.round(vc).astype(np.int32)
+    ok = front & (ui >= 0) & (ui < rw) & (vi >= 0) & (vi < rh)
+    out[v[ok], u[ok]] = rgb[vi[ok], ui[ok]]
+    return out
+
+def combined_image(depth, rgb, intr=None, rgb_intr=None, extr=None, dist=None):
+    """Depth heat map blended over the color frame. With calibration (intr/rgb_intr/extr) this is
+    a real reprojection into the depth camera's view; without it, a rough resize-and-blend overlay
+    for framing only, since the two cameras have different lenses and offsets."""
     from PIL import Image
     heat = depth_to_image(depth); valid = depth > 0
+    if intr is not None and rgb_intr is not None and extr is not None:
+        try:
+            aligned = reproject_color_to_depth(depth, rgb, intr, rgb_intr, extr, dist)
+            out = heat.astype(np.float32) * 0.7
+            hit = valid & (aligned.sum(-1) > 0)
+            out[hit] = aligned[hit] * 0.55 + heat[hit] * 0.45
+            return np.clip(out, 0, 255).astype(np.uint8)
+        except Exception:
+            pass
     if rgb.shape[:2] != (H, W): rgb = np.asarray(Image.fromarray(rgb).resize((W, H)))
     out = rgb.astype(np.float32) * 0.55
     out[valid] = rgb[valid] * 0.35 + heat[valid] * 0.65
