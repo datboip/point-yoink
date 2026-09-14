@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.19-pre"
+APP = "PointYoink"; VERSION = "0.9.20-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -835,8 +835,16 @@ class App(ctk.CTk):
             sp=ctk.CTkToplevel(self); sp.overrideredirect(True); sp.configure(fg_color=CARD)
             try: sp.wm_attributes("-type","splash")
             except Exception: pass
+            # centre the splash on where the main window will appear (its saved place), not on the pointer's monitor:
+            # on a multi-monitor desk the two would otherwise open on different screens
             mx,my,mw,mh=self._pointer_monitor()
-            sp.geometry("%dx%d+%d+%d"%(W,H, mx+(mw-W)//2, my+(mh-H)//2))
+            m=re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", self.cfg.get("geometry","") or "")
+            if m:
+                gw,gh,gx,gy=map(int, m.groups()); cx,cy=gx+gw//2, gy+gh//2
+            else:
+                cx,cy=mx+mw//2, my+mh//2
+                self.geometry("+%d+%d" % (mx+(mw-self.winfo_reqwidth())//2, my+40))      # first run: the app opens on this monitor too
+            sp.geometry("%dx%d+%d+%d"%(W,H, cx-W//2, cy-H//2))
             try: sp.attributes("-alpha",0.0); sp.attributes("-topmost",True)
             except Exception: pass
             # everything is drawn on ONE canvas so text/logo overlay the gradient with true transparency

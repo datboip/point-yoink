@@ -3,6 +3,10 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.20 (dev, 2026-09-13)
+- The splash opens centred on where the main window will appear, so both are
+  on the same monitor.
+
 ## 0.9.19 (dev, 2026-09-13)
 - Startup dialogs (a pending WiFi transfer, the first-run panel) wait until the
   splash has closed, so the main window never appears half-built behind it.
