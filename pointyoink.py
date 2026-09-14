@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.30-pre"
+APP = "PointYoink"; VERSION = "0.9.31-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -4570,6 +4570,19 @@ class App(ctk.CTk):
             while True:
                 kind,*rest=self.q.get_nowait()
                 _t_ev=time.time(); self._slow_watch(kind, _t_ev)
+                try:
+                    self._handle_event(kind, rest)
+                except Exception as e:
+                    # One bad event must never kill the pump: everything the app shows (the project list, the
+                    # splash closing, thumbnails, WiFi/build progress) depends on this loop rescheduling itself.
+                    # Before this fix an uncaught exception here propagated out of drain_loop and silently
+                    # stopped it forever - the window would sit frozen (the splash never closes, nothing ever
+                    # updates again) with no error visible anywhere but the log. Seen 2026-09-13.
+                    log_error("drain_loop event %r" % (kind,), e)
+        except queue.Empty: pass
+        finally:
+            self.after(200, self.drain_loop)      # ALWAYS reschedule, even if something above raised
+    def _handle_event(self, kind, rest):
                 if kind=="mounted":
                     ok,msg=rest; self._mounting=False
                     if ok: self.listed=False
@@ -4730,8 +4743,6 @@ class App(ctk.CTk):
                         self.set_banner("Base removal cancelled.", MUT); self.set_status("")
                     else:
                         self.set_banner("Base removal failed - see Help > Log.", WARN); self.set_status("")
-        except queue.Empty: pass
-        self.after(200, self.drain_loop)
 
 if __name__ == "__main__":
     App().mainloop()

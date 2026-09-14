@@ -3,6 +3,14 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.31 (dev, 2026-09-13)
+- Fixed a real freeze at the root: an exception in ANY background-result
+  handler (project listing, thumbnails, WiFi, builds, ...) used to silently
+  kill the queue pump forever - the window would just stop updating, most
+  visibly as the splash never closing, with no error shown anywhere but the
+  log. One bad event now gets logged and skipped; everything else keeps
+  working.
+
 ## 0.9.30 (dev, 2026-09-13)
 - Fixed a real freeze in Captures: every screenshot thumbnail was read over the
   scanner's slow MTP link one at a time, on the UI thread, so a device with a
