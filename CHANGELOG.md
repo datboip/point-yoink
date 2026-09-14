@@ -3,6 +3,22 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.45 (dev, 2026-09-14)
+- Fixed the exact bug behind the "Drawing the 3D model…" blank right panel,
+  found with a Codex audit: `_panel_refresh`, `_proc_render`, `_next_refresh`,
+  and `render_list`/`render_shots` all destroyed their widgets before
+  rebuilding, with nothing catching an exception partway through - the panel
+  was left permanently blank with no error anywhere (a Tk-callback
+  exception, which our own drain_loop try/except doesn't see). All five now
+  catch that and show a clear "couldn't refresh, see the log" message
+  instead of going silently empty. One real bug already turned up during
+  this: `render_list`'s split introduced a broken reference the smoke suite
+  caught immediately, fixed before shipping.
+- Cached the Open3D availability check: every Build/Combine button ran it
+  directly on the UI thread, uncached, and it can take up to 60 seconds
+  worst-case (it spawns a subprocess to probe without loading the ~400MB
+  library into the app itself). Now checked once per run and reused.
+
 ## 0.9.44 (dev, 2026-09-14)
 - Fixed "Could not load this model" in Remove Base and other GPU-view
   dialogs: GLView.load() could report success before the mesh was actually

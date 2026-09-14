@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.44-pre"
+APP = "PointYoink"; VERSION = "0.9.45-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -723,12 +723,19 @@ def _preload():
         import trimesh, shade  # noqa: F401
     except Exception as e: log_line("preload: %s" % e)
 
+_has_open3d_cache=None
 def _has_open3d():
     """Open3D is a ~400MB optional dep for Process on PC. Probe in a subprocess so the
-    GUI process never loads it (it would stay resident in the app's memory)."""
+    GUI process never loads it (it would stay resident in the app's memory). Every caller
+    of this runs it directly on the UI thread (from a button's own command=), and the
+    subprocess spawn has up to a 60s timeout - cache the result so that cost is paid at
+    most once per run instead of on every Build/Combine click (found 2026-09-14)."""
+    global _has_open3d_cache
+    if _has_open3d_cache is not None: return _has_open3d_cache
     try:
-        return subprocess.run([_sys.executable, "-c", "import open3d"], capture_output=True, timeout=60).returncode==0
-    except Exception: return False
+        _has_open3d_cache=subprocess.run([_sys.executable, "-c", "import open3d"], capture_output=True, timeout=60).returncode==0
+    except Exception: _has_open3d_cache=False
+    return _has_open3d_cache
 
 def _ply_counts(path):
     """Read vertex/face counts from a PLY header only (fast, no full load)."""
@@ -1964,6 +1971,13 @@ class App(ctk.CTk):
         if sig==self.projects_sig: return
         self.projects_sig=sig; self.projects=projs
         for w in self.llist.winfo_children(): w.destroy()
+        try:
+            self._render_list_body(projs, q)
+        except Exception as e:
+            log_error("render_list", e); self.projects_sig=None    # force a real retry next time, don't get stuck showing a blank list
+            for w in self.llist.winfo_children(): w.destroy()
+            ctk.CTkLabel(self.llist, text="Couldn't load the project list (see Help > Log).", text_color=WARN, font=ctk.CTkFont(size=12)).grid(row=0, column=0, sticky="w", padx=16, pady=20)
+    def _render_list_body(self, projs, q):
         old=self.pull_sel; self.pull_sel={}; self.rows={}
         if not projs:
             if self.page=="projects":
@@ -2813,6 +2827,16 @@ class App(ctk.CTk):
         for w in self.proc_cards.winfo_children():
             if w is not self._proc_empty: w.destroy()
         self._proc_rows={}
+        try:
+            self._proc_render_body(name)
+        except Exception as e:
+            log_error("proc_render", e)
+            for w in self.proc_cards.winfo_children():
+                if w is not self._proc_empty: w.destroy()
+            self._proc_empty.grid_remove()
+            ctk.CTkLabel(self.proc_cards, text="Couldn't refresh this page (see Help > Log). Try picking the project again.",
+                         text_color=WARN, font=ctk.CTkFont(size=12)).grid(row=0, column=0, sticky="w", padx=16, pady=20)
+    def _proc_render_body(self, name):
         if not name:
             self.proc_title.configure(text=""); self._proc_empty.grid(); return
         self._proc_empty.grid_remove()
@@ -2955,6 +2979,13 @@ class App(ctk.CTk):
         """The NEXT bar under the project title on the Projects page: what to do now, the step trail, one button."""
         ns=self.next_strip
         for w in ns.winfo_children(): w.destroy()
+        try:
+            self._next_refresh_body(ns, name, nodes, local)
+        except Exception as e:
+            log_error("next_refresh", e)
+            for w in ns.winfo_children(): w.destroy()
+            ns.pack_forget()
+    def _next_refresh_body(self, ns, name, nodes, local):
         if self.page!="projects" or not name: ns.pack_forget(); return
         title, detail, btxt, cmd, step = self._proc_next(name, nodes, local)
         ns.pack(fill="x", pady=(2,6)); ns.grid_columnconfigure(1, weight=1)
@@ -2999,6 +3030,17 @@ class App(ctk.CTk):
         """The right column on the Projects page: what to do next, the selected scan's versions and actions, project actions."""
         pp=self.projpanel
         for w in pp.winfo_children(): w.destroy()
+        try:
+            self._panel_refresh_body(pp)
+        except Exception as e:
+            # this panel is cleared above before being rebuilt - any exception past that point used to
+            # leave it permanently blank with nothing in the log (a Tk-callback exception, not caught by
+            # drain_loop). Found 2026-09-14 after a Remove Base completed and the panel went empty.
+            log_error("panel_refresh", e)
+            for w in pp.winfo_children(): w.destroy()
+            ctk.CTkLabel(pp, text="Couldn't refresh this panel (see Help > Log). Try selecting the project again.",
+                         text_color=WARN, font=ctk.CTkFont(size=12), wraplength=230, justify="left").pack(anchor="w", padx=16, pady=20)
+    def _panel_refresh_body(self, pp):
         name=self.selected; dest=self.dest.get() or DEFAULT_DEST; local=os.path.join(dest, name) if name else None
         if not name or not local or not os.path.isdir(local):
             ctk.CTkLabel(pp, text="Pick a project on the left.", text_color=MUT, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=16, pady=20); return
@@ -4414,6 +4456,13 @@ class App(ctk.CTk):
         images, recs = data
         self._shots_items=images; self._recs=recs; self._shots_gen=getattr(self, "_shots_gen", 0)+1; gen=self._shots_gen
         for w in self.shots.winfo_children(): w.destroy()
+        try:
+            self._render_shots_body(images, recs, gen)
+        except Exception as e:
+            log_error("render_shots", e)
+            for w in self.shots.winfo_children(): w.destroy()
+            ctk.CTkLabel(self.shots, text="Couldn't load screenshots (see Help > Log). Try Refresh.", text_color=WARN).grid(row=0, column=0, padx=20, pady=20, sticky="w")
+    def _render_shots_body(self, images, recs, gen):
         self.shots_lbl.configure(text="%d screenshot%s · %d recording%s on the device"
                                  % (len(images), "" if len(images)==1 else "s", len(recs), "" if len(recs)==1 else "s"))
         if not images and not recs:
