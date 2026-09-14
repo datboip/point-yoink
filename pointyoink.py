@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.36-pre"
+APP = "PointYoink"; VERSION = "0.9.37-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -4052,11 +4052,14 @@ class App(ctk.CTk):
     def _wifi_cancel(self):
         rx=self._wifi
         if not rx: self._wifi_close_dialog(); return
-        self._wifi=None; threading.Thread(target=rx.stop, daemon=True).start(); self._wifi_close_dialog()
+        self._wifi=None; self._wifi_close_dialog()
         self.wifi_btn.configure(text="📶  WiFi", fg_color="transparent")
         got=rx.bytes
-        try: shutil.rmtree(rx.stage, ignore_errors=True)
-        except Exception: pass
+        def _stop():
+            rx.stop()
+            try: shutil.rmtree(rx.stage, ignore_errors=True)                 # can be a partial multi-GB receive - never on the UI thread
+            except Exception: pass
+        threading.Thread(target=_stop, daemon=True).start()
         self.set_status("")
         self.set_banner("WiFi share stopped%s." % (" at %.0f MB - share again on the scanner to retry" % (got/1048576) if got else ""), WARN if got else MUT)
     def _wifi_event(self, kind, info):
@@ -4103,7 +4106,8 @@ class App(ctk.CTk):
             self._wifi=None; threading.Thread(target=rx.stop, daemon=True).start(); self._wifi_close_dialog(); self.wifi_btn.configure(text="📶  WiFi", fg_color="transparent")
             projects=info["projects"]
             if not projects:
-                shutil.rmtree(rx.stage, ignore_errors=True); self.set_banner("The scanner finished but sent no project.", WARN); self.set_status(""); return
+                threading.Thread(target=shutil.rmtree, args=(rx.stage,), kwargs={"ignore_errors": True}, daemon=True).start()
+                self.set_banner("The scanner finished but sent no project.", WARN); self.set_status(""); return
             self.set_banner("Received %s over WiFi - choose what to keep." % ", ".join(projects), OK); self.set_status("")
             self._wifi_picker(rx.stage, projects)
     def _wifi_recover(self):
@@ -4114,7 +4118,7 @@ class App(ctk.CTk):
         try: projects=sorted(d for d in os.listdir(stage) if os.path.isdir(os.path.join(stage, d, "data")))
         except Exception: return
         if not projects:
-            shutil.rmtree(stage, ignore_errors=True); return
+            threading.Thread(target=shutil.rmtree, args=(stage,), kwargs={"ignore_errors": True}, daemon=True).start(); return
         self.set_banner("A WiFi transfer was received earlier but never imported - choose what to keep.", AC)
         self._wifi_picker(stage, projects)
     def _wifi_picker(self, stage, projects):
@@ -4167,7 +4171,8 @@ class App(ctk.CTk):
         def close():
             self._dialogs.pop("wifipick", None); t.destroy()
         def discard():
-            close(); shutil.rmtree(stage, ignore_errors=True); self.set_banner("Discarded the received project.", MUT)
+            close(); threading.Thread(target=shutil.rmtree, args=(stage,), kwargs={"ignore_errors": True}, daemon=True).start()
+            self.set_banner("Discarded the received project.", MUT)
         def go():
             keep={}
             for r,v in zip(rows, vars_):

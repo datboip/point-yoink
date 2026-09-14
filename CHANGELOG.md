@@ -3,6 +3,13 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.37 (dev, 2026-09-14)
+- Found and fixed the same freeze pattern as 0.9.36 in four WiFi receive
+  spots (cancel, an empty/no-project finish, the orphaned-transfer
+  recovery check, and discarding a received project): each deleted a
+  staging folder directly on the UI thread, which can hold a partial
+  multi-GB scan. All four now clean up on a background thread instead.
+
 ## 0.9.36 (dev, 2026-09-14)
 - Fixed a real freeze on "Delete project"/"Delete this version": both called
   the trash move directly on the UI thread with no time bound on its
