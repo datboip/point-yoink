@@ -3,6 +3,23 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.49 (dev, 2026-09-14)
+- The interactive live 3D view no longer auto-loads the instant a scan is
+  selected. That was firing on every single click regardless of intent, and
+  is the most likely real explanation for "click a scan and it takes
+  forever" - the fast still-image preview shows immediately as before, and
+  the full interactive view now only loads when you explicitly click
+  "View in 3D" (a separate code path, unaffected by this change and
+  confirmed still working). Scan-preview work is also now debounced so
+  rapid clicking through scans doesn't queue up a render per click.
+- Every background worker that could previously die silently (refresh
+  probe, project listing, mount) now catches its own exceptions and
+  reports failure through the UI instead of leaving things stuck with
+  nothing in the log.
+- Patch from a Codex review, verified directly before shipping: confirmed
+  selecting a scan no longer calls _mv_start() at all by default, and the
+  full smoke suite passes clean.
+
 ## 0.9.48 (dev, 2026-09-14)
 - Found and fixed the real, systemic cause of tonight's recurring freeze
   reports: refresh_loop() called quick_mounted() - which spawns a real

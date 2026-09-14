@@ -20,7 +20,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.48-pre"
+APP = "PointYoink"; VERSION = "0.9.49-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1931,7 +1931,10 @@ class App(ctk.CTk):
         if not self.pulling and not self._wifi and not getattr(self, "_refresh_probe_busy", False):
             self._refresh_probe_busy=True
             def probe():
-                st,serial=usb_state(); mounted=quick_mounted()
+                try:
+                    st,serial=usb_state(); mounted=quick_mounted()
+                except Exception as e:
+                    log_error("refresh-probe", e); st,serial,mounted="absent",None,False
                 self.q.put(("refresh_probe", st, serial, mounted))
             threading.Thread(target=probe, daemon=True).start()
         self.after(1500, self.refresh_loop)
@@ -1964,27 +1967,33 @@ class App(ctk.CTk):
         if self.listing: return
         self.listing=True; dest=self.dest.get() or DEFAULT_DEST
         def work():
-            # quick_mounted() spawns a subprocess (ls against the MTP mountpoint) - moved off the UI
-            # thread. A stale/dead mount (e.g. jmtpfs left over from an earlier session with no
-            # scanner attached) can return a real I/O error, but this was still a synchronous
-            # subprocess call blocking the whole app on every Refresh and every listing regardless -
-            # found 2026-09-14, after "even clicking refresh freezes it".
-            self._listing_src="device" if quick_mounted() else "local"
-            dev=list_projects() if self._listing_src=="device" else []
-            names={p["name"] for p in dev}; local=list_local_projects(dest); lmap={p["name"]: p for p in local}
-            for p in dev:                                  # a project that is also on this PC keeps what the PC knows about it
-                lp=lmap.get(p["name"])
-                if lp:
-                    for k in ("combined", "prepared", "dev_meshed"): p[k]=lp.get(k)
-                    p["on_pc"]=True
-            self.q.put(("projects", dev+[p for p in local if p["name"] not in names]))
+            try:
+                # quick_mounted() spawns a subprocess (ls against the MTP mountpoint) - moved off the UI
+                # thread. A stale/dead mount (e.g. jmtpfs left over from an earlier session with no
+                # scanner attached) can return a real I/O error, but this was still a synchronous
+                # subprocess call blocking the whole app on every Refresh and every listing regardless -
+                # found 2026-09-14, after "even clicking refresh freezes it".
+                self._listing_src="device" if quick_mounted() else "local"
+                dev=list_projects() if self._listing_src=="device" else []
+                names={p["name"] for p in dev}; local=list_local_projects(dest); lmap={p["name"]: p for p in local}
+                for p in dev:                                  # a project that is also on this PC keeps what the PC knows about it
+                    lp=lmap.get(p["name"])
+                    if lp:
+                        for k in ("combined", "prepared", "dev_meshed"): p[k]=lp.get(k)
+                        p["on_pc"]=True
+                self.q.put(("projects", dev+[p for p in local if p["name"] not in names]))
+            except Exception as e:
+                log_error("list-projects", e); self.q.put(("projects_failed", str(e)))
         threading.Thread(target=work, daemon=True).start()
     def on_mount(self):
         if self._mounting: return
         st,_=usb_state()
         if st!="mtp": self.set_banner("Tap “File Transfer” on the MIRACO first.", WARN); return
         self._mounting=True; self._shots_loaded=False; self.set_banner("Connecting…", AC)
-        threading.Thread(target=lambda: self.q.put(("mounted", *do_mount())), daemon=True).start()
+        def work():
+            try: self.q.put(("mounted", *do_mount()))
+            except Exception as e: log_error("mount", e); self.q.put(("mounted", False, str(e)))
+        threading.Thread(target=work, daemon=True).start()
 
     # ---- list ----
     def render_list(self, projs):
@@ -2110,7 +2119,7 @@ class App(ctk.CTk):
         self.files_box.insert("end","computing model files…\n"); self.files_box.configure(state="disabled")
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
         threading.Thread(target=lambda n=name, l=local: self.q.put(("files",n,project_model_size(n, l))), daemon=True).start()
-        self._request_shaded(name, None)
+        self._schedule_shaded(name, None, 250)
     def _fill_header(self, p, name, counts):
         """Title block for the selected project: name, id, state chip, edited date."""
         self.hdr_name.configure(text=self.disp(name))
@@ -2149,7 +2158,7 @@ class App(ctk.CTk):
         except Exception: pass
     def _pick_scan(self, name, node, path):
         self._film_sel=node; self._mark_scan(node)
-        self._set_big_image(path); self._request_shaded(name, node)
+        self._set_big_image(path); self._schedule_shaded(name, node, 350)
         if self.page=="projects": self._panel_refresh()
     def _mark_scan(self, node):
         for nd,cell in self._film_cells.items():
@@ -2201,7 +2210,23 @@ class App(ctk.CTk):
     def _shade_mode_changed(self, v):
         self.shade_mode="wire" if v=="Wireframe" else "solid"
         if self.mv.winfo_manager(): self.mv.set_wire(self.shade_mode=="wire"); return   # live view: just redraw
-        if self.selected: self._request_shaded(self.selected, self._film_sel)
+        if self.selected: self._schedule_shaded(self.selected, self._film_sel, 150)
+    def _schedule_shaded(self, name, node=None, delay=250):
+        """Debounce expensive mesh preview work so rapid scan clicks do not start a render/load per click."""
+        job=getattr(self, "_shade_job", None)
+        if job:
+            try: self.after_cancel(job)
+            except Exception: pass
+        def go(n=name, nd=node):
+            self._shade_job=None
+            if self.selected==n: self._request_shaded(n, nd)
+        self._shade_job=self.after(delay, go)
+    def _cancel_mv_start(self):
+        job=getattr(self, "_mv_job", None)
+        if job:
+            try: self.after_cancel(job)
+            except Exception: pass
+            self._mv_job=None
     def _request_shaded(self, name, node=None):
         """Show the cached shaded render for this scan, or queue one. Never blocks the UI thread."""
         mesh=self._mesh_for_node(name, node) if node else self._find_mesh(name)
@@ -2212,10 +2237,10 @@ class App(ctk.CTk):
         key="%s__%s"%(name, node) if node else name; mode=self.shade_mode
         out=os.path.join(THUMBS, key+("__shaded.png" if mode=="solid" else "__wire.png"))
         self._shade_key=(key, mode)
+        self._cancel_mv_start()
         if self._mv_key!=key:                       # a different scan: back to the flat image until its 3D view is ready
             self._mv_key=None; self.mv.grid_remove(); self.big.grid()
         self._mv_want=(key, mesh if not mesh.startswith(PROJECTS) else os.path.join(THUMBS, "view", key+"_fuse_mesh.ply"))
-        self._mv_start()                            # a local model: start the live view now, don't wait for the still image
         st=self._mesh_stats.get(key)
         if st: self._show_stats(st)
         try:
@@ -2287,8 +2312,11 @@ class App(ctk.CTk):
         except Exception: pass
     def _show_shaded(self, out):
         self._set_big_image(out); self._preview_idle()
-        self.big_hint.configure(text="Still image · the live 3D view is loading")
-        self._mv_start()
+        if self.cfg.get("auto_live_preview", False):
+            self.big_hint.configure(text="Still image · live 3D view will load when idle")
+            self._schedule_mv_start(self._shade_key[0], 1800)
+        else:
+            self.big_hint.configure(text="Still image · use View in 3D for the interactive viewer")
     def _make_mv(self, software=False):
         w=None
         if not software and os.environ.get("POINTYOINK_NO_GL")!="1" and self.cfg.get("gl_view","auto")!="software":
@@ -2298,6 +2326,12 @@ class App(ctk.CTk):
         if w is None:
             import meshview; w=meshview.MeshView(self._mv_wrap)
         w.grid(row=0,column=0, sticky="nsew", padx=12, pady=12); w.grid_remove(); return w
+    def _schedule_mv_start(self, key, delay=1800):
+        self._cancel_mv_start()
+        def go(k=key):
+            self._mv_job=None
+            if self._shade_key and self._shade_key[0]==k: self._mv_start()
+        self._mv_job=self.after(delay, go)
     def _mv_start(self):
         """Load the interactive view for the current scan (mesh prep runs in a thread) and swap it in."""
         want=self._mv_want
@@ -2801,7 +2835,7 @@ class App(ctk.CTk):
     def _proc_set_current(self, name, node, key):
         self.records.setdefault(name,{}).setdefault("current",{})[node]=key; self._persist(); self._mesh_stats={}
         self._proc_render(name)
-        if self.selected==name: self._mv_key=None; self._request_shaded(name, node)
+        if self.selected==name: self._mv_key=None; self._schedule_shaded(name, node, 250)
     def _trash(self, path):
         """Move a file or folder to the desktop trash (gio), else into <dest>/.trash. Can be slow
         for a big folder (the gio call is timeout-bounded, but its own fallback move is a real
@@ -2972,7 +3006,7 @@ class App(ctk.CTk):
         """Select a scan tile the way a click on the strip would (so Remove base and the preview follow)."""
         if self.selected!=name: self.select_project(name)
         self._film_sel=node; self._mark_scan(node)
-        try: self._request_shaded(name, node)
+        try: self._schedule_shaded(name, node, 250)
         except Exception: pass
     HOWTO=(("Import", "⬇", "Get the project off the scanner: USB lists everything on it, WiFi Share to PC sends one project. Finished models is quick; Full project also brings the raw frames you need for building and combining here."),
            ("Build", "⚙", "A scan is raw frames until something fuses them into a 3D model. The scanner does that with One-tap Edit; this PC does it with Build, in seconds on a graphics card, using the scanner's own registration. Easiest: One-tap Edit on the scanner when it turns out fine, Build here when it does not."),
@@ -4826,6 +4860,8 @@ class App(ctk.CTk):
                     if self.page=="projects": self._panel_refresh()
                     if not getattr(self, "_shots_loaded", False):   # auto-load device screenshots once
                         self._shots_loaded=True; self.refresh_screenshots()
+                elif kind=="projects_failed":
+                    self.listing=False; self.set_status(""); self.set_banner("Couldn't refresh projects - see Help > Log.", WARN)
                 elif kind=="sizes": self.projects_sig=None; self.update_summary()
                 elif kind=="shaded":
                     key,mode,out=rest
