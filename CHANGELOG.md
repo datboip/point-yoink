@@ -3,6 +3,11 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.23 (dev, 2026-09-13)
+- The window comes in invisible, paints completely, then cross-fades with the
+  splash; no more watching it build itself around the splash.
+- Test instances are never run while the app is open.
+
 ## 0.9.22 (dev, 2026-09-13)
 - The splash gates properly: the window appears only once the checks are done
   and the first project list is rendered, never piece by piece.

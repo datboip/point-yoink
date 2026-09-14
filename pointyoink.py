@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.22-pre"
+APP = "PointYoink"; VERSION = "0.9.23-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -931,11 +931,21 @@ class App(ctk.CTk):
             except Exception: pass
             self.after(150, self._close_splash); return
         if self._splash:
-            self.deiconify()                                  # reveal the app BEHIND the still-topmost splash
-            self.update_idletasks()
-            self.after(100, lambda: self._splash_fade(-0.25)) # let it paint, then dissolve the splash over it
+            # bring the window in invisible, let every widget paint (the splash only covers the middle, so a visible
+            # window would be seen building itself), then cross-fade: window in, splash out
+            try: self.attributes("-alpha", 0.0)
+            except Exception: pass
+            self.deiconify(); self.update_idletasks()
+            def reveal(step=0):
+                a=min(1.0, step/8.0)
+                try: self.attributes("-alpha", a)
+                except Exception: pass
+                if a<1.0: self.after(30, lambda: reveal(step+1))
+            self.after(700, lambda: (reveal(), self._splash_fade(-0.2)))
         else:
             self.deiconify()
+            try: self.attributes("-alpha", 1.0)
+            except Exception: pass
         if getattr(self,"_missing",None):
             miss=self._missing; self._missing=None
             pkgs=" ".join(c["pkg"] for c in miss)
