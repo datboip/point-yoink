@@ -3,6 +3,26 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.48 (dev, 2026-09-14)
+- Found and fixed the real, systemic cause of tonight's recurring freeze
+  reports: refresh_loop() called quick_mounted() - which spawns a real
+  subprocess (ls against the MTP mountpoint) - directly on the UI thread,
+  every 1.5 seconds, continuously, for the entire time the app is open, not
+  just on a user action. A stale mount (jmtpfs left over from an earlier
+  session with no scanner attached, confirmed live: it was returning a real
+  I/O error) can make that single call take seconds, repeating every cycle.
+  This is very likely why the freeze seemed to correlate with almost
+  anything - clicking Refresh, clicking a scan, even just opening the app -
+  the user was just as likely to interact right as one of these
+  already-running periodic checks happened to be blocking.
+  start_listing() (called by the Refresh button and by every project list
+  load) had the same issue and is fixed the same way. Both now run on a
+  background thread and report back through the queue. Verified directly
+  with a simulated 2.5s-slow quick_mounted(): refresh_loop() used to block
+  its caller for the full 2.5s, now returns instantly and the UI thread's
+  update() calls never gap by more than ~0.1s while the slow probe runs in
+  the background.
+
 ## 0.9.47 (dev, 2026-09-14)
 - Capped the main interactive 3D preview's mesh detail at 300,000 faces
   (matching Remove Base's existing cap, which the main preview never had -

@@ -20,7 +20,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.47-pre"
+APP = "PointYoink"; VERSION = "0.9.48-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -825,7 +825,7 @@ class App(ctk.CTk):
         self.selected=None; self.gallery_cache={}; self.size_cache={}
         self.rows={}; self.serial=None
         self.pulling=False; self.cancel=False; self.listing=False; self.listed=False; self.proc=None
-        self._mounting=False; self.auto_tried=False; self._wifi=None; self.listed_src=None; self._listing_src=None
+        self._mounting=False; self.auto_tried=False; self._wifi=None; self.listed_src=None; self._listing_src=None; self._refresh_probe_busy=False
         self.report_callback_exception = self._on_tk_error
         log_line("PointYoink %s started" % VERSION)
 
@@ -1920,35 +1920,56 @@ class App(ctk.CTk):
 
     # ---- polling ----
     def refresh_loop(self):
-        if not self.pulling and not self._wifi:
-            st,serial=usb_state(); self.serial=serial; mounted=quick_mounted()
-            if not mounted and self.listed_src!="local": self.listed=False; self.start_listing()   # show what's on this PC
-            if st=="absent":
-                self.set_banner("Scanner not detected - plug in the USB-C cable, or use WiFi.", WARN)
-                self.action_btn.configure(text="🔌  USB", state="normal"); self.auto_tried=False
-            elif st=="adb":
-                self.set_banner("MIRACO detected · Not connected - tap “File Transfer” on the scanner", WARN)
-                self.action_btn.configure(text="🔌  USB", state="normal"); self.auto_tried=False
-            elif st=="mtp" and not mounted:
-                self.action_btn.configure(text="🔌  USB", state="normal")
-                if self._mounting:
-                    self.set_banner("Connecting…", AC)
-                elif not self.auto_tried:
-                    self.auto_tried=True; self.set_banner("MIRACO detected - connecting…", AC); self.on_mount()
-                else:
-                    self.set_banner("MIRACO detected · Not connected - click USB →", AC)
-            elif mounted:
-                self.action_btn.configure(text="🔌  Rescan", state="normal")
-                if self.listed_src!="device": self.listed=False
-                if self.listed:
-                    self.set_banner("Connected - tick scans to import, click one to preview.", OK)
-                    if self.projects: self.render_list(self.projects)   # refresh badges if files changed on disk (cheap no-op otherwise)
-                else: self.set_banner("Reading projects off the scanner… (MTP is slow)", AC); self.start_listing()
+        # usb_state() is cheap (sysfs reads only), but quick_mounted() spawns a real subprocess (ls
+        # against the MTP mountpoint) - this ran on the UI thread EVERY 1.5s, for as long as the app
+        # is open, not just on a user action. A stale mount (jmtpfs left over with no scanner
+        # attached) can make that call take seconds, repeating every cycle - this is very likely the
+        # real, systemic explanation for freezes that seemed to correlate with almost anything the
+        # user did, since they were just as likely to click something while a cycle was already
+        # blocking. Found 2026-09-14. Now probed on a background thread; UI updates still happen on
+        # the main thread, just from the "refresh_probe" queue event instead of inline here.
+        if not self.pulling and not self._wifi and not getattr(self, "_refresh_probe_busy", False):
+            self._refresh_probe_busy=True
+            def probe():
+                st,serial=usb_state(); mounted=quick_mounted()
+                self.q.put(("refresh_probe", st, serial, mounted))
+            threading.Thread(target=probe, daemon=True).start()
         self.after(1500, self.refresh_loop)
+    def _refresh_probe_done(self, st, serial, mounted):
+        self._refresh_probe_busy=False
+        self.serial=serial
+        if not mounted and self.listed_src!="local": self.listed=False; self.start_listing()   # show what's on this PC
+        if st=="absent":
+            self.set_banner("Scanner not detected - plug in the USB-C cable, or use WiFi.", WARN)
+            self.action_btn.configure(text="🔌  USB", state="normal"); self.auto_tried=False
+        elif st=="adb":
+            self.set_banner("MIRACO detected · Not connected - tap “File Transfer” on the scanner", WARN)
+            self.action_btn.configure(text="🔌  USB", state="normal"); self.auto_tried=False
+        elif st=="mtp" and not mounted:
+            self.action_btn.configure(text="🔌  USB", state="normal")
+            if self._mounting:
+                self.set_banner("Connecting…", AC)
+            elif not self.auto_tried:
+                self.auto_tried=True; self.set_banner("MIRACO detected - connecting…", AC); self.on_mount()
+            else:
+                self.set_banner("MIRACO detected · Not connected - click USB →", AC)
+        elif mounted:
+            self.action_btn.configure(text="🔌  Rescan", state="normal")
+            if self.listed_src!="device": self.listed=False
+            if self.listed:
+                self.set_banner("Connected - tick scans to import, click one to preview.", OK)
+                if self.projects: self.render_list(self.projects)   # refresh badges if files changed on disk (cheap no-op otherwise)
+            else: self.set_banner("Reading projects off the scanner… (MTP is slow)", AC); self.start_listing()
     def start_listing(self):
         if self.listing: return
-        self.listing=True; dest=self.dest.get() or DEFAULT_DEST; self._listing_src="device" if quick_mounted() else "local"
+        self.listing=True; dest=self.dest.get() or DEFAULT_DEST
         def work():
+            # quick_mounted() spawns a subprocess (ls against the MTP mountpoint) - moved off the UI
+            # thread. A stale/dead mount (e.g. jmtpfs left over from an earlier session with no
+            # scanner attached) can return a real I/O error, but this was still a synchronous
+            # subprocess call blocking the whole app on every Refresh and every listing regardless -
+            # found 2026-09-14, after "even clicking refresh freezes it".
+            self._listing_src="device" if quick_mounted() else "local"
             dev=list_projects() if self._listing_src=="device" else []
             names={p["name"] for p in dev}; local=list_local_projects(dest); lmap={p["name"]: p for p in local}
             for p in dev:                                  # a project that is also on this PC keeps what the PC knows about it
@@ -4787,6 +4808,8 @@ class App(ctk.CTk):
                     ok,msg=rest; self._mounting=False
                     if ok: self.listed=False
                     else: self.set_banner("Couldn't connect: "+msg, WARN); log_line("mount failed: "+msg)
+                elif kind=="refresh_probe":
+                    self._refresh_probe_done(*rest)
                 elif kind=="projects":
                     self.listing=False; self.listed=True; self.listed_src=self._listing_src
                     if not getattr(self, "_first_listed", False):
