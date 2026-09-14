@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.21-pre"
+APP = "PointYoink"; VERSION = "0.9.22-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -800,7 +800,7 @@ class App(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         _preload()
         self.refresh_loop(); self.drain_loop(); self._pulse()
-        self.after(60000, self._close_splash)  # last-resort fallback only; the checks close it, and nothing heavy runs before that
+        self.after(60000, lambda: self._close_splash(force=True))  # last-resort fallback only
         self._when_ready(self._wifi_recover)   # offer a stranded WiFi transfer, if any: after the splash, never before
 
     # ---- splash + animation ----
@@ -923,7 +923,13 @@ class App(ctk.CTk):
                 c["ok"]=ok; setbar((i+1)/len(self._checklist)); self._run_checks(i+1)
             self.q.put(("call", done))           # never call Tk (not even after) from a worker thread: the queue is drained on the main thread
         threading.Thread(target=work, daemon=True).start()
-    def _close_splash(self):
+    def _close_splash(self, force=False):
+        """The window appears only when it is complete: checks done and the first project list rendered."""
+        if self._splash and not force and not getattr(self, "_first_render_done", False):
+            self._checks_done=True
+            try: self._sp_cv.itemconfigure(self._sp_status, text="loading your projects…", fill=MUT)
+            except Exception: pass
+            self.after(150, self._close_splash); return
         if self._splash:
             self.deiconify()                                  # reveal the app BEHIND the still-topmost splash
             self.update_idletasks()
@@ -1833,8 +1839,6 @@ class App(ctk.CTk):
 
     # ---- polling ----
     def refresh_loop(self):
-        if getattr(self, "_splash", None):                       # the loader owns the main thread until it is at 100%
-            self.after(300, self.refresh_loop); return
         if not self.pulling and not self._wifi:
             st,serial=usb_state(); self.serial=serial; mounted=quick_mounted()
             if not mounted and self.listed_src!="local": self.listed=False; self.start_listing()   # show what's on this PC
@@ -4494,10 +4498,16 @@ class App(ctk.CTk):
             if self.auto_open.get(): self.open_folder()
 
     # ---- queue ----
+    def _slow_watch(self, kind, t0):
+        """Log any queue event whose handling took more than 150 ms: the UI thread must never stall for long."""
+        prev=getattr(self, "_slow_prev", None)
+        if prev and time.time()-prev[1]>0.15: log_line("slow ui: %s took %.0f ms" % (prev[0], (time.time()-prev[1])*1000))
+        self._slow_prev=(kind, t0)
     def drain_loop(self):
         try:
             while True:
                 kind,*rest=self.q.get_nowait()
+                _t_ev=time.time(); self._slow_watch(kind, _t_ev)
                 if kind=="mounted":
                     ok,msg=rest; self._mounting=False
                     if ok: self.listed=False
@@ -4508,6 +4518,8 @@ class App(ctk.CTk):
                         self._first_listed=True
                         if self.listed_src=="local" and any(p.get("local") for p in rest[0]): self._set_mode("Local")   # no scanner: start on what is on this PC
                     self.render_list(rest[0]); self._proc_refresh()
+                    if not getattr(self, "_first_render_done", False):
+                        self._first_render_done=True                      # the splash may go now (see _close_splash)
                     jump=getattr(self, "_select_after_list", None)
                     if jump:
                         self._select_after_list=None; self._set_mode("Local")

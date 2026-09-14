@@ -3,6 +3,10 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.22 (dev, 2026-09-13)
+- The splash gates properly: the window appears only once the checks are done
+  and the first project list is rendered, never piece by piece.
+
 ## 0.9.21 (dev, 2026-09-13)
 - The main window never appears before the loader reaches 100%: the project
   listing and everything after it wait for the splash to close.
