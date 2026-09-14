@@ -3,6 +3,23 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.19 (dev, 2026-09-13)
+- Startup dialogs (a pending WiFi transfer, the first-run panel) wait until the
+  splash has closed, so the main window never appears half-built behind it.
+- Drift fix defaults from the measurements: neighbour refinement only when it
+  moves a fragment under 2 mm; loop closures are opt-in (they slid a rim-shaped
+  scan 40 mm off in the test).
+
+## 0.9.18 (dev, 2026-09-13)
+- Fixed the splash deadlock: the heavy libraries are now imported once on the
+  main thread before any worker starts. A first import from a worker thread
+  could finalise a Tk font on that thread and lock the app on the splash.
+
+## 0.9.17 (dev, 2026-09-13)
+- Startup checks run off the UI thread: a slow probe could freeze the splash
+  with a blank window behind it. A stack dump on SIGUSR1 for diagnosing a
+  freeze.
+
 ## 0.9.16 (dev, 2026-09-13)
 - Test and render instances never touch the scanner (POINTYOINK_NO_DEVICE=1):
   two apps on one MTP mount froze both.

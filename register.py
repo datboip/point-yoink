@@ -46,6 +46,14 @@ def main():
     ap.add_argument("--depth-scale", type=float, default=0.1); ap.add_argument("--max-depth", type=float, default=600.0)
     ap.add_argument("--loop-dist", type=float, default=80.0, help="mm, fragments whose centres are closer than this are tried as loop closures")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--loops", action="store_true", help="also try loop closures (off by default: measured 2026-09-13 against the scanner's own table, loop closures on a rim-shaped part slid the scan 40 mm off; neighbour refinement within 2 mm gave a small gain)")
+    ap.add_argument("--no-loops", action="store_true", help="(default) neighbours only")
+    ap.add_argument("--loop-fitness", type=float, default=0.3, help="accept a loop closure only above this overlap share")
+    ap.add_argument("--loop-max-shift", type=float, default=1e9, help="mm: reject a loop closure whose fit moves the fragment further than this from where the tracking put it")
+    ap.add_argument("--loop-pref", type=float, default=0.5, help="how much the optimiser trusts loop closures against the tracking chain (0..1)")
+    ap.add_argument("--edge-inverse", action="store_true", help="diagnostic: store inverse transforms on the edges")
+    ap.add_argument("--chain-only", action="store_true", help="diagnostic: compose the neighbour fits by hand, no graph optimisation")
+    ap.add_argument("--adj-max-shift", type=float, default=2.0, help="mm: a neighbour fit that moves further than this from the tracking is not trusted (the tracking is kept)")
     a = ap.parse_args()
     if not a.gpu: apply_mem_cap()
     import open3d as o3d
@@ -105,24 +113,37 @@ def main():
                                                           o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=20))
         info = o3d.pipelines.registration.get_information_matrix_from_point_clouds(src, tgt, vox_m * 2, res.transformation)
         return res, info
-    n_edges = 0; n_loops = 0; tried = 0
+    n_edges = 0; n_loops = 0; tried = 0; adj_T = {}
     for i in range(len(frags)):
         for j in range(i + 1, len(frags)):
             adjacent = (j == i + 1)
-            if not adjacent and np.linalg.norm(centres[i] - centres[j]) * 1000.0 > a.loop_dist: continue
+            if not adjacent and ((not a.loops) or np.linalg.norm(centres[i] - centres[j]) * 1000.0 > a.loop_dist): continue
             init = np.linalg.inv(frags[j][2]) @ frags[i][2]                # i in j's frame, from odometry
             tried += 1
             res, info = icp(i, j, init)
+            fitT = np.asarray(res.transformation)
             if adjacent:
-                pg.edges.append(o3d.pipelines.registration.PoseGraphEdge(i, j, res.transformation, info, uncertain=False)); n_edges += 1
-            elif res.fitness > 0.3 and res.inlier_rmse < vox_m * 1.5:
-                pg.edges.append(o3d.pipelines.registration.PoseGraphEdge(i, j, res.transformation, info, uncertain=True)); n_edges += 1; n_loops += 1
+                shift_adj = np.linalg.norm((fitT @ np.linalg.inv(init))[:3, 3]) * 1000.0
+                if shift_adj > a.adj_max_shift: fitT = init                        # a fit that slid: keep the tracking
+                adj_T[(i, j)] = fitT
+            T = np.linalg.inv(fitT) if a.edge_inverse else fitT
+            if adjacent:
+                pg.edges.append(o3d.pipelines.registration.PoseGraphEdge(i, j, T, info, uncertain=False)); n_edges += 1
+            elif res.fitness > a.loop_fitness and res.inlier_rmse < vox_m * 1.5:
+                shift = np.linalg.norm((np.asarray(res.transformation) @ np.linalg.inv(init))[:3, 3]) * 1000.0    # mm the fit moved away from the tracking
+                if shift <= a.loop_max_shift:
+                    pg.edges.append(o3d.pipelines.registration.PoseGraphEdge(i, j, T, info, uncertain=True)); n_edges += 1; n_loops += 1
         if i % 5 == 0: emit("register", done=i + 1, total=len(frags), loops=n_loops)
     emit("graph", nodes=len(frags), edges=n_edges, loops=n_loops, tried=tried)
-    opt = o3d.pipelines.registration.GlobalOptimizationOption(max_correspondence_distance=vox_m * 2, edge_prune_threshold=0.25, preference_loop_closure=0.5, reference_node=0)
+    opt = o3d.pipelines.registration.GlobalOptimizationOption(max_correspondence_distance=vox_m * 2, edge_prune_threshold=0.25, preference_loop_closure=a.loop_pref, reference_node=0)
     o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
-    o3d.pipelines.registration.global_optimization(pg, o3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt(),
-                                                   o3d.pipelines.registration.GlobalOptimizationConvergenceCriteria(), opt)
+    if a.chain_only:                                   # node_j = node_i @ inv(T_ij): walk the neighbour fits from fragment 0
+        cur = np.asarray(pg.nodes[0].pose).copy()
+        for i in range(len(frags) - 1):
+            cur = cur @ np.linalg.inv(adj_T[(i, i + 1)]); pg.nodes[i + 1].pose = cur
+    else:
+        o3d.pipelines.registration.global_optimization(pg, o3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt(),
+                                                       o3d.pipelines.registration.GlobalOptimizationConvergenceCriteria(), opt)
     # ---- per-frame poses: optimised fragment pose x the frame's odometry relative to its fragment ----
     entries = []; moved = []
     for fi, (first, pc, base) in enumerate(frags):

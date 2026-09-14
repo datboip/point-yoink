@@ -3,13 +3,14 @@
 # MIT licensed. See LICENSE.
 # Unofficial. Not affiliated with or endorsed by Revopoint.
 # "Revopoint" and "MIRACO" are trademarks of their respective owners.
-import os, re, json, time, glob, shutil, threading, subprocess, queue
+import os, re, json, time, glob, shutil, threading, subprocess, queue, faulthandler, signal
+faulthandler.register(signal.SIGUSR1, all_threads=True)      # kill -USR1 <pid> prints every thread's stack to stderr: for diagnosing a freeze
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.16-pre"
+APP = "PointYoink"; VERSION = "0.9.19-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -683,8 +684,16 @@ def _has_imagetk():
     except Exception: return False
 def _has_trimesh():
     try:
-        import trimesh; return True
+        import importlib.util; return importlib.util.find_spec("trimesh") is not None     # no import: see _preload
     except Exception: return False
+
+def _preload():
+    """Import the heavy libraries once, on the main thread, before any worker thread exists. A first import of
+    trimesh (it pulls in shapely) from a worker thread can garbage-collect a Tk font on that thread, which is a Tk
+    call from the wrong thread: the app then deadlocks on the splash. Seen 2026-09-13."""
+    try:
+        import trimesh, shade  # noqa: F401
+    except Exception as e: log_line("preload: %s" % e)
 
 def _has_open3d():
     """Open3D is a ~400MB optional dep for Process on PC. Probe in a subprocess so the
@@ -789,9 +798,10 @@ class App(ctk.CTk):
         self._header(); self._statusbar(); self._body(); self._build_options(); self._actions(); self._bottombar()
         self.search.trace_add("write", lambda *a: self._search_changed())
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        _preload()
         self.refresh_loop(); self.drain_loop(); self._pulse()
         self.after(9000, self._close_splash)   # safety fallback; the setup checks normally close it
-        self.after(2500, self._wifi_recover)   # offer a stranded WiFi transfer, if any
+        self._when_ready(self._wifi_recover)   # offer a stranded WiFi transfer, if any: after the splash, never before
 
     # ---- splash + animation ----
     def _pointer_monitor(self):
@@ -898,10 +908,13 @@ class App(ctk.CTk):
             return
         c=self._checklist[i]
         setstatus("checking "+c["pkg"]+" …", MUT)
-        try: c["ok"]=bool(c["fn"]())
-        except Exception: c["ok"]=False
-        setbar((i+1)/len(self._checklist))
-        self.after(40, lambda: self._run_checks(i+1))
+        def work():                                 # off the UI thread: a slow probe (a subprocess import under load) must not freeze the window
+            try: ok=bool(c["fn"]())
+            except Exception: ok=False
+            def done():
+                c["ok"]=ok; setbar((i+1)/len(self._checklist)); self._run_checks(i+1)
+            self.q.put(("call", done))           # never call Tk (not even after) from a worker thread: the queue is drained on the main thread
+        threading.Thread(target=work, daemon=True).start()
     def _close_splash(self):
         if self._splash:
             self.deiconify()                                  # reveal the app BEHIND the still-topmost splash
@@ -2807,6 +2820,11 @@ class App(ctk.CTk):
            ("Combine", "⧉", "Scanned each side separately? Pick a base scan, click three to five matching spots on it and on another scan, Line up, check the orange overlay, Keep. Repeat for each side, then Build one model from all their frames at once. Your points stay editable."),
            ("Prepare", "✦", "Remove floating pieces, smooth, fill small holes, reduce triangles. It runs on a copy and shows before and after; Keep or Discard. Once Combined exists, prepare that one."),
            ("Export", "⬆", "Pick the version, the format (STL for slicers, OBJ, GLB, PLY) and the folder. The size and a mesh check are shown first: open edges and extra pieces mean the surface is not closed."))
+    def _when_ready(self, fn):
+        """Run fn once the splash is gone and the main window is on screen. A dialog opened earlier is attached to the
+        withdrawn main window and drags it onto the screen half-built."""
+        if getattr(self, "_splash", None) or not self.winfo_viewable(): self.after(500, lambda: self._when_ready(fn)); return
+        fn()
     def _howto_when_ready(self):
         """The first-run panel waits until the splash is gone and the window is up; a dialog opened earlier drags the
         main window onto the screen half-built."""
