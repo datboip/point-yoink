@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.39-pre"
+APP = "PointYoink"; VERSION = "0.9.40-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -187,8 +187,11 @@ def load_cfg():
     try: return json.load(open(CFG))
     except Exception: return {}
 def save_cfg(c):
-    try: json.dump(c, open(CFG, "w"), indent=2)
-    except Exception: pass
+    try:
+        tmp=CFG+".tmp"
+        with open(tmp, "w") as f: json.dump(c, f, indent=2)
+        os.replace(tmp, CFG)          # atomic - a crash or power loss mid-write can never leave a truncated config
+    except Exception as e: log_line("save_cfg: %s" % e)
 
 # ---------------- device / mount ----------------
 NO_DEVICE = os.environ.get("POINTYOINK_NO_DEVICE") == "1"   # test instances must never touch the scanner: two apps on one MTP mount freeze both
@@ -210,6 +213,20 @@ def usb_state():
     except Exception: pass
     return ("mtp" if "06" in classes else "adb"), serial
 
+def _revo_busdev():
+    """(busnum, devnum) of the connected Revopoint device from sysfs, zero-padded to match gvfs's
+    mtp://[usb:BUS,DEV]/ activation-root format - so do_mount() only ever unmounts OUR device's own
+    gvfs claim, never a phone or other camera the user has plugged in at the same time."""
+    for d in glob.glob("/sys/bus/usb/devices/*/idVendor"):
+        try:
+            if open(d).read().strip() != VID: continue
+            dd = os.path.dirname(d)
+            bus = open(os.path.join(dd, "busnum")).read().strip()
+            devn = open(os.path.join(dd, "devnum")).read().strip()
+            return "%03d" % int(bus), "%03d" % int(devn)
+        except Exception: pass
+    return None
+
 def quick_mounted():
     if NO_DEVICE: return False
     try:
@@ -224,11 +241,15 @@ def do_mount():
     # devices the user may have connected). Release any gvfs claim on the device,
     # lazily unmount our path, and only then kill a jmtpfs still holding OUR mount.
     # GNOME auto-mounts the scanner through gvfs the moment it enters File Transfer mode, which
-    # makes it "busy" for jmtpfs. Unmount exactly those gvfs MTP mounts (a glob does nothing here).
+    # makes it "busy" for jmtpfs. Unmount only OUR device's gvfs MTP claim - matched by bus/dev
+    # number - never someone else's phone or camera also plugged in right now.
     try:
-        lst=subprocess.run(["gio","mount","-l"], capture_output=True, text=True, timeout=10).stdout
-        for m in re.findall(r"(mtp://[^\s/]+/)", lst):
-            subprocess.run(["gio","mount","-u",m], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        bd=_revo_busdev()
+        if bd:
+            tag="[usb:%s,%s]" % bd
+            lst=subprocess.run(["gio","mount","-l"], capture_output=True, text=True, timeout=10).stdout
+            for m in re.findall(r"(mtp://[^\s/]+/)", lst):
+                if tag in m: subprocess.run(["gio","mount","-u",m], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
     except Exception: pass
     subprocess.run(["fusermount","-uz",MOUNT], stderr=subprocess.DEVNULL)
     subprocess.run(["pkill","-9","-f","jmtpfs .*%s" % os.path.basename(MOUNT)], stderr=subprocess.DEVNULL)
@@ -1828,8 +1849,13 @@ class App(ctk.CTk):
         try:
             if self._wifi: self._wifi.stop()
         except Exception: pass
-        try:   # projector off while still streaming; the streams die with us and the RANGE reboots (normal)
-            if getattr(self, "_range_on", False) and self._range: self._range.projector(False)
+        try:   # projector off while still streaming, then actually stop the streams: os._exit(0) does NOT
+               # kill child processes, so a live v4l2-ctl stream would otherwise outlive the GUI and keep
+               # the camera busy. Bounded (~10s worst case) - only pays that cost if something's live.
+            if getattr(self, "_range_on", False) and self._range:
+                self._range.projector(False)
+                if self._range_color: self._range_color.stop()
+                if self._range_stream: self._range_stream.stop()
         except Exception: pass
         self._persist()
         # tearing down thousands of widgets one by one is what made closing look like popups dying in slow motion:
@@ -2269,14 +2295,15 @@ class App(ctk.CTk):
         if self.exp_glb.get(): fmts.append("glb")
         threading.Thread(target=self._pull_worker, args=(sel,dest,mo,fmts,cleanup), daemon=True).start()
     def _pull_worker(self, sel, dest, mo, fmts, cleanup):
-        total=len(sel); failed=[]
+        total=len(sel); failed=[]; no_models=[]
         try:
             os.makedirs(dest, exist_ok=True)
             for i,name in enumerate(sel):
                 if self.cancel: break
                 try:
                     if mo:
-                        self._import_flat(name, dest, fmts, cleanup, i, total)   # clean flat layout: <name>/<name>_<node>.ply (+.stl)
+                        n=self._import_flat(name, dest, fmts, cleanup, i, total)   # clean flat layout: <name>/<name>_<node>.ply (+.stl)
+                        if not n: no_models.append(name)          # nothing to copy yet (never built) - not an error, but not a real import either
                     else:
                         self._import_full(name, dest, i, total)         # full project incl. raw frames (nested mirror)
                 except Exception as e:
@@ -2285,7 +2312,7 @@ class App(ctk.CTk):
             log_error("import-setup", e); failed=list(sel)
         finally:
             self.proc=None
-            self.q.put(("cancelled" if self.cancel else "done", dest, failed))
+            self.q.put(("cancelled" if self.cancel else "done", dest, failed, no_models))
 
     def _import_flat(self, name, dest, fmts, cleanup, i, total, src_root=None, nodes=None):
         """Copy just the finished models into <dest>/<name>/ with clean unique names.
@@ -2315,6 +2342,7 @@ class App(ctk.CTk):
                 except Exception: pass
         if (fmts or cleanup) and not self.cancel:
             self._process_meshes(meshes, name, fmts, cleanup, i, total)
+        return len(meshes)
 
     def _ensure_clean_vars(self):
         """Clean-up knobs, named and defaulted like the scanner's Mesh panel (dev/design/device/SCANNER-EDIT-OPTIONS.md).
@@ -4299,13 +4327,14 @@ class App(ctk.CTk):
         ctk.CTkButton(br, text="Back", width=90, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX,
                       command=lambda: (self._dialogs.pop("wifiname", None), t.destroy())).pack(side="right", padx=6)
     def _wifi_finish_worker(self, stage, keep, dest, mo, fmts, cleanup, replace=False):
-        failed=[]; total=len(keep)
+        failed=[]; no_models=[]; total=len(keep)
         for i,(name,nodes) in enumerate(keep.items()):
             if self.cancel: break
             try:
                 if mo:
                     if replace and os.path.isdir(os.path.join(dest, name)): shutil.rmtree(os.path.join(dest, name), ignore_errors=True)
-                    self._import_flat(name, dest, fmts, cleanup, i, total, src_root=stage, nodes=nodes)
+                    n=self._import_flat(name, dest, fmts, cleanup, i, total, src_root=stage, nodes=nodes)
+                    if not n: no_models.append(name)
                 else:
                     self.q.put(("prog", i/total, "Saving %s (full project)" % name))
                     for nd in glob.glob(os.path.join(stage, name, "data", "*")):     # drop the scans that weren't ticked
@@ -4335,7 +4364,7 @@ class App(ctk.CTk):
             log_line("WiFi import %s: received data kept in %s and offered again at the next start" % ("cancelled" if self.cancel else "failed", stage))
         else:
             shutil.rmtree(stage, ignore_errors=True)
-        self.q.put(("cancelled" if self.cancel else "done", dest, failed))
+        self.q.put(("cancelled" if self.cancel else "done", dest, failed, no_models))
 
     # ---- screenshots ----
     def refresh_screenshots(self):
@@ -4607,7 +4636,8 @@ class App(ctk.CTk):
             self.q.put(("zipped", zpath, os.path.getsize(zpath), zfails))
         except Exception as e:
             log_error("zip", e); self.q.put(("zipfail", str(e)))
-    def _finish(self, dest, failed, cancelled=False):
+    def _finish(self, dest, failed, cancelled=False, no_models=None):
+        no_models=no_models or []
         self.pulling=False; self.cancel_btn.grid_remove(); self._bottom_refresh()
         try:
             if self.progress.cget("mode")=="indeterminate": self.progress.stop(); self.progress.configure(mode="determinate")
@@ -4628,7 +4658,12 @@ class App(ctk.CTk):
                         sig={"edit_time":p.get("edit_time"), "nodes":p.get("nodes"), "meshes":p.get("meshes")})
             self._persist()
             ef=getattr(self, "_export_fails", [])
-            if ef:
+            if no_models:      # "models only" found nothing built yet - the .revo/metadata still copied, but nothing to show for it
+                names=", ".join(self.disp(n) for n in no_models)
+                self.progline.configure(text="Imported, but no models yet: "+names)
+                self.set_banner("%s %s no built model on the scanner yet - build it there, or import the full project instead."
+                                % (names, "has" if len(no_models)==1 else "have"), WARN)
+            elif ef:
                 self.progline.configure(text="Imported, but %d export(s) failed."%len(ef))
                 self.set_banner("Import done, but %d file(s) failed to export - see Help > Log: %s"
                                 % (len(ef), ", ".join(ef[:3]) + ("…" if len(ef)>3 else "")), WARN)
@@ -4721,8 +4756,8 @@ class App(ctk.CTk):
                             self.progress.stop(); self.progress.configure(mode="determinate")
                         self.progress.set(frac)
                     self.progline.configure(text=line)
-                elif kind=="done": self._finish(rest[0],rest[1])
-                elif kind=="cancelled": self._finish(rest[0],rest[1], cancelled=True)
+                elif kind=="done": self._finish(rest[0],rest[1], no_models=rest[2] if len(rest)>2 else [])
+                elif kind=="cancelled": self._finish(rest[0],rest[1], cancelled=True, no_models=rest[2] if len(rest)>2 else [])
                 elif kind=="zipped":
                     zpath,sz,zfails=rest; self.pulling=False; self.zip_btn.configure(state="normal")
                     self.progress.set(0); self.progress.grid_remove()

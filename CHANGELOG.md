@@ -3,6 +3,24 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.40 (dev, 2026-09-14)
+- Fixes from an external audit, each verified against the real code before
+  changing anything:
+  - USB mount cleanup now only unmounts our own scanner's gvfs MTP claim
+    (matched by USB bus/device number), never a phone or other camera also
+    plugged in - the old code matched any mtp:// mount it saw despite its
+    own comment saying otherwise.
+  - Closing the app while Live view is connected now actually stops the
+    camera stream first. os._exit(0) does not kill child processes, so the
+    v4l2-ctl stream would previously outlive the GUI and keep holding the
+    camera.
+  - A "models only" import of a project with no built model yet used to
+    silently report "Import complete." with nothing actually copied. It now
+    says so plainly and tells you to build it on the scanner first.
+  - Config saves are now atomic (write to a temp file, then rename) instead
+    of writing the real file in place, so a crash or power loss mid-save
+    can't leave a corrupt config.
+
 ## 0.9.39 (dev, 2026-09-14)
 - Fixed the WiFi receive dialog's "speed"/"time left" row captions getting
   clipped: the connected-state window was a fixed 520x560, but the actual
