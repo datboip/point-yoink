@@ -3,6 +3,10 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.26 (dev, 2026-09-13)
+- The splash appears solid at once; the heavy imports run after it has painted
+  instead of stalling its fade-in.
+
 ## 0.9.25 (dev, 2026-09-13)
 - Live view: IR views shown with a soft stretch so the lit surfaces and the
   dim room are both visible.

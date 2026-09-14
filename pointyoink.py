@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.25-pre"
+APP = "PointYoink"; VERSION = "0.9.26-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -798,7 +798,6 @@ class App(ctk.CTk):
         self._header(); self._statusbar(); self._body(); self._build_options(); self._actions(); self._bottombar()
         self.search.trace_add("write", lambda *a: self._search_changed())
         self.protocol("WM_DELETE_WINDOW", self.on_close)
-        _preload()
         self.refresh_loop(); self.drain_loop(); self._pulse()
         self.after(60000, lambda: self._close_splash(force=True))  # last-resort fallback only
         self._when_ready(self._wifi_recover)   # offer a stranded WiFi transfer, if any: after the splash, never before
@@ -845,7 +844,7 @@ class App(ctk.CTk):
                 cx,cy=mx+mw//2, my+mh//2
                 self.geometry("+%d+%d" % (mx+(mw-self.winfo_reqwidth())//2, my+40))      # first run: the app opens on this monitor too
             sp.geometry("%dx%d+%d+%d"%(W,H, cx-W//2, cy-H//2))
-            try: sp.attributes("-alpha",0.0); sp.attributes("-topmost",True)
+            try: sp.attributes("-alpha",1.0); sp.attributes("-topmost",True)
             except Exception: pass
             # everything is drawn on ONE canvas so text/logo overlay the gradient with true transparency
             from PIL import Image, ImageTk
@@ -879,7 +878,8 @@ class App(ctk.CTk):
                 {"pkg":"xdg-utils","fn":lambda:bool(shutil.which("xdg-open")),"req":False,"ok":None},
             ]
             self._splash=sp; self._splash_a=0.0; self._missing=None
-            self._splash_fade(0.2); self.after(120, lambda: self._run_checks(0))
+            self._splash_a=1.0; sp.update_idletasks()
+            self.after(60, lambda: (_preload(), self._run_checks(0)))     # the heavy imports run once the splash is on screen, solid
         except Exception as e:
             log_error("splash", e); self.deiconify()
     def _splash_fade(self, d):
