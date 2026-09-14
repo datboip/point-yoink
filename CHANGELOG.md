@@ -3,6 +3,16 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.36 (dev, 2026-09-14)
+- Fixed a real freeze on "Delete project"/"Delete this version": both called
+  the trash move directly on the UI thread with no time bound on its
+  fallback (a real copy+delete if the trash folder lands on a different
+  filesystem than the project), so deleting anything but a small project
+  could freeze the whole window for as long as the move took. Both now run
+  the move on a background thread and report back through the queue like
+  every other slow operation in the app; verified with a simulated slow
+  trash op that the UI keeps responding throughout.
+
 ## 0.9.35 (dev, 2026-09-14)
 - Live view now notices when the scanner disappears mid-session (unplugged,
   powered off, or a stream that just stopped producing frames) instead of

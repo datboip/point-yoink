@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.35-pre"
+APP = "PointYoink"; VERSION = "0.9.36-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2706,7 +2706,10 @@ class App(ctk.CTk):
         self._proc_render(name)
         if self.selected==name: self._mv_key=None; self._request_shaded(name, node)
     def _trash(self, path):
-        """Move a file or folder to the desktop trash (gio), else into <dest>/.trash."""
+        """Move a file or folder to the desktop trash (gio), else into <dest>/.trash. Can be slow
+        for a big folder (the gio call is timeout-bounded, but its own fallback move is a real
+        copy+delete if .trash lands on a different filesystem) - always call via _trash_async
+        from a UI handler, never directly, or a big project freezes the whole window."""
         try:
             if subprocess.run(["gio","trash",path], capture_output=True, timeout=30).returncode==0: return True
         except Exception: pass
@@ -2715,21 +2718,36 @@ class App(ctk.CTk):
             shutil.move(path, os.path.join(tdir, time.strftime("%Y%m%d-%H%M%S_")+os.path.basename(path))); return True
         except Exception as e:
             log_error("trash", e); return False
+    def _trash_async(self, path, done):
+        """Run _trash() off the main thread and deliver the result back via the queue - a project
+        folder can be big, so this must never block the UI thread."""
+        def _run():
+            ok=self._trash(path)
+            self.q.put(("call", lambda: done(ok)))
+        threading.Thread(target=_run, daemon=True).start()
     def _proc_delete_version(self, name, node, key, path):
         if not self._confirm("Delete this version?", "%s: the %s version of scan %s goes to the trash.\nOther versions and the raw data stay." % (self.disp(name), dict(clean="prepared copy", scanner="scanner's model", pcfused="PC build")[key], node)): return
-        if self._trash(path):
+        self.set_status("Moving to the trash…")
+        def _done(ok):
+            self.set_status("")
+            if not ok: self.set_banner("Couldn't move that to the trash.", WARN); return
             self.set_banner("Moved to the trash: %s" % os.path.basename(path), MUT); self._mesh_stats={}; self.gallery_cache.pop(name, None)
             self._proc_render(name)
             if self.selected==name: self._mv_key=None; self.projects_sig=None; self.listed=False; self.start_listing()
+        self._trash_async(path, _done)
     def _proc_delete_project(self):
         name=self.selected
         if not name: return
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
         if not os.path.isdir(local): self.set_banner("That project is not on this PC.", WARN); return
         if not self._confirm("Delete from this PC?", "%s and everything in its folder go to the trash.\nThe copy on the scanner is not touched." % self.disp(name)): return
-        if self._trash(local):
+        self.set_status("Moving to the trash…")
+        def _done(ok):
+            self.set_status("")
+            if not ok: self.set_banner("Couldn't move that project to the trash.", WARN); return
             self.set_banner("Moved to the trash: %s" % self.disp(name), MUT); self.selected=None; self.gallery_cache.pop(name, None)
             self.projects_sig=None; self.listed=False; self.start_listing(); self._proc_render(None)
+        self._trash_async(local, _done)
     def _proc_refresh(self):
         if not hasattr(self, "proc_pick"): return
         dest=self.dest.get() or DEFAULT_DEST
