@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.59-pre"
+APP = "PointYoink"; VERSION = "0.9.60-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -4176,6 +4176,15 @@ class App(ctk.CTk):
                 bar.stop(); bar.grid_remove(); able(alignb, len(st["pairs"])>=3); autob.configure(state="normal"); refresh_chips()
         def run_align(auto):
             if st["busy"] or not st["moving"]: return
+            if auto and _has_open3d_cache is None:
+                # First Auto click before the background Open3D check has landed: instead of doing nothing
+                # (which made it "take two clicks"), start/await the check and run Auto as soon as it's ready.
+                self._start_open3d_probe(); st["busy"]=True; busy_on("Checking Open3D…")
+                def waito():
+                    if not t.winfo_exists(): return
+                    if _has_open3d_cache is None: t.after(200, waito); return
+                    st["busy"]=False; busy_off(); run_align(True)
+                t.after(200, waito); return
             if auto and not self._require_open3d("Auto alignment"): return
             st["busy"]=True; keepb.pack_forget(); busy_on("Starting…" if not auto else "Starting Auto… this takes a minute or two")
             base_p=self._proc_current(name, st["base"])[2]; mov_p=self._proc_current(name, st["moving"])[2]
