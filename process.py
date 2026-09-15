@@ -27,7 +27,8 @@ def main():
     ap.add_argument("--clean", action="store_true", help="dedupe, drop small pieces, optional hole fill, smooth, optional simplify")
     # The scanner's own editing knobs (see dev/design/device/SCANNER-EDIT-OPTIONS.md); defaults match its Mesh panel.
     ap.add_argument("--isolation-rate", type=float, default=15.0, help="drop pieces smaller than this %% of the largest one (100 = keep only the largest)")
-    ap.add_argument("--fill-holes", action="store_true", help="fill small holes (the scanner has this off by default)")
+    ap.add_argument("--fill-holes", action="store_true", help="fill holes (the scanner has this off by default)")
+    ap.add_argument("--hole-size", type=float, default=0, help="largest hole to fill, in mm (0 = auto: ~4%% of the bbox diagonal, so real gaps close but an intentionally-open base does not)")
     ap.add_argument("--smooth-times", type=int, default=3, help="smoothing passes (scanner default 3; 0 = off)")
     ap.add_argument("--simplify-pct", type=float, default=0, help="keep this %% of faces after cleaning (0 = keep all; the scanner's Simplify uses 40)")
     a = ap.parse_args()
@@ -114,8 +115,25 @@ def main():
 
     if a.clean:
         if a.fill_holes:
-            try: m.fill_holes()
-            except Exception: pass
+            # trimesh.fill_holes() only closes gaps bounded by a few edges (measured: it left ~40k open
+            # edges on a real scan untouched). Open3D fills up to a size threshold, so real holes close
+            # while an intentionally-open base (much larger than the threshold) stays open. Fall back to
+            # trimesh only if Open3D is unavailable.
+            hole_mm = a.hole_size if a.hole_size > 0 else float(np.linalg.norm(m.bounds[1] - m.bounds[0])) * 0.04
+            filled = False
+            try:
+                import open3d as o3d
+                tm = o3d.t.geometry.TriangleMesh.from_legacy(o3d.geometry.TriangleMesh(
+                    o3d.utility.Vector3dVector(np.asarray(m.vertices, np.float64)),
+                    o3d.utility.Vector3iVector(np.asarray(m.faces, np.int32))))
+                lg = tm.fill_holes(hole_size=hole_mm).to_legacy()
+                m = trimesh.Trimesh(np.asarray(lg.vertices), np.asarray(lg.triangles), process=False)
+                emit("filled", hole_mm=round(hole_mm, 1), faces=len(m.faces)); filled = True
+            except Exception:
+                pass
+            if not filled:
+                try: m.fill_holes()
+                except Exception: pass
         if a.smooth_times > 0:
             try: trimesh.smoothing.filter_humphrey(m, iterations=int(a.smooth_times))
             except Exception: pass
