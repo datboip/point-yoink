@@ -43,7 +43,23 @@ def load_oriented_tf(path, max_faces=MAX_FACES, tf=None):
             a /= s; ang = np.arccos(np.clip(up[2], -1, 1))
             K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
             R = np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * K @ K
-        vr = vc @ R.T; zshift = float(vr[:, 2].min())
+        vr = vc @ R.T
+        # The object is now level, but its yaw (spin about "up") is still whatever the scanner
+        # happened to record, so every scan starts facing a different way. Rotate about up (Z) so the
+        # longest horizontal axis lies along X, then pick a deterministic front from the along-X skew,
+        # so Reset / home looks the same for every model. R stays a rotation, so the view<->world
+        # round-trip (cut plane, combine) is unaffected.
+        try:
+            _wv, _ev = np.linalg.eigh(np.cov(vr[:, :2].T))     # ascending; last col = longest in-plane axis
+            major = _ev[:, -1]; theta = np.arctan2(major[1], major[0])
+            cz, sz = np.cos(-theta), np.sin(-theta)
+            R = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]]) @ R
+            vr = vc @ R.T
+            if float(np.mean(vr[:, 0] ** 3)) > 0:              # 180-about-Z ambiguity: heavier end always the same side
+                R = np.diag([-1.0, -1.0, 1.0]) @ R; vr = vc @ R.T
+        except Exception:
+            pass
+        zshift = float(vr[:, 2].min())
         tf = {"mean": mean.astype(np.float64), "scale": scale, "R": R, "zshift": zshift}
     vv = world_to_view(v, tf)
     return vv.astype(np.float32), f, tf
