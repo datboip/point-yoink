@@ -70,6 +70,7 @@ class GLView(OpenGLFrame):
         self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 1.0, [0.0, 0.0]
         self.rot = self._default_rot()         # free rotation: a 4x4 the drag turns about the screen axes, no limits
         self._drag = None; self._gen = 0; self._pending = None; self._n = 0; self._vbo = None
+        self._nw = 0; self._src = None; self._wire_gen = None    # set again by _upload; must exist before the first upload (Wireframe clicked early)
         self.animate = 0
         self.tf = None                         # orientation transform of the loaded mesh (shade.load_oriented_tf)
         self.markers = []                      # [(xyz in view coords, (r,g,b))] drawn as dots

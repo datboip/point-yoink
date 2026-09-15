@@ -106,6 +106,10 @@ def _show_single_instance_error():
         try: _sys.stderr.write(msg + "\n")
         except Exception: pass
 
+# live 3D preview detail (Settings): triangles kept for the interactive view; exports are never reduced
+LIVE_QUALITY_FACES={"low":100000, "medium":300000, "high":1000000}
+LIVE_QUALITY_LABEL={"low":"Low (fast)", "medium":"Medium", "high":"High (crisp)"}
+
 # palette
 BG="#0e1117"; CARD="#171b23"; CARD2="#1d222c"; STROKE="#2a3140"; SELB="#22304a"
 AC="#4aa3ff"; AC_H="#3b8fe6"; OK="#3ecf8e"; WARN="#ffb454"; DANGER="#ff6b6b"
@@ -1985,6 +1989,12 @@ class App(ctk.CTk):
         ctk.CTkOptionMenu(gr, variable=glv, values=["Graphics card when available","Software view"], width=230, fg_color="#0d0f14", button_color=CARD2,
                           button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=10).pack(side="left", padx=8)
         ctk.CTkLabel(gr, text="any OpenGL graphics works; the software view is the fallback", text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left")
+        qr=ctk.CTkFrame(t, fg_color="transparent"); qr.pack(fill="x", padx=20, pady=(10,0))
+        ctk.CTkLabel(qr, text="Live 3D preview detail", text_color=TX).pack(side="left")
+        qv=ctk.StringVar(value=LIVE_QUALITY_LABEL.get(self.cfg.get("live_quality","medium"), "Medium"))
+        ctk.CTkOptionMenu(qr, variable=qv, values=list(LIVE_QUALITY_LABEL.values()), width=230, fg_color="#0d0f14", button_color=CARD2,
+                          button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=10).pack(side="left", padx=8)
+        ctk.CTkLabel(qr, text="triangles kept for rotating: 100k fast · 300k · 1M crisp (exports are never reduced)", text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left")
         pr=ctk.CTkFrame(t, fg_color="transparent"); pr.pack(fill="x", padx=20, pady=(10,0))
         ctk.CTkLabel(pr, text="Build 3D models on", text_color=TX).pack(side="left")
         fdv=ctk.StringVar(value={"cpu":"CPU only"}.get(self.cfg.get("fuse_device","auto"), "NVIDIA GPU when available"))
@@ -2011,6 +2021,7 @@ class App(ctk.CTk):
             code="".join(ch for ch in wv.get() if ch.isdigit())[:4]
             self.cfg["wifi_code"]=code.zfill(4) if code else ""
             self.cfg["gl_view"]="software" if glv.get().startswith("Software") else "auto"
+            self.cfg["live_quality"]=next((k for k,v in LIVE_QUALITY_LABEL.items() if v==qv.get()), "medium")
             self.cfg["fuse_device"]="cpu" if fdv.get().startswith("CPU") else "auto"; self.cfg["register_drift"]=bool(rdv.get())
             self.cfg["ui_scale"]=round(float(sv.get()),2); self._persist(); t.destroy()
             if abs(float(sv.get())-cur)>0.02:
@@ -2642,7 +2653,8 @@ class App(ctk.CTk):
         # cut-plane tool, which already caps at 600k) that meant a 500-650k triangle mesh never got
         # decimated at all, paying full uncapped normal-computation cost every time a scan was
         # selected: measured 16-37s, consistently, not a one-off - found 2026-09-14.
-        self.mv.load(path, ready, max_faces=300000)
+        # The cap is now the Settings "Live 3D preview detail" choice (mesh prep measured 0.7 s at 300k).
+        self.mv.load(path, ready, max_faces=LIVE_QUALITY_FACES.get(self.cfg.get("live_quality","medium"), 300000))
     def _show_stats(self, st):
         v,f=st
         if f: self.renders_lbl.configure(text="3D model · %s triangles"%_kfmt(f))
