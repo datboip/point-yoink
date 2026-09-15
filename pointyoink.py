@@ -976,7 +976,7 @@ class App(ctk.CTk):
         log_line("PointYoink %s started" % VERSION)
 
         self.grid_columnconfigure(0, weight=1); self.grid_rowconfigure(2, weight=1, minsize=300)
-        self.search=ctk.StringVar(); self.shade_mode="solid"; self._film_sel=None; self._film_cells={}
+        self.search=ctk.StringVar(); self.shade_mode="solid"; self._film_sel=None; self._film_cells={}; self._film_imgs={}
         self._shade_lock=threading.Lock(); self._shade_want=None; self._shade_running=False; self._shade_key=None
         self._shade_failed=set(); self._mesh_stats={}
         self._header(); self._statusbar(); self._body(); self._build_options(); self._actions(); self._bottombar()
@@ -1420,6 +1420,7 @@ class App(ctk.CTk):
         se.grid(row=1,column=0, sticky="ew", padx=18, pady=(0,6))
         se.bind("<KeyRelease>", lambda e: self.search.set(se.get()))
         self.llist=ctk.CTkScrollableFrame(left, fg_color="transparent"); self.llist.grid(row=2,column=0, sticky="nsew", padx=(8,2), pady=0)
+        self.llist.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.llist, "vertical"), add="+")
         self.llist.grid_columnconfigure(0, weight=1)
         self.list_empty=None   # the "No projects yet" panel, created by render_list; kept as tall as the list's visible area
         self.llist._parent_canvas.bind("<Configure>", lambda e: self._fit_empty("list_empty", self.llist), add="+")
@@ -1511,7 +1512,9 @@ class App(ctk.CTk):
         self.side=ctk.CTkFrame(pm, fg_color="transparent", width=278); self.side.grid(row=0,column=4, sticky="nsew")
         self.side.grid_propagate(False); self.side.grid_columnconfigure(0, weight=1); self.side.grid_rowconfigure(0, weight=1)
         self.opts=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.opts.grid(row=0,column=0, sticky="nsew", padx=(6,0))
+        self.opts.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.opts, "vertical"), add="+")
         self.projpanel=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.projpanel.grid(row=0,column=0, sticky="nsew", padx=(6,0)); self.projpanel.grid_remove()
+        self.projpanel.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.projpanel, "vertical"), add="+")
         self.rail_btns={}; self.rail_bars={}
 
         # -- Process mode: the selected project's scans, each with its versions and the tools --
@@ -1528,6 +1531,7 @@ class App(ctk.CTk):
         ctk.CTkButton(sctop, text="↻ Refresh", width=96, height=30, corner_radius=8, fg_color=CARD2,
                       hover_color=STROKE, text_color=TX, command=self.refresh_screenshots).pack(side="right", padx=4)
         self.shots=ctk.CTkScrollableFrame(sc, fg_color="#0a0c10", corner_radius=10)
+        self.shots.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.shots, "vertical"), add="+")
         self.shots.grid(row=1,column=0, sticky="nsew", padx=10, pady=(0,10))
         for c in range(4): self.shots.grid_columnconfigure(c, weight=1)
         self._shots_items=[]
@@ -2337,7 +2341,7 @@ class App(ctk.CTk):
             for w in self.llist.winfo_children(): w.destroy()
             ctk.CTkLabel(self.llist, text="Couldn't load the project list (see Help > Log).", text_color=WARN, font=ctk.CTkFont(size=12)).grid(row=0, column=0, sticky="w", padx=16, pady=20)
         finally:
-            self.llist.grid()
+            self.llist.grid(); self._fit_scrollbar_later(self.llist, "vertical", 120)
     def _render_list_body(self, projs, q):
         old=self.pull_sel; self.pull_sel={}; self.rows={}
         if not projs:
@@ -2472,27 +2476,71 @@ class App(ctk.CTk):
         # dumps caught the main thread stuck in exactly this loop after a project click).
         self.film.grid_remove()
         for w in self.film.winfo_children(): w.destroy()
-        self._film_cells={}
+        self._film_cells={}; self._film_imgs={}
         if not items:
             return
+        todo=[]
         for i,(node,path) in enumerate(items):
             try:
-                self.imgs["g_"+name+node]=cimg(path,100)
+                thumb=self._scan_thumb(name, node) or path   # shaded render if we have one, else the scanner's blue preview
+                self.imgs["g_"+name+node]=cimg(thumb,100)
                 cell=ctk.CTkFrame(self.film, fg_color="#0a0c10", corner_radius=10, border_width=2, border_color=(AC if node==self._film_sel else STROKE))
                 cell.pack(side="left", padx=(0,10), pady=(6,4))
                 im=ctk.CTkLabel(cell, image=self.imgs["g_"+name+node], text=""); im.pack(padx=8, pady=(8,2))
                 cap=ctk.CTkLabel(cell, text=self._scan_label(name, node), text_color=(AC if node=="combined" else MUT), font=ctk.CTkFont(size=11)); cap.pack(pady=(0,6))
                 for w in (cell, im, cap): w.bind("<Button-1>", lambda e,nd=node,pp=path: self._pick_scan(name, nd, pp))
-                self._film_cells[node]=cell
+                self._film_cells[node]=cell; self._film_imgs[node]=im
+                if thumb==path:                              # no shaded render yet: queue one so the blue preview is replaced
+                    mesh=self._mesh_for_node(name, node)
+                    if mesh: todo.append((node, mesh))
             except Exception: pass
         self.film.grid()
         self.after(120, self._film_fit)
+        if todo: self._start_thread(self._film_thumb_worker, name, todo, name="film-thumbs")
+    def _scan_thumb(self, name, node):
+        """A cached small shaded render of one scan for the strip (grey on grid, like the big preview),
+        or None if it hasn't been rendered yet."""
+        p=os.path.join(THUMBS, "%s__%s__film.png" % (name, node))
+        try:
+            if os.path.exists(p) and os.path.getsize(p)>1024: return p
+        except Exception: pass
+        return None
+    def _film_thumb_worker(self, name, todo):
+        for node, mesh in todo:
+            if self.selected!=name: return                    # moved on
+            out=os.path.join(THUMBS, "%s__%s__film.png" % (name, node))
+            try:
+                src=mesh
+                if mesh.startswith(PROJECTS):                  # device mount is slow: reuse the local view-cache copy if present
+                    cached=os.path.join(THUMBS, "view", ("%s__%s"%(name,node))+"_fuse_mesh.ply")
+                    if os.path.exists(cached): src=cached
+                if os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(src) and os.path.getsize(out)>1024:
+                    self.q.put(("film_thumb", name, node, out)); continue
+                env=dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
+                r=self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), src, out, "--size", "300x220"], timeout=300, env=env)
+                if r.returncode==0 and os.path.exists(out) and os.path.getsize(out)>1024:
+                    self.q.put(("film_thumb", name, node, out))
+            except Exception as e:
+                log_error("film-thumb "+node, e)
     def _film_fit(self):
         """Show the strip's scrollbar only when the thumbnails do not fit."""
+        self._fit_scrollbar(self.film, "horizontal")
+    def _fit_scrollbar(self, frame, orient="vertical"):
+        """Show a CTkScrollableFrame's scrollbar only when its content actually overflows."""
         try:
-            need=sum(w.winfo_reqwidth()+10 for w in self.film.winfo_children()) > self.film._parent_canvas.winfo_width()
-            if need: self.film._scrollbar.grid()
-            else: self.film._scrollbar.grid_remove()
+            canvas=frame._parent_canvas; sb=frame._scrollbar
+            bbox=canvas.bbox("all")
+            if not bbox:
+                need=False
+            elif orient=="horizontal":
+                need=(bbox[2]-bbox[0]) > canvas.winfo_width()+2
+            else:
+                need=(bbox[3]-bbox[1]) > canvas.winfo_height()+2
+            if need: sb.grid()
+            else: sb.grid_remove()
+        except Exception: pass
+    def _fit_scrollbar_later(self, frame, orient="vertical", ms=80):
+        try: self.after(ms, lambda: self._fit_scrollbar(frame, orient))
         except Exception: pass
     def _pick_scan(self, name, node, path):
         self._film_sel=node; self._mark_scan(node)
@@ -3229,6 +3277,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(dr, text="Normal matches the scanner. Finer takes longer and needs more graphics memory (about 2 GB per scan at Normal).",
                      text_color=DIM, font=ctk.CTkFont(size=10)).pack(side="left")
         self.proc_cards=ctk.CTkScrollableFrame(pr, fg_color="transparent"); self.proc_cards.grid(row=1,column=0, sticky="nsew", padx=10)
+        self.proc_cards.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.proc_cards, "vertical"), add="+")
         self.proc_cards.grid_columnconfigure(0, weight=1)
         self.tools=ctk.CTkFrame(pr, fg_color="transparent", height=1); self.tools.grid(row=4,column=0); self.tools.grid_remove()   # kept for older call sites
         self._proc_rows={}; self._proc_names=[]
@@ -3568,7 +3617,7 @@ class App(ctk.CTk):
             ctk.CTkLabel(pp, text="Couldn't refresh this panel (see Help > Log). Try selecting the project again.",
                          text_color=WARN, font=ctk.CTkFont(size=12), wraplength=230, justify="left").pack(anchor="w", padx=16, pady=20)
         finally:
-            pp.grid()
+            pp.grid(); self._fit_scrollbar_later(pp, "vertical", 120)
     def _panel_refresh_body(self, pp):
         name=self.selected; dest=self.dest.get() or DEFAULT_DEST; local=os.path.join(dest, name) if name else None
         if not name or not local or not os.path.isdir(local):
@@ -4995,7 +5044,7 @@ class App(ctk.CTk):
             for w in self.shots.winfo_children(): w.destroy()
             ctk.CTkLabel(self.shots, text="Couldn't load screenshots (see Help > Log). Try Refresh.", text_color=WARN).grid(row=0, column=0, padx=20, pady=20, sticky="w")
         finally:
-            self.shots.grid()
+            self.shots.grid(); self._fit_scrollbar_later(self.shots, "vertical", 120)
     def _render_shots_body(self, images, recs, gen):
         self.shots_lbl.configure(text="%d screenshot%s · %d recording%s on the device"
                                  % (len(images), "" if len(images)==1 else "s", len(recs), "" if len(recs)==1 else "s"))
@@ -5363,6 +5412,12 @@ class App(ctk.CTk):
                     key,st=rest; self._mesh_stats[key]=st
                     if self._shade_key and key==self._shade_key[0]: self._show_stats(st)
                 elif kind=="gallery": n,items=rest; self.gallery_cache[n]=items; self.render_gallery(n,items)
+                elif kind=="film_thumb":                       # a scan's shaded strip thumbnail is ready: swap out the blue preview
+                    n,node,out=rest
+                    im=self._film_imgs.get(node) if self.selected==n else None
+                    if im is not None:
+                        try: self.imgs["g_"+n+node]=cimg(out,100); im.configure(image=self.imgs["g_"+n+node])
+                        except Exception: pass
                 elif kind=="files":
                     n,(tot,files)=rest
                     if self.selected==n:
