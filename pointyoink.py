@@ -1715,7 +1715,9 @@ class App(ctk.CTk):
         self.ftree=ttk.Treeview(tw, style="PY.Treeview", columns=("size",), height=6, selectmode="browse")
         self.ftree.heading("#0", text="name", anchor="w"); self.ftree.heading("size", text="size", anchor="e")
         self.ftree.column("#0", width=190, stretch=True); self.ftree.column("size", width=70, anchor="e", stretch=False)
-        self.ftree.grid(row=0,column=0, sticky="nsew", padx=4, pady=4)
+        self.ftree.grid(row=0,column=0, sticky="nsew", padx=(4,0), pady=4)
+        fsb=ctk.CTkScrollbar(tw, command=self.ftree.yview, fg_color="transparent"); fsb.grid(row=0,column=1, sticky="ns", padx=(0,3), pady=4)
+        self.ftree.configure(yscrollcommand=fsb.set); self._ftree_sb=fsb   # the save folder holds thousands of files: it must scroll
         self.ftree.bind("<<TreeviewOpen>>", self._folder_expand); self.ftree.bind("<Double-1>", self._folder_open)
         self.ftree.tag_configure("dir", foreground=AC); self.ftree.tag_configure("mesh", foreground=OK)
         tw.bind("<Configure>", self._fit_folder)
@@ -1769,6 +1771,8 @@ class App(ctk.CTk):
             self.next_strip.pack_forget(); self.projbar.grid_remove(); self.film.grid_remove(); self.proj_empty.grid()
             self._mv_key=None; self.mv.grid_remove(); self.big.grid(); self.big_empty.grid(); self.big_empty.lift()
             self.view_nav.place_forget()
+            self.files_box.configure(state="normal"); self.files_box.delete("1.0","end")   # don't leave the last project's file list up when nothing is picked
+            self.files_box.insert("end","Pick a project to see its model files.\n"); self.files_box.configure(state="disabled")
         except Exception as e: log_error("clear selection", e)
     def _bottom_refresh(self):
         if getattr(self, "pulling", False): return
@@ -2530,7 +2534,13 @@ class App(ctk.CTk):
         """Show a CTkScrollableFrame's scrollbar only when its content actually overflows."""
         try:
             canvas=frame._parent_canvas; sb=frame._scrollbar
-            bbox=canvas.bbox("all")
+            if not getattr(frame, "_fit_bound", False):
+                # CTk re-grids its scrollbar on a mousewheel or hover, which re-showed a bar we had hidden;
+                # re-check just after those so it hides again when the content still fits.
+                for seq in ("<MouseWheel>","<Button-4>","<Button-5>","<Enter>"):
+                    canvas.bind(seq, lambda e,f=frame,o=orient: self._fit_scrollbar_later(f,o,10), add="+")
+                frame._fit_bound=True
+            canvas.update_idletasks(); bbox=canvas.bbox("all")
             if not bbox:
                 need=False
             elif orient=="horizontal":
@@ -2597,7 +2607,9 @@ class App(ctk.CTk):
     def _shade_mode_changed(self, v):
         self.shade_mode="wire" if v=="Wireframe" else "solid"
         if self.mv.winfo_manager(): self.mv.set_wire(self.shade_mode=="wire"); return   # live view: just redraw
-        if self.selected: self._maybe_schedule_shaded(self.selected, self._film_sel, 150)
+        # still image: re-render it now in the chosen mode. (Going through _maybe_schedule_shaded meant the
+        # opt-in auto-preview gate could swallow the first toggle, so it "took two clicks" to switch.)
+        if self.selected and self._film_sel: self._request_shaded(self.selected, self._film_sel)
     def _reset_view(self, _=None):
         """Reset the live 3D view to its default angle and zoom (same as double-clicking the model)."""
         try:
