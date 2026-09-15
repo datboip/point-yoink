@@ -72,6 +72,19 @@ CFG_DIR = os.path.join(HOME, ".config", "pointyoink"); CFG = os.path.join(CFG_DI
 if os.environ.get("POINTYOINK_CONFIG"):
     CFG = os.environ["POINTYOINK_CONFIG"]; CFG_DIR = os.path.dirname(CFG) or CFG_DIR
 HERE = os.path.dirname(os.path.abspath(__file__)); ICON = os.path.join(HERE, "icon.png")
+def _build_id():
+    """A short stamp so two builds of the same VERSION are tellable apart: the git short hash while
+    running from the repo (with '+' if there are uncommitted changes), else the source file's date-time."""
+    try:
+        import subprocess as _sp
+        h=_sp.run(["git","-C",HERE,"rev-parse","--short","HEAD"], capture_output=True, text=True, timeout=2)
+        if h.returncode==0 and h.stdout.strip():
+            d=_sp.run(["git","-C",HERE,"status","--porcelain","-uno"], capture_output=True, text=True, timeout=2)
+            return h.stdout.strip()+("+" if d.stdout.strip() else "")
+    except Exception: pass
+    try: return time.strftime("%m%d-%H%M", time.localtime(os.path.getmtime(os.path.join(HERE,"pointyoink.py"))))
+    except Exception: return "?"
+BUILD = _build_id()
 DEFAULT_DEST = os.path.join(HOME, "revopoint-scans-models")
 VID = "2207"
 for d in (THUMBS, CFG_DIR): os.makedirs(d, exist_ok=True)
@@ -949,7 +962,7 @@ class App(ctk.CTk):
             dw=min(1090, int(sw*0.92)); dh=min(1070, int(sh*0.90))   # tall enough for preview + renders + tools
         except Exception:
             dw,dh=1090,1070
-        self.title("%s  %s" % (APP, VERSION))
+        self.title("%s  %s (%s)" % (APP, VERSION, BUILD))
         self.geometry(self.cfg.get("geometry", "%dx%d"%(dw,dh)))
         self.minsize(min(1024,dw), min(600,dh))
         self.configure(fg_color=BG)
@@ -973,7 +986,7 @@ class App(ctk.CTk):
         self._mounting=False; self.auto_tried=False; self._wifi=None; self._wifi_bg=False; self.listed_src=None; self._listing_src=None; self._refresh_probe_busy=False; self._shots_busy=False; self._open3d_probe_busy=False
         self._device_mounted=False; self._device_touch_cool_until=0.0
         self.report_callback_exception = self._on_tk_error
-        log_line("PointYoink %s started" % VERSION)
+        log_line("PointYoink %s (%s) started" % (VERSION, BUILD))
 
         self.grid_columnconfigure(0, weight=1); self.grid_rowconfigure(2, weight=1, minsize=300)
         self.search=ctk.StringVar(); self.shade_mode="solid"; self._film_sel=None; self._film_cells={}; self._film_imgs={}
@@ -1317,7 +1330,8 @@ class App(ctk.CTk):
         wm=ctk.CTkFrame(h, fg_color="transparent"); wm.grid(row=0,column=1, sticky="w")
         ctk.CTkLabel(wm, text="Point", font=ctk.CTkFont(family=WORDMARK, size=20, weight="bold"), text_color=TX).pack(side="left")
         ctk.CTkLabel(wm, text="Yoink", font=ctk.CTkFont(family=WORDMARK, size=20, weight="bold"), text_color=AC).pack(side="left")
-        ctk.CTkLabel(wm, text="v"+VERSION, font=ctk.CTkFont(size=10), text_color=DIM).pack(side="left", padx=(6,0), pady=(6,0))
+        vl=ctk.CTkLabel(wm, text="v%s · %s" % (VERSION, BUILD), font=ctk.CTkFont(size=10), text_color=DIM); vl.pack(side="left", padx=(6,0), pady=(6,0))
+        self._tip(vl, "Build %s — the git commit this app is running (a trailing + means uncommitted changes). Match it to `git log --oneline -1` to know it's current." % BUILD)
         self._modes=TabStrip(h, command=lambda lab: self._set_mode(HEADER_KEY.get(lab, lab)), content=False, base=CARD, size=13)
         self._modes.grid(row=0,column=2, sticky="w", padx=(26,0), pady=(8,0))
         self._modes.add("Import", icon="⬇"); self._modes.add("Projects", icon="▤"); self._modes.add("Captures", icon="▣")
@@ -2012,6 +2026,7 @@ class App(ctk.CTk):
             try: self.imgs["about"]=cimg(ICON,88); ctk.CTkLabel(t, image=self.imgs["about"], text="").pack(pady=(22,6))
             except Exception: pass
         ctk.CTkLabel(t, text=APP+"  "+VERSION, font=ctk.CTkFont(family=WORDMARK, size=22,weight="bold"), text_color=TX).pack()
+        ctk.CTkLabel(t, text="build "+BUILD, font=ctk.CTkFont(size=11), text_color=DIM).pack()
         ctk.CTkLabel(t, text="Yoink your 3D scans off a Revopoint scanner - on Linux, over USB.",
                      text_color=MUT, font=ctk.CTkFont(size=13)).pack(pady=(4,0))
         info=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); info.pack(fill="x", padx=24, pady=(14,8))
