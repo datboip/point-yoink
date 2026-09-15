@@ -90,6 +90,20 @@ python3 -m venv --system-site-packages venv
 ## How to use
 
 1. **Import.** Plug in a USB-C data cable and tap **File Transfer** on the scanner, or click **WiFi** and enter the code on the scanner under Share to PC > Wi-Fi. Tick, Import. Choose **Full project** if you want to build or combine on the PC.
+
+<table>
+  <tr>
+    <td align="center"><img src="assets/device/scanner-usb-tab.png" alt="Scanner USB File Transfer tab" width="240"></td>
+    <td align="center"><img src="assets/device/scanner-share-icon.png" alt="Scanner project Share icon" width="240"></td>
+    <td align="center"><img src="assets/device/scanner-wifi-code.png" alt="Scanner Wi-Fi share code entry" width="240"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>USB: tap <b>File Transfer</b> on the scanner</sub></td>
+    <td align="center"><sub>Wi-Fi: the <b>Share</b> icon, top right of a project</sub></td>
+    <td align="center"><sub>Wi-Fi: type the 4-digit code PointYoink shows</sub></td>
+  </tr>
+</table>
+
 2. **Projects.** The imported project appears with its scans. Follow the **NEXT** bar: it walks you through the five steps below and each one is a single button.
 
 | Step | What happens | Where the result goes |

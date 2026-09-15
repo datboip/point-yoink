@@ -10,8 +10,12 @@ Everything since 0.7.0 is local. 1.0.0 is a decision, not a version count. Do th
       The matplotlib tool (cutplane.py with a window) stays as the software-view fallback.
 - [x] Prepare with live linked before/after and Keep/Discard; Export dialog with size and mesh check.
 - [x] Combine: point pairs or Auto, ICP, overlay, editable, multi-set fusion (fuse.py --set).
-- [ ] Shaded thumbnails for the list (scanner previews are used today; combined gets a render).
-- [ ] The MIRACO's own screenshots in Help and the README (dev/design/device/*.png exist).
+- [x] Shaded thumbnails for the list AND the scan strip (grey renders, cached; replace the scanner's
+      blue previews in place). Consistent 3D preview: opt-in interactive view, standard-view nav
+      (Home/Top/Front/Back/Left/Right), matched still/live framing, model sits inside the grid, free
+      rotation for base removal, auto-hide scrollbars. (0.9.56-pre, 2026-09-15)
+- [x] The MIRACO's own screenshots in Help and the README (Help "On the scanner" row: share/Wi-Fi/USB;
+      README "How to use" step 1 row: assets/device/scanner-{usb-tab,share-icon,wifi-code}.png). (2026-09-15)
 - [ ] WiFi transfer window: Run in background; review window with the raw-only warning (concepts).
 - [ ] Menu: fold "Also export as" on Import into the Export dialog? (decide; STL on import is handy)
 
@@ -24,7 +28,8 @@ Everything since 0.7.0 is local. 1.0.0 is a decision, not a version count. Do th
 - [ ] Cut base on each scan, Combine three sides, Prepare the combined model, Export STL, open in a slicer.
 - [ ] A raw-only project (never One-tap edited): badges say raw only, NEXT says Build, Build works.
 - [ ] RANGE: Live view, orientation confirmed, capture to .ply.
-- [ ] Window at 1024x600: nothing clipped.
+- [x] Window at 1024x600: nothing clipped (headless capture at 1024x600: three columns, NEXT bar,
+      preview tabs, right-panel actions and footer all fit, no overlap). (2026-09-15)
 
 ## Package
 - [ ] Rename the GitHub repo to `point-yoink` (GitHub redirects the old name); update the remote,
