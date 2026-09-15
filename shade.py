@@ -86,11 +86,11 @@ def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0, zoom=0.82, 
     def proj(p):
         q = (p @ Rz.T) @ Rx.T; d = 3.2 + q[:, 1]
         x = q[:, 0] / d * 2.6 * zoom; y = q[:, 2] / d * 2.6 * zoom
-        return np.stack([W / 2 + (x + pan[0]) * W * 0.42, H * 0.56 - (y + pan[1]) * H * 0.42], 1), q[:, 1]
+        return np.stack([W / 2 + (x + pan[0]) * W * 0.42, H * 0.52 - (y + pan[1]) * H * 0.42], 1), q[:, 1]
     img = Image.new("RGB", size, BG); dr = ImageDraw.Draw(img)
-    for x in (np.linspace(-1.5, 1.5, 13) if grid else []):
-        p, _ = proj(np.array([[x, -1.5, 0], [x, 1.5, 0]])); dr.line([tuple(p[0]), tuple(p[1])], fill=GRID, width=1)
-        p, _ = proj(np.array([[-1.5, x, 0], [1.5, x, 0]])); dr.line([tuple(p[0]), tuple(p[1])], fill=GRID, width=1)
+    for x in (np.linspace(-1.1, 1.1, 11) if grid else []):
+        p, _ = proj(np.array([[x, -1.1, 0], [x, 1.1, 0]])); dr.line([tuple(p[0]), tuple(p[1])], fill=GRID, width=1)
+        p, _ = proj(np.array([[-1.1, x, 0], [1.1, x, 0]])); dr.line([tuple(p[0]), tuple(p[1])], fill=GRID, width=1)
     P, depth = proj(v)
     n = np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]]); n /= np.linalg.norm(n, axis=1)[:, None] + 1e-9
     light = np.array([-0.4, -0.6, 0.7]); light /= np.linalg.norm(light)

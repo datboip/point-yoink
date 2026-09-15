@@ -206,17 +206,17 @@ class GLView(OpenGLFrame):
         w, h = max(1, self.winfo_width()), max(1, self.winfo_height())
         GL.glViewport(0, 0, w, h)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
-        GL.glMatrixMode(GL.GL_PROJECTION); GL.glLoadIdentity(); GLU.gluPerspective(32.0, w / float(h), 0.05, 50.0)
+        GL.glMatrixMode(GL.GL_PROJECTION); GL.glLoadIdentity(); GLU.gluPerspective(34.0, w / float(h), 0.05, 50.0)
         GL.glMatrixMode(GL.GL_MODELVIEW); GL.glLoadIdentity()
-        GL.glTranslatef(self.pan[0] * 2.0, self.pan[1] * 2.0 + 0.176, -4.2 / self.zoom)   # +0.176 = home framing shifted up to match shade.render's 0.56 baseline
+        GL.glTranslatef(self.pan[0] * 2.0, self.pan[1] * 2.0 - 0.05, -4.55 / self.zoom)   # +0.176 = home framing shifted up to match shade.render's 0.56 baseline
         GL.glLightfv(GL.GL_LIGHT0, GL.GL_POSITION, (-0.5, 0.8, 1.0, 0.0)); GL.glLightfv(GL.GL_LIGHT1, GL.GL_POSITION, (0.8, -0.3, 0.4, 0.0))
         self._mult_rot()
         GL.glTranslatef(0, 0, -0.5 * getattr(self, "_zmax", 0.0))
         self._mv_m = GL.glGetDoublev(GL.GL_MODELVIEW_MATRIX); self._pj_m = GL.glGetDoublev(GL.GL_PROJECTION_MATRIX); self._vp = (0, 0, w, h)
         # floor grid
         GL.glDisable(GL.GL_LIGHTING); GL.glColor3f(26 / 255.0, 33 / 255.0, 48 / 255.0); GL.glBegin(GL.GL_LINES)
-        for t in np.linspace(-1.5, 1.5, 13):
-            GL.glVertex3f(t, -1.5, 0); GL.glVertex3f(t, 1.5, 0); GL.glVertex3f(-1.5, t, 0); GL.glVertex3f(1.5, t, 0)
+        for t in np.linspace(-1.1, 1.1, 11):
+            GL.glVertex3f(t, -1.1, 0); GL.glVertex3f(t, 1.1, 0); GL.glVertex3f(-1.1, t, 0); GL.glVertex3f(1.1, t, 0)
         GL.glEnd()
         if self._n:
             if self.wire and self._nw:
