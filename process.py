@@ -91,9 +91,17 @@ def main():
             obj_side = np.sign(np.median(sd[~near])) if np.any(~near) else 1.0
             drop_v = near | ((sd * obj_side) < -thresh)      # band + everything on the far side
             keep_f = ~drop_v[m.faces].any(axis=1)            # drop a face if ANY vertex is dropped
+            drop_frac = float((~keep_f).sum()) / max(1, len(m.faces))
             emit("base_plane", inlier_pct=round(100*best_inliers/len(S), 1),
-                 thresh_mm=round(thresh, 2), removed_faces=int((~keep_f).sum()))
-            m.update_faces(keep_f); m.remove_unreferenced_vertices()
+                 thresh_mm=round(thresh, 2), removed_faces=int((~keep_f).sum()), drop_pct=round(100*drop_frac, 1))
+            # Guardrail: the "dominant plane" is only the table if it cuts off a minority. When it would
+            # take a big chunk (e.g. a flat face of the object itself, common after a manual Cut base has
+            # already dropped the real table), it is slicing the part — skip it rather than remove half.
+            if drop_frac > 0.30:
+                emit("base_skip", drop_pct=round(100*drop_frac, 1),
+                     msg="the biggest flat surface looks like part of the object (would remove %.0f%%); left it in place" % (100*drop_frac))
+            else:
+                m.update_faces(keep_f); m.remove_unreferenced_vertices()
 
     # 3) ISOLATE — drop floating junk / table remnants. --isolate and --base-remove keep only the
     # largest connected piece; --clean keeps every piece at least --isolation-rate % of the largest

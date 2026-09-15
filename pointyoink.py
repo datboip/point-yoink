@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.57-pre"
+APP = "PointYoink"; VERSION = "0.9.58-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3826,8 +3826,8 @@ class App(ctk.CTk):
                 ctk.CTkLabel(r, text=after, text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left")
         row(self.clean_do_iso, "Remove floating pieces", "drop pieces smaller than", self.clean_iso, "% of the biggest one",
             "Loose bits that are not part of the object. The scanner's Isolation rate; its default is 15%.")
-        row(self.clean_do_base, "Remove base", "cuts off the biggest flat surface (table, turntable, floor). Check the After view: it can bite into a flat part of the object", None, "",
-            "Automatic. For a cut you place by hand, use Remove base on the scan instead.")
+        row(self.clean_do_base, "Remove base", "cuts off the biggest flat surface (table, turntable, floor). Now skips itself if that would take a big chunk of the part, but a hand-placed Remove base on the scan is safer", None, "",
+            "Automatic, off by default. For a cut you place by hand, use Remove base on the scan instead.")
         row(self.clean_do_smooth, "Smooth surface", "", self.clean_smooth, "passes (the scanner uses 3)",
             "Evens out scan ripple. More passes soften small detail.")
         row(self.clean_holes, "Fill small holes", "closes small gaps in the surface. Off on the scanner by default: it can invent surface where the scan missed", None, "",
@@ -4101,7 +4101,7 @@ class App(ctk.CTk):
                 status.configure(text="%s was lined up %s%s%s. Add or undo points and press Line up from points again, or press Start over." % (
                     lab(st["moving"]), saved.get("when","before"), (" with %d point pair%s" % (n, "" if n==1 else "s")) if n else " by Auto", (", %.0f%% overlap" % (fit*100)) if fit else ""), text_color=TX)
             else: status.configure(text="")
-            hint.configure(text=("Click a spot you can recognise on the base scan, then the same spot on the other scan. Three pairs are enough; five spread-out ones are better. Then press Line up from points. "
+            hint.configure(text=("Click a spot you can recognise on either scan, then the matching spot on the other. Three pairs are enough; five spread-out ones are better. Then press Line up from points. "
                                  "Or press Auto if the two scans overlap a lot.") if can_pick else
                                 "Point picking needs the graphics-card 3D view (Settings). Auto still works when the scans overlap a lot.")
             pairs_lbl.configure(text="%d pair%s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s")); able(alignb, len(st["pairs"])>=3)
@@ -4122,16 +4122,19 @@ class App(ctk.CTk):
         def _on_pick(which, world, view):
             if st["busy"] or not can_pick: return
             i=len(st["pairs"]); col=self.PAIR_COLOURS[i % len(self.PAIR_COLOURS)]
-            if which==0:
-                if st["pending"] is not None: views[0].markers.pop()      # re-pick the base point
-                st["pending"]=world; views[0].markers.append((view, col)); views[0].draw()
-                status.configure(text="Point %d on the base. Now click the same spot on %s." % (i+1, lab(st["moving"])))
-            else:
-                if st["pending"] is None: status.configure(text="Click the base scan first."); return
-                st["pairs"].append([list(map(float, st["pending"])), list(map(float, world))]); st["pending"]=None
-                views[1].markers.append((view, col)); views[1].draw()
-                pairs_lbl.configure(text="%d pair%s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s"))
-                status.configure(text="%d pair%s. %s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s", "Press Line up from points, or add more." if len(st["pairs"])>=3 else "Add %d more." % (3-len(st["pairs"]))))
+            pend=st["pending"]          # None, or (side, world): one half placed, waiting for its match on the other scan
+            if pend is not None and pend[0]==which:        # clicked the same scan again: just move that half
+                views[which].markers.pop(); st["pending"]=(which, world); views[which].markers.append((view, col)); views[which].draw(); return
+            if pend is None:                                # first half of a pair, on EITHER scan
+                st["pending"]=(which, world); views[which].markers.append((view, col)); views[which].draw()
+                other=st["moving"] if which==0 else st["base"]
+                status.configure(text="Point %d placed. Now click the same spot on %s." % (i+1, lab(other))); return
+            # second half, on the other scan: store the pair base-first no matter which was clicked first
+            base_pt, mov_pt = (pend[1], world) if pend[0]==0 else (world, pend[1])
+            st["pairs"].append([list(map(float, base_pt)), list(map(float, mov_pt))]); st["pending"]=None
+            views[which].markers.append((view, col)); views[which].draw()
+            pairs_lbl.configure(text="%d pair%s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s"))
+            status.configure(text="%d pair%s. %s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s", "Press Line up from points, or add more." if len(st["pairs"])>=3 else "Add %d more." % (3-len(st["pairs"]))))
             able(alignb, len(st["pairs"])>=3)
         if can_pick:
             views[0].on_pick=lambda w,v: on_pick(0, w, v); views[1].on_pick=lambda w,v: on_pick(1, w, v)
@@ -4144,7 +4147,8 @@ class App(ctk.CTk):
             caps[0].configure(text="Base · %s · click a recognisable spot" % lab(st["base"]))
             pairs_lbl.configure(text="0 pairs"); able(alignb, False); keepb.pack_forget(); status.configure(text="Cleared. Click new points, or Auto.", text_color=MUT)
         def undo():
-            if st["pending"] is not None: st["pending"]=None; views[0].markers.pop(); views[0].draw()
+            pend=st["pending"]
+            if pend is not None: st["pending"]=None; views[pend[0]].markers.pop(); views[pend[0]].draw()
             elif st["pairs"]: st["pairs"].pop(); views[0].markers.pop(); views[1].markers.pop(); views[0].draw(); views[1].draw()
             pairs_lbl.configure(text="%d pair%s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s")); able(alignb, len(st["pairs"])>=3)
         busy={"t0":0.0, "msg":"", "job":None}
