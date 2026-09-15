@@ -67,7 +67,7 @@ class GLView(OpenGLFrame):
         try: self.winfo_id()
         except Exception: pass
         self.failed = False; self.ready = False; self.wire = False
-        self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 1.0, [0.0, 0.0]
+        self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 0.82, [0.0, 0.0]
         self.rot = self._default_rot()         # free rotation: a 4x4 the drag turns about the screen axes, no limits
         self._drag = None; self._gen = 0; self._pending = None; self._n = 0; self._vbo = None
         self._nw = 0; self._src = None; self._wire_gen = None    # set again by _upload; must exist before the first upload (Wireframe clicked early)
@@ -208,7 +208,7 @@ class GLView(OpenGLFrame):
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         GL.glMatrixMode(GL.GL_PROJECTION); GL.glLoadIdentity(); GLU.gluPerspective(32.0, w / float(h), 0.05, 50.0)
         GL.glMatrixMode(GL.GL_MODELVIEW); GL.glLoadIdentity()
-        GL.glTranslatef(self.pan[0] * 2.0, self.pan[1] * 2.0, -4.2 / self.zoom)
+        GL.glTranslatef(self.pan[0] * 2.0, self.pan[1] * 2.0 + 0.176, -4.2 / self.zoom)   # +0.176 = home framing shifted up to match shade.render's 0.56 baseline
         GL.glLightfv(GL.GL_LIGHT0, GL.GL_POSITION, (-0.5, 0.8, 1.0, 0.0)); GL.glLightfv(GL.GL_LIGHT1, GL.GL_POSITION, (0.8, -0.3, 0.4, 0.0))
         self._mult_rot()
         GL.glTranslatef(0, 0, -0.5 * getattr(self, "_zmax", 0.0))
@@ -291,7 +291,7 @@ class GLView(OpenGLFrame):
         if self.wire: self._wire_data()
         self.draw()
     def reset(self, draw=True):
-        self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 1.0, [0.0, 0.0]; self.rot = self._default_rot()
+        self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 0.82, [0.0, 0.0]; self.rot = self._default_rot()
         if draw: self.draw()
     def set_view(self, azim, elev, draw=True):
         """Snap to a standard view (Top/Front/Right/…) - azimuth about up, elevation above the floor."""

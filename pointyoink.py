@@ -1472,6 +1472,7 @@ class App(ctk.CTk):
         self.big=ctk.CTkLabel(bigwrap, text="Select a project to preview its scans", fg_color="transparent", text_color=MUT)
         self.big.grid(row=0,column=0, sticky="nsew", padx=12, pady=12)
         self.big.bind("<Configure>", self._on_big_resize)
+        self.big.bind("<Button-1>", self._enter_3d)   # click the still to open the interactive 3D view
         # interactive 3D: the GPU view (glview.py, full mesh) when OpenGL works in this window, else the
         # software renderer (meshview.py). Same mouse language either way.
         self._mv_wrap=bigwrap; self.mv=self._make_mv(); self._mv_key=None; self._mv_want=None
@@ -2557,6 +2558,14 @@ class App(ctk.CTk):
             else:
                 self.set_status("Reset view works once the 3D model is loaded (click a scan).")
         except Exception as e: log_error("reset-view", e)
+    def _enter_3d(self, _=None):
+        """Open the interactive 3D view for the selected scan (clicking the still image). No-op if it's
+        already showing, or if there's nothing to load yet."""
+        try:
+            mv=getattr(self, "mv", None)
+            if mv is not None and mv.winfo_manager(): return       # already interactive
+            if getattr(self, "_mv_want", None): self._mv_start()
+        except Exception as e: log_error("enter-3d", e)
     def _set_view(self, azim, elev):
         """Snap the 3D view to a standard angle (Home/Top/Front/…). If the live view isn't up yet, load
         it and apply the angle once it's ready."""
@@ -2686,13 +2695,14 @@ class App(ctk.CTk):
         except Exception: pass
     def _show_shaded(self, out):
         self._set_big_image(out); self._preview_idle()
-        # Defaulted off in 0.9.49 because scan clicks "froze" the app; that was the ibus XIM stall
-        # (see the XMODIFIERS note at the top), not the 3D view. Set "auto_live_preview": false to opt out.
-        if self.cfg.get("auto_live_preview", True):
+        # The still is the default: fast, always works. The interactive 3D view is opt-in - click the
+        # preview or a view button to open it - so nothing heavy runs until you ask (set
+        # "auto_live_preview": true to have it load on its own after a moment).
+        if self.cfg.get("auto_live_preview", False):
             self.big_hint.configure(text="Still image · live 3D view will load when idle")
             self._schedule_mv_start(self._shade_key[0], 1800)
         else:
-            self.big_hint.configure(text="Still image · use View in 3D for the interactive viewer")
+            self.big_hint.configure(text="Still image · click to open the interactive 3D view (or pick a view above)")
     def _make_mv(self, software=False):
         w=None
         if not software and os.environ.get("POINTYOINK_NO_GL")!="1" and self.cfg.get("gl_view","auto")!="software":
