@@ -34,7 +34,8 @@ def load_oriented_tf(path, max_faces=MAX_FACES, tf=None):
         except Exception:
             f = f[np.random.RandomState(0).choice(len(f), max_faces, replace=False)]   # crude fallback
     if tf is None:
-        mean = v.mean(0); vc = v - mean; scale = float(np.abs(vc).max() + 1e-9); vc = vc / scale
+        # normalise to ~0.85 (not 1.0) so the model sits inside the ~1.1 grid with a margin, not overhanging it
+        mean = v.mean(0); vc = v - mean; scale = float(np.abs(vc).max() + 1e-9) / 0.85; vc = vc / scale
         # scans lie on a table: the axis of least spread is "up"
         w, e = np.linalg.eigh(np.cov(vc.T)); up = e[:, 0]
         if up[2] < 0: up = -up
