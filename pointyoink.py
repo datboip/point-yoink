@@ -1758,6 +1758,7 @@ class App(ctk.CTk):
         self._bottom_refresh()
         self.projects_sig=None; self.render_list(getattr(self, "all_projects", self.projects))
         if self.selected and self.selected not in {p["name"] for p in self.projects}: self._clear_selection()
+        elif not self.selected and self.projbar.winfo_ismapped(): self._clear_selection()   # no selection but the centre still shows a project (e.g. after deleting it): reset it
         if not imp:
             self._panel_refresh()
             if not self.cfg.get("seen_howto") and self.projects and os.environ.get("POINTYOINK_NO_HOWTO")!="1": self._howto_when_ready()
@@ -3381,7 +3382,8 @@ class App(ctk.CTk):
         def _done(ok):
             self.set_status("")
             if not ok: self.set_banner("Couldn't move that project to the trash.", WARN); return
-            self.set_banner("Moved to the trash: %s" % self.disp(name), MUT); self.selected=None; self.gallery_cache.pop(name, None)
+            self.set_banner("Moved to the trash: %s" % self.disp(name), MUT); self.gallery_cache.pop(name, None)
+            self._clear_selection()   # the deleted project was selected: reset the centre (title, NEXT bar, scan strip), don't leave it stale
             self.projects_sig=None; self.listed=False; self.start_listing(); self._proc_render(None)
         self._trash_async(local, _done)
     def _proc_refresh(self):
