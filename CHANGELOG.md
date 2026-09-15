@@ -3,6 +3,41 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 will be the first public GitHub release.
 
+## 0.9.56 (dev, 2026-09-15)
+- **The freeze, actually fixed.** Every "app frozen / keyboard dead for a minute" report traced to one
+  thing: Tk creates a real X window per widget and, with GNOME's default `XMODIFIERS=@im=ibus`, made a
+  synchronous X Input Method round-trip to `ibus-daemon --xim` for each one at ~100 ms a reply (native
+  stack: `XCreateIC -> _XimProtoCreateIC -> _XimRead`). A plain-tkinter control went from 20+ s to
+  0.05 s for 80 widgets with the IM disabled; app startup went from 26-59 s to 0.09 s. Because ibus is
+  also every other app's keyboard path, the flood stalled typing system-wide. PointYoink now sets
+  `XMODIFIERS=@im=none` before Tk opens the display (`POINTYOINK_XIM=1` restores it) and calls
+  `tk useinputmethods 0`; child Tk processes inherit it.
+- Guard against CustomTkinter's scrollbar redraw re-entrancy: `CTkScrollbar._draw()` ends in a
+  synchronous `update_idletasks()` that can start another scrollbar's redraw mid-draw and cascade across
+  every scrollable frame. Only the outermost draw now flushes idle tasks. Lists, the scan strip, the
+  detail panel and Captures also unmap while they rebuild.
+- The splash now waits for the real first paint (looped `update_idletasks()` until a pass finds no
+  work) instead of a fixed 700 ms, guarded against running twice; never uses `update()`, which drains
+  raw input events and can hang under a high-poll-rate mouse.
+- Closing no longer calls `update_idletasks()` before `os._exit(0)` (the close-freeze).
+- Single-instance lock (`~/.config/pointyoink/pointyoink.lock`): a second copy shows "already running"
+  instead of touching the scanner alongside the first.
+- **Live 3D preview is back on by default** (`"auto_live_preview": false` in config to opt out). It was
+  switched off in 0.9.49 because scan clicks "froze" the app - that was the ibus stall above, not the
+  3D view. Three things were wrong with the view itself and are fixed:
+  - it could never appear: the GL widget only uploads the mesh once it is on screen, but the app only
+    put it on screen after the upload reported ready. The widget now maps underneath the still image
+    while it loads, and the swap is instant (0.9 s load+upload for a 550k-triangle scan; the extra
+    1.8 s is the deliberate "load when idle" pause);
+  - inside the app the GPU context failed every time with `GLXBadDrawable`, and that X error killed
+    the whole process. Cause: pyopengltk talks GLX on its own second X connection, and Tk delivers
+    `<Map>` for a child window before its `CreateWindow` has left Tk's output buffer, so the server had
+    never seen the drawable. The view's X window is now created at construction and a real round-trip
+    precedes the GLX call;
+  - an X error during context creation is now caught (temporary Xlib error handler) and turns into
+    the existing software-view fallback instead of exiting the app. Same protection for the
+    Remove-base and Combine windows, which use the same widget.
+
 ## 0.9.55 (dev, 2026-09-14)
 - Moved automatic Solid/Wireframe shaded preview rendering out of the Tk process and into an app-owned `shade.py` child process with BLAS/OpenMP thread caps. The GUI now keeps the nicer grid preview behavior without importing/running the heavy mesh renderer inside the UI process.
 

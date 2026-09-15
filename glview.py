@@ -5,17 +5,67 @@
 # drag rotates, scroll zooms, right-drag pans, double-click resets; solid or wireframe.
 # If a GL context cannot be created (no GLX, headless, VM), .failed becomes True and the app
 # swaps in the software view instead.
-import threading, time
+import threading, time, ctypes, ctypes.util
 import numpy as np
 from pyopengltk import OpenGLFrame
-from OpenGL import GL, GLU
+from OpenGL import GL, GLU, GLX
 import shade
 
 MAX_FACES = 3_000_000                 # bound VRAM and load time; above this we decimate
 
+# pyopengltk creates the GL context on its OWN Xlib connection; an X error there (seen on this
+# NVIDIA/GNOME desktop: GLXBadDrawable from glXMakeContextCurrent, inside the app only, while the
+# same widget alone works) goes to Xlib's default handler, which prints and _exit()s the whole
+# program. Install a recording handler for the duration of context creation so it becomes a
+# normal failure (.failed -> the app swaps in the software view) instead of killing the app.
+_x11 = ctypes.cdll.LoadLibrary(ctypes.util.find_library("X11") or "libX11.so.6")
+class _XErrorEvent(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_int), ("display", ctypes.c_void_p), ("resourceid", ctypes.c_ulong),
+                ("serial", ctypes.c_ulong), ("error_code", ctypes.c_ubyte), ("request_code", ctypes.c_ubyte), ("minor_code", ctypes.c_ubyte)]
+_XErrorHandler = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(_XErrorEvent))
+_x11.XSetErrorHandler.argtypes = [_XErrorHandler]; _x11.XSetErrorHandler.restype = _XErrorHandler
+_x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]; _x11.XSync.restype = ctypes.c_int
+_xerrors = []
+@_XErrorHandler
+def _record_xerror(_disp, ev):
+    try: _xerrors.append((ev.contents.error_code, ev.contents.request_code, ev.contents.minor_code))
+    except Exception: _xerrors.append((-1, -1, -1))
+    return 0
+
 class GLView(OpenGLFrame):
+    def tkCreateContext(self):
+        # Tk synthesizes <Map> for child windows right after queuing XMapWindow, without a server
+        # round-trip, and pyopengltk then uses this window's XID on its OWN X connection. If Tk's
+        # CreateWindow/MapWindow are still sitting unflushed in its output buffer, the server has
+        # never heard of the drawable and glXMakeContextCurrent fails with GLXBadDrawable - which
+        # is what happened inside the app (bigger buffer, consistently) but not in a tiny test
+        # window. winfo_rootx() is a round-trip (XTranslateCoordinates) on Tk's connection, so
+        # everything queued before it is on the server before the GLX request goes out.
+        # (winfo_rootx is NOT a round-trip for child windows - Tk answers from cache; XQueryPointer is.)
+        try: self.winfo_pointerxy()
+        except Exception: pass
+        del _xerrors[:]
+        prev = _x11.XSetErrorHandler(_record_xerror)
+        try:
+            super().tkCreateContext()
+            try: _x11.XSync(ctypes.cast(self._OpenGLFrame__window, ctypes.c_void_p), 0)   # deliver any pending error now
+            except Exception: pass
+        finally:
+            try: _x11.XSetErrorHandler(prev)
+            except Exception: pass
+        if _xerrors:
+            e = _xerrors[0]
+            raise RuntimeError("X error %d during GL context creation (request %d.%d)" % e)
+        try:
+            if not GLX.glXGetCurrentContext(): raise RuntimeError("no current GL context after creation")
+        except RuntimeError: raise
+        except Exception: pass
     def __init__(self, master, **kw):
         super().__init__(master, **kw)
+        # Create the X window now, at construction, rather than in the same idle cycle that maps it
+        # (see tkCreateContext): by the time the view is shown, the server has long known the XID.
+        try: self.winfo_id()
+        except Exception: pass
         self.failed = False; self.ready = False; self.wire = False
         self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 1.0, [0.0, 0.0]
         self.rot = self._default_rot()         # free rotation: a 4x4 the drag turns about the screen axes, no limits

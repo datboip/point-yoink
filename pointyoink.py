@@ -15,12 +15,52 @@ import os, re, json, time, glob, shutil, threading, subprocess, queue, faulthand
 for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "RAYON_NUM_THREADS"):
     os.environ.setdefault(_v, "2")
 faulthandler.register(signal.SIGUSR1, all_threads=True)      # kill -USR1 <pid> prints every thread's stack to stderr: for diagnosing a freeze
+# Tk creates a real X window per widget and, with an X Input Method configured (XMODIFIERS=@im=ibus on
+# GNOME), does a synchronous XIM round-trip (XCreateIC -> _XimProtoCreateIC -> _XimRead) to ibus-daemon
+# for EVERY one of them, at ~100 ms a reply. Proven 2026-09-15 with a native stack of the frozen app and a
+# plain-tkinter control: 80 widgets took 20+ s with ibus, 0.05 s with the IM disabled. It also stalls
+# keyboard input in every other app while it runs, because ibus is the keyboard path for all of them.
+# Must be set before Tk opens the display; child Tk processes (viewer.py etc.) inherit it.
+if os.environ.get("POINTYOINK_XIM") != "1":
+    os.environ["XMODIFIERS"] = "@im=none"
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-APP = "PointYoink"; VERSION = "0.9.55-pre"
+# CTkScrollbar._draw() ends with a synchronous canvas.update_idletasks() call. That can process
+# a pending <Configure>/dimension-change event on a DIFFERENT scrollbar instance elsewhere in the
+# app, whose own handler (_update_dimensions_event, or .set() via xscrollcommand/yscrollcommand)
+# calls _draw() again - which ends with its OWN update_idletasks(), which can trigger yet another
+# instance's redraw, and so on. This chains across every CTkScrollableFrame in the app (list, film
+# strip, options, detail panel, captures, ...), not just recursing on one instance - a per-instance
+# guard doesn't stop a cascade across different instances (proven live 2026-09-15: a per-instance
+# version of this patch still hung, SIGUSR1 dumps showing the chain hop through
+# _update_dimensions_event on a second scrollbar mid-draw). The actual fix: track nesting globally,
+# and only let the OUTERMOST _draw() call really flush idle tasks. Any _draw() invoked while
+# already inside another one still does its real drawing work (so that widget still ends up
+# visually correct) but has its own trailing update_idletasks() suppressed for that call - it
+# rides along on the outer call's own event processing instead of starting a new idle-flush that
+# can hop to yet another widget. That breaks the cascade at its root instead of just at one node.
+try:
+    _ctk_draw_depth = [0]
+    _orig_ctk_scrollbar_draw = ctk.CTkScrollbar._draw
+    def _pointyoink_guarded_scrollbar_draw(self, *a, **k):
+        _ctk_draw_depth[0] += 1
+        nested = _ctk_draw_depth[0] > 1
+        canvas = getattr(self, "_canvas", None) if nested else None
+        orig_update_idletasks = canvas.update_idletasks if canvas is not None else None
+        try:
+            if canvas is not None: canvas.update_idletasks = lambda: None
+            return _orig_ctk_scrollbar_draw(self, *a, **k)
+        finally:
+            if orig_update_idletasks is not None: canvas.update_idletasks = orig_update_idletasks
+            _ctk_draw_depth[0] -= 1
+    ctk.CTkScrollbar._draw = _pointyoink_guarded_scrollbar_draw
+except Exception:
+    pass   # if a future customtkinter version changes this internal, fail open rather than crash
+
+APP = "PointYoink"; VERSION = "0.9.56-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -35,6 +75,36 @@ HERE = os.path.dirname(os.path.abspath(__file__)); ICON = os.path.join(HERE, "ic
 DEFAULT_DEST = os.path.join(HOME, "revopoint-scans-models")
 VID = "2207"
 for d in (THUMBS, CFG_DIR): os.makedirs(d, exist_ok=True)
+
+_INSTANCE_LOCK = None
+
+def _acquire_single_instance():
+    """Hold a process lock so PointYoink never runs two UI instances against the same device."""
+    global _INSTANCE_LOCK
+    lock_path = os.path.join(CFG_DIR, "pointyoink.lock")
+    try:
+        import fcntl
+        _INSTANCE_LOCK = open(lock_path, "w")
+        fcntl.flock(_INSTANCE_LOCK.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _INSTANCE_LOCK.seek(0); _INSTANCE_LOCK.truncate()
+        _INSTANCE_LOCK.write("%s\n" % os.getpid()); _INSTANCE_LOCK.flush()
+        return True
+    except BlockingIOError:
+        return False
+    except Exception:
+        return True   # never block a real launch over a lock-file problem
+
+def _show_single_instance_error():
+    msg = "PointYoink is already running.\n\nClose the existing PointYoink window before opening another copy."
+    try:
+        r = tk.Tk(); r.withdraw()
+        try: r.attributes("-topmost", True)
+        except Exception: pass
+        messagebox.showerror(APP, msg, parent=r)
+        r.destroy()
+    except Exception:
+        try: _sys.stderr.write(msg + "\n")
+        except Exception: pass
 
 # palette
 BG="#0e1117"; CARD="#171b23"; CARD2="#1d222c"; STROKE="#2a3140"; SELB="#22304a"
@@ -806,6 +876,8 @@ ctk.set_appearance_mode("dark"); ctk.set_default_color_theme("blue")
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
+        try: self.tk.call("tk", "useinputmethods", "0")   # belt and braces with the XMODIFIERS override at the top of the file
+        except Exception: pass
         self.cfg = load_cfg()
         # per-project records keyed by ORIGINAL id: {label, imported_to, imported_at}
         self.records = self.cfg.get("records", {})
@@ -1107,18 +1179,42 @@ class App(ctk.CTk):
             try: self._sp_cv.itemconfigure(self._sp_status, text="loading your projects…", fill=MUT)
             except Exception: pass
             self.after(150, self._close_splash); return
+        # Multiple self.after(150, self._close_splash) calls can already be queued from the
+        # "not ready yet" branch above by the time _first_render_done/_checks_done both flip
+        # true - each one reaches here and would otherwise re-run the whole forced-paint+reveal
+        # sequence a second time (proven live 2026-09-15: pointyoink.log shows two full
+        # forced-first-paint passes, 0.159s then 28.473s, same session - a real ~28s extra
+        # freeze this guard prevents).
+        if getattr(self, "_splash_closing", False): return
+        self._splash_closing=True
         if self._splash:
             # bring the window in invisible, let every widget paint (the splash only covers the middle, so a visible
             # window would be seen building itself), then cross-fade: window in, splash out
             try: self.attributes("-alpha", 0.0)
             except Exception: pass
-            self.deiconify(); self.update_idletasks()
+            self.deiconify()
+            # Wait for the REAL first paint, not a fixed guess. A fixed delay here used to let the
+            # crossfade start before CustomTkinter's widgets were actually drawn, so the reveal
+            # showed a half-built UI fading in. A single update_idletasks() can also return before
+            # genuinely done (drawing one widget can queue more idle work), so loop until a pass
+            # finds nothing left to do. MUST be update_idletasks(), never plain update(): update()
+            # drains every pending X event including raw input (mouse motion, at whatever the
+            # mouse's poll rate is) - proven live 2026-09-15, same machine, same instant:
+            # update_idletasks() took 0.27s, update() hung 20+s and never returned while the mouse
+            # kept moving. update() was the actual bug this whole fix introduced.
+            for _pass in range(6):
+                t0=time.perf_counter()
+                try: self.update_idletasks()
+                except Exception as e: log_error("forced-first-paint", e); break
+                dt=time.perf_counter()-t0
+                log_line("forced-first-paint[pass %d]: +%.3fs" % (_pass, dt))
+                if dt < 0.03: break
             def reveal(step=0):
                 a=min(1.0, step/8.0)
                 try: self.attributes("-alpha", a)
                 except Exception: pass
                 if a<1.0: self.after(30, lambda: reveal(step+1))
-            self.after(700, lambda: (reveal(), self._splash_fade(-0.2)))
+            reveal(); self._splash_fade(-0.2)
         else:
             self.deiconify()
             try: self.attributes("-alpha", 1.0)
@@ -2024,8 +2120,12 @@ class App(ctk.CTk):
         except Exception as e: log_error("child-cleanup", e)
         self._persist()
         # tearing down thousands of widgets one by one is what made closing look like popups dying in slow motion:
-        # hide the window first, then leave; daemon threads and child processes go with us
-        try: self.withdraw(); self.update_idletasks()
+        # hide the window first, then leave; daemon threads and child processes go with us.
+        # update_idletasks() used to be called here too, but it's the exact same call proven
+        # (repeated SIGUSR1 thread dumps, identical stuck stack each time) to hang for a sustained
+        # period inside CustomTkinter's own scrollbar redraw code on this GNOME/X11 desktop -
+        # os._exit(0) below exits regardless, so nothing here needs pending idle tasks flushed first.
+        try: self.withdraw()
         except Exception: pass
         try: self.quit()
         except Exception: pass
@@ -2142,6 +2242,9 @@ class App(ctk.CTk):
         sig=json.dumps([q, self.page]+[[p, self.is_imported(p["name"]), self.changed(p["name"])] for p in projs])
         if sig==self.projects_sig: return
         self.projects_sig=sig; self.projects=projs
+        # Unmap the list while its rows are destroyed/rebuilt - see render_gallery for why
+        # (same CTkScrollableFrame redraw-recursion bug, proven live 2026-09-15).
+        self.llist.grid_remove()
         for w in self.llist.winfo_children(): w.destroy()
         try:
             self._render_list_body(projs, q)
@@ -2149,6 +2252,8 @@ class App(ctk.CTk):
             log_error("render_list", e); self.projects_sig=None    # force a real retry next time, don't get stuck showing a blank list
             for w in self.llist.winfo_children(): w.destroy()
             ctk.CTkLabel(self.llist, text="Couldn't load the project list (see Help > Log).", text_color=WARN, font=ctk.CTkFont(size=12)).grid(row=0, column=0, sticky="w", padx=16, pady=20)
+        finally:
+            self.llist.grid()
     def _render_list_body(self, projs, q):
         old=self.pull_sel; self.pull_sel={}; self.rows={}
         if not projs:
@@ -2273,11 +2378,16 @@ class App(ctk.CTk):
                      font=ctk.CTkFont(size=10)).pack(side="left", ipadx=6)
     def render_gallery(self, name, items):
         if self.selected!=name: return
+        # Unmap the strip before destroying/rebuilding its cells: CTkScrollableFrame's own
+        # <Configure> handler retriggers its scrollbar's set()->_draw()->update_idletasks()
+        # on every child added while mapped, and each update_idletasks() call can flush the
+        # NEXT cell's pending <Configure> mid-draw, recursing - proven live 2026-09-15 (SIGUSR1
+        # dumps caught the main thread stuck in exactly this loop after a project click).
+        self.film.grid_remove()
         for w in self.film.winfo_children(): w.destroy()
         self._film_cells={}
         if not items:
-            self.film.grid_remove(); return
-        self.film.grid()
+            return
         for i,(node,path) in enumerate(items):
             try:
                 self.imgs["g_"+name+node]=cimg(path,100)
@@ -2288,6 +2398,7 @@ class App(ctk.CTk):
                 for w in (cell, im, cap): w.bind("<Button-1>", lambda e,nd=node,pp=path: self._pick_scan(name, nd, pp))
                 self._film_cells[node]=cell
             except Exception: pass
+        self.film.grid()
         self.after(120, self._film_fit)
     def _film_fit(self):
         """Show the strip's scrollbar only when the thumbnails do not fit."""
@@ -2469,7 +2580,9 @@ class App(ctk.CTk):
         except Exception: pass
     def _show_shaded(self, out):
         self._set_big_image(out); self._preview_idle()
-        if self.cfg.get("auto_live_preview", False):
+        # Defaulted off in 0.9.49 because scan clicks "froze" the app; that was the ibus XIM stall
+        # (see the XMODIFIERS note at the top), not the 3D view. Set "auto_live_preview": false to opt out.
+        if self.cfg.get("auto_live_preview", True):
             self.big_hint.configure(text="Still image · live 3D view will load when idle")
             self._schedule_mv_start(self._shade_key[0], 1800)
         else:
@@ -2489,27 +2602,41 @@ class App(ctk.CTk):
             self._mv_job=None
             if self._shade_key and self._shade_key[0]==k: self._mv_start()
         self._mv_job=self.after(delay, go)
+    def _map_mv_under_still(self):
+        """Grid the 3D view in its cell but stacked BELOW the still image, so it is mapped (GL context, upload) while invisible."""
+        try:
+            self.mv.grid(); self.mv.lower(self.big)
+        except Exception as e:
+            log_error("map-mv-under-still", e)
     def _mv_start(self):
         """Load the interactive view for the current scan (mesh prep runs in a thread) and swap it in."""
         want=self._mv_want
         if not want or self._mv_key==want[0] or not os.path.exists(want[1]): return
         key,path=want; self._mv_key=key; self.mv.wire=(self.shade_mode=="wire")
         self.big_hint.configure(text="Still image · loading the live 3D view…"); self._preview_busy("Loading the live 3D view")
+        # The GL view only gets a context, and only uploads the mesh (which is what fires ready()),
+        # once it is MAPPED (<Map> -> initgl; a hidden view must never touch GL, see glview.py). It used
+        # to be mapped only from ready() - a circular wait: the spinner sat there forever while the
+        # prepared mesh waited in _pending. Found 2026-09-15 on the first real-display test of this
+        # path. So map it now, underneath the still image; it loads out of sight and the swap is instant.
+        self._map_mv_under_still()
         def ready(ok, k=key):
             if k!=self._mv_key: return
             if not ok and getattr(self.mv, "failed", False) and not isinstance(self.mv, __import__("meshview").MeshView):
                 log_line("GL view failed in this window (%s); switching to the software view" % getattr(self.mv, "_err", ""))
                 try: self.mv.destroy()
                 except Exception: pass
-                self.mv=self._make_mv(software=True); self.mv.wire=(self.shade_mode=="wire"); self.mv.load(path, ready, max_faces=300000); return
+                self.mv=self._make_mv(software=True); self.mv.wire=(self.shade_mode=="wire"); self._map_mv_under_still(); self.mv.load(path, ready, max_faces=300000); return
             self._preview_idle()
             if ok:
-                self.big.grid_remove(); self.mv.grid()
+                self.big.grid_remove(); self.mv.grid(); self.mv.lift()
                 self.big_hint.configure(text="Drag to rotate · scroll to zoom · right-drag to pan · double-click to reset")
             else:
                 # this used to reuse the exact "...is loading" text shown WHILE still loading, so a real
                 # failure was indistinguishable from a load that's just slow - found 2026-09-14.
                 log_line("live 3D view failed to load for %s: %s" % (k, getattr(self.mv, "_err", "unknown")))
+                try: self.mv.grid_remove()
+                except Exception: pass
                 self.big_hint.configure(text="Still image · couldn't load the live 3D view (see Help > Log)")
         # GLView's own default cap is 3M faces - for a casual rotate/zoom preview (not the precise
         # cut-plane tool, which already caps at 600k) that meant a 500-650k triangle mesh never got
@@ -3299,6 +3426,11 @@ class App(ctk.CTk):
     def _panel_refresh(self):
         """The right column on the Projects page: what to do next, the selected scan's versions and actions, project actions."""
         pp=self.projpanel
+        # Unmap while rebuilding - this panel gets a dozen+ widgets on every scan click, the
+        # exact CTkScrollableFrame redraw-recursion trigger proven live 2026-09-15. Safe to
+        # restore visibility unconditionally: this only runs while page=="projects" (checked
+        # at every call site), which is the only time projpanel should be gridded anyway.
+        pp.grid_remove()
         for w in pp.winfo_children(): w.destroy()
         try:
             self._panel_refresh_body(pp)
@@ -3310,6 +3442,8 @@ class App(ctk.CTk):
             for w in pp.winfo_children(): w.destroy()
             ctk.CTkLabel(pp, text="Couldn't refresh this panel (see Help > Log). Try selecting the project again.",
                          text_color=WARN, font=ctk.CTkFont(size=12), wraplength=230, justify="left").pack(anchor="w", padx=16, pady=20)
+        finally:
+            pp.grid()
     def _panel_refresh_body(self, pp):
         name=self.selected; dest=self.dest.get() or DEFAULT_DEST; local=os.path.join(dest, name) if name else None
         if not name or not local or not os.path.isdir(local):
@@ -4725,6 +4859,9 @@ class App(ctk.CTk):
         the already-decoded picture is dropped in as it arrives, one at a time, main thread untouched."""
         images, recs = data
         self._shots_items=images; self._recs=recs; self._shots_gen=getattr(self, "_shots_gen", 0)+1; gen=self._shots_gen
+        # Same CTkScrollableFrame redraw-recursion trigger as render_gallery/render_list/
+        # _panel_refresh: unmap before the destroy/rebuild burst.
+        self.shots.grid_remove()
         for w in self.shots.winfo_children(): w.destroy()
         try:
             self._render_shots_body(images, recs, gen)
@@ -4732,6 +4869,8 @@ class App(ctk.CTk):
             log_error("render_shots", e)
             for w in self.shots.winfo_children(): w.destroy()
             ctk.CTkLabel(self.shots, text="Couldn't load screenshots (see Help > Log). Try Refresh.", text_color=WARN).grid(row=0, column=0, padx=20, pady=20, sticky="w")
+        finally:
+            self.shots.grid()
     def _render_shots_body(self, images, recs, gen):
         self.shots_lbl.configure(text="%d screenshot%s · %d recording%s on the device"
                                  % (len(images), "" if len(images)==1 else "s", len(recs), "" if len(recs)==1 else "s"))
@@ -5248,4 +5387,7 @@ class App(ctk.CTk):
                         self.set_banner("Base removal failed - see Help > Log.", WARN); self.set_status("")
 
 if __name__ == "__main__":
+    if not _acquire_single_instance():
+        _show_single_instance_error()
+        _sys.exit(2)
     App().mainloop()
