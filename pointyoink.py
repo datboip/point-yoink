@@ -5569,6 +5569,10 @@ class App(ctk.CTk):
                     status, info = payload
                     if status=="ok":
                         n=len(info.split(", ")); self.set_banner("Built %d 3D model%s on this PC" % (n, "" if n==1 else "s"), OK); self.set_status("3D model%s built: %s" % ("" if n==1 else "s", info))
+                        d=getattr(self,"_dialogs",{}).get("align")          # a finished Combine: close its dialog instead of leaving it up still saying "Combine"
+                        try:
+                            if d is not None and d.winfo_exists(): self._dialogs.pop("align",None); d.destroy()
+                        except Exception: pass
                         self.projects_sig=None; self.gallery_cache={}; self._mesh_stats={}
                         sel=self.selected; self.listed=False; self.start_listing()
                         if sel: self.after(1500, lambda s=sel: (self.select_project(s) if s in [p["name"] for p in self.projects] else None))
