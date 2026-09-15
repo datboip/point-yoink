@@ -404,8 +404,13 @@ class GLView(OpenGLFrame):
         if not self._drag: return
         if self._press_at and abs(e.x - self._press_at[0]) <= 8 and abs(e.y - self._press_at[1]) <= 8: return   # still within a click
         dx, dy = e.x - self._drag[0], e.y - self._drag[1]; self._drag = (e.x, e.y)
-        # turn about the screen's own axes, so any orientation is reachable and nothing ever locks
-        self.rot = self._axis_rot(dy * 0.5, 1, 0, 0) @ self._axis_rot(dx * 0.5, 0, 1, 0) @ self.rot; self.draw()
+        # Turntable, like a 3D-printer bed: horizontal drag spins about "up", vertical drag tilts the
+        # camera up/down (clamped so the floor grid never flips past level). The bed is the fixed
+        # ground and the object sits on it - you orbit the stage, you don't tumble it. Matches the
+        # still image's azimuth/elevation, so still and live show the same kind of view.
+        self.azim += dx * 0.4
+        self.elev = max(-4.0, min(89.0, self.elev - dy * 0.4))
+        self.rot = self._default_rot(); self.draw()
     def _pan(self, e):
         if not self._drag: return
         w, h = max(64, self.winfo_width()), max(64, self.winfo_height())

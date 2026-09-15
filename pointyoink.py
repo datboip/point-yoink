@@ -1475,10 +1475,11 @@ class App(ctk.CTk):
         # interactive 3D: the GPU view (glview.py, full mesh) when OpenGL works in this window, else the
         # software renderer (meshview.py). Same mouse language either way.
         self._mv_wrap=bigwrap; self.mv=self._make_mv(); self._mv_key=None; self._mv_want=None
-        self.big_hint=ctk.CTkLabel(bigwrap, text="", text_color=MUT, font=ctk.CTkFont(size=11), fg_color="#0a0c10", corner_radius=6)
+        self.big_hint=ctk.CTkLabel(bigwrap, text="", text_color=MUT, font=ctk.CTkFont(size=11), fg_color="#0a0c10", corner_radius=0)
         self.big_hint.place(relx=0.5, rely=1.0, y=-10, anchor="s")
         # loading overlay: a spinning ring + the current step, centred on the preview while it works
-        self.big_loader=ctk.CTkFrame(bigwrap, fg_color="#11151c", corner_radius=14, border_width=1, border_color=STROKE)
+        # (square to match the squared-off preview panel it sits on)
+        self.big_loader=ctk.CTkFrame(bigwrap, fg_color="#11151c", corner_radius=0, border_width=1, border_color=STROKE)
         self._spin_cv=tk.Canvas(self.big_loader, width=44, height=44, bg="#11151c", highlightthickness=0); self._spin_cv.pack(padx=18, pady=(16,6))
         self.big_loader_lbl=ctk.CTkLabel(self.big_loader, text="", text_color=TX, font=ctk.CTkFont(size=12)); self.big_loader_lbl.pack(padx=22, pady=(0,16))
         self._spin_job=None; self._spin_ang=0
