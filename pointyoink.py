@@ -970,7 +970,7 @@ class App(ctk.CTk):
         self.rows={}; self.serial=None
         self.pulling=False; self.cancel=False; self.listing=False; self.listed=False; self.proc=None
         self._closing=False; self._children=set(); self._children_lock=threading.Lock(); self._job_seq=0
-        self._mounting=False; self.auto_tried=False; self._wifi=None; self.listed_src=None; self._listing_src=None; self._refresh_probe_busy=False; self._shots_busy=False; self._open3d_probe_busy=False
+        self._mounting=False; self.auto_tried=False; self._wifi=None; self._wifi_bg=False; self.listed_src=None; self._listing_src=None; self._refresh_probe_busy=False; self._shots_busy=False; self._open3d_probe_busy=False
         self._device_mounted=False; self._device_touch_cool_until=0.0
         self.report_callback_exception = self._on_tk_error
         log_line("PointYoink %s started" % VERSION)
@@ -1679,7 +1679,7 @@ class App(ctk.CTk):
         self._opt(op, "check", "STL", None, self.exp_stl, tip="For 3D printing")
         self._opt(op, "check", "OBJ", None, self.exp_obj, tip="For editing")
         self._opt(op, "check", "GLB", None, self.exp_glb, tip="For the web and editing")
-        ctk.CTkLabel(op, text="Original PLY files are kept", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6, pady=(4,0))
+        ctk.CTkLabel(op, text="A quick copy of every scan as it comes in - originals kept. Export on the Projects page picks one model, with a size and mesh check.", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=300).pack(fill="x", padx=6, pady=(4,0))
         self._hr(op)
         # editing is an action with a result, not an import option: it lives on the Process page
         ctk.CTkLabel(op, text="After importing", text_color=TX, font=ctk.CTkFont(size=13, weight="bold"), anchor="w").pack(fill="x", padx=16, pady=(4,2))
@@ -4618,7 +4618,9 @@ class App(ctk.CTk):
 
     # ---- WiFi: the scanner's Share to PC > Wi-Fi, received by us (wifi.py) ----
     def on_wifi(self):
-        if self._wifi: self._wifi_cancel(); return
+        if self._wifi:
+            if self._wifi_bg: self._wifi_reopen(); return   # backgrounded: bring the window back, don't stop
+            self._wifi_cancel(); return
         if self.pulling: self.set_banner("Wait for the current import to finish first.", WARN); return
         import wifi
         dest=self.dest.get() or DEFAULT_DEST; os.makedirs(dest, exist_ok=True)
@@ -4633,10 +4635,11 @@ class App(ctk.CTk):
         self.set_banner("WiFi share open - on the MIRACO: Share to PC > Wi-Fi, enter code %s" % rx.code, AC)
         self.set_status("WiFi: waiting for the scanner")
         self._wifi_dialog(rx)
-    def _wifi_dialog(self, rx):
+    def _wifi_dialog(self, rx, restore=False):
         t=self._top("Share to PC over WiFi", 520, 400, key="wifi")
         if t is None: return
-        t.protocol("WM_DELETE_WINDOW", self._wifi_cancel); t.resizable(False, False); self.wifi_top=t
+        # closing the window backgrounds the transfer (it keeps receiving); Cancel is the only stop
+        t.protocol("WM_DELETE_WINDOW", self._wifi_background); t.resizable(False, False); self.wifi_top=t
         card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=16); card.pack(fill="both", expand=True, padx=14, pady=14)
         ctk.CTkLabel(card, text="On the MIRACO, open the project, tap the share icon,\npick Wi-Fi and enter this code",
                      text_color=MUT, font=ctk.CTkFont(size=13), justify="center").pack(pady=(22,10))
@@ -4668,8 +4671,16 @@ class App(ctk.CTk):
         br=ctk.CTkFrame(card, fg_color="transparent"); br.pack(side="bottom", pady=(0,16))
         self.wifi_newcode=ctk.CTkButton(br, text="↻ New code", width=110, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self._wifi_new_code)
         self.wifi_newcode.pack(side="left", padx=6)
+        bgb=ctk.CTkButton(br, text="Run in background", width=140, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self._wifi_background)
+        bgb.pack(side="left", padx=6); self._tip(bgb, "Keep receiving and hide this window - progress stays in the status bar; click WiFi to show it again.")
         ctk.CTkButton(br, text="Cancel", width=100, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self._wifi_cancel).pack(side="left", padx=6)
         self._wifi_pulse_i=0; self._wifi_pulse()
+        if restore and rx.t0:      # reopened mid-transfer: show the receiving block right away
+            try:
+                self.wifi_state.configure(text="Code accepted  ·  receiving", text_color=OK)
+                self.wifi_hint.pack_forget(); self.wifi_recv.pack(fill="x", pady=(14,0)); self.wifi_newcode.configure(state="disabled")
+                self.wifi_top.geometry("520x600")
+            except Exception: pass
     def _wifi_pulse(self):
         """Breathing status dot while the dialog is up."""
         rx=self._wifi
@@ -4720,8 +4731,24 @@ class App(ctk.CTk):
         try:
             if d is not None and d.winfo_exists(): d.destroy()
         except Exception: pass
+    def _wifi_background(self):
+        """Hide the transfer window but keep receiving: the WiFi button turns 'receiving' and reopens it."""
+        rx=self._wifi
+        if not rx: self._wifi_close_dialog(); return
+        self._wifi_bg=True; self._wifi_close_dialog()
+        self.wifi_btn.configure(text="📶  Receiving…" if rx.t0 else "📶  Waiting…", fg_color="#12303f")
+        self.set_banner(("WiFi still receiving in the background - click WiFi to show it." if rx.t0
+                         else "WiFi share still open in the background - click WiFi to show the code."), AC)
+    def _wifi_reopen(self):
+        """Bring the backgrounded transfer window back, restoring the receiving view if it is already flowing."""
+        rx=self._wifi
+        if not rx: return
+        self._wifi_bg=False
+        self.wifi_btn.configure(text="Stop", fg_color="#3a2530")
+        self._wifi_dialog(rx, restore=True)
     def _wifi_cancel(self):
         rx=self._wifi
+        self._wifi_bg=False
         if not rx: self._wifi_close_dialog(); return
         self._wifi=None; self._wifi_close_dialog()
         self.wifi_btn.configure(text="📶  WiFi", fg_color="transparent")
@@ -4736,45 +4763,51 @@ class App(ctk.CTk):
     def _wifi_event(self, kind, info):
         rx=self._wifi
         if not rx: return
+        ui=not self._wifi_bg      # while backgrounded the dialog widgets are gone: keep only status/banner/button
         if kind=="searching":
-            self.wifi_state.configure(text="Scanner found at %s - enter the code on it." % info["ip"], text_color=OK); self.set_status("WiFi: scanner found, waiting for the code")
+            if ui: self.wifi_state.configure(text="Scanner found at %s - enter the code on it." % info["ip"], text_color=OK)
+            self.set_status("WiFi: scanner found, waiting for the code")
             try: self.wifi_hint.pack_forget()      # the firewall hint only matters while nothing has been heard
             except Exception: pass
         elif kind=="badcode":
             if info["locked"]:
-                self.wifi_state.configure(text="Too many wrong codes - closing this share. Click WiFi for a new code.", text_color=WARN)
+                if ui: self.wifi_state.configure(text="Too many wrong codes - closing this share. Click WiFi for a new code.", text_color=WARN)
                 self.after(2500, self._wifi_cancel)
-            else:
+            elif ui:
                 self.wifi_state.configure(text="Wrong code entered on the scanner - try again (%d attempts left)." % (5-rx.bad), text_color=WARN)
         elif kind=="connected":
-            self.wifi_state.configure(text="Code accepted  ·  receiving", text_color=OK); self.set_status("WiFi: receiving…")
-            try:
-                self.wifi_hint.pack_forget(); self.wifi_recv.pack(fill="x", pady=(14,0)); self.wifi_newcode.configure(state="disabled")
-                self.wifi_top.geometry("520x600")     # room for the thumbnail, progress and stats rows (measured: card needs ~590 with its padding)
-            except Exception: pass
+            self.set_status("WiFi: receiving…")
+            if self._wifi_bg: self.wifi_btn.configure(text="📶  Receiving…", fg_color="#12303f")
+            if ui:
+                self.wifi_state.configure(text="Code accepted  ·  receiving", text_color=OK)
+                try:
+                    self.wifi_hint.pack_forget(); self.wifi_recv.pack(fill="x", pady=(14,0)); self.wifi_newcode.configure(state="disabled")
+                    self.wifi_top.geometry("520x600")     # room for the thumbnail, progress and stats rows (measured: card needs ~590 with its padding)
+                except Exception: pass
         elif kind=="progress":
             now=time.time()
             if now-getattr(self, "_wifi_last_draw", 0.0) < 0.08: return      # never let redraws pile up on the UI thread
             self._wifi_last_draw=now
             tot=info["total"]; frac=(info["bytes"]/tot) if tot else 0; rate=info["rate"]; avg=info.get("avg") or rate
-            self._wifi_graph_add(frac, rate)
-            left=(tot-info["bytes"])/avg if (tot and avg>0) else None
-            self.wifi_stats["got"].configure(text=("%.0f%%  ·  %.0f / %.0f MB" % (100*frac, info["bytes"]/1048576, tot/1048576)) if tot else "%.0f MB" % (info["bytes"]/1048576))
-            self.wifi_stats["files"].configure(text=str(info["files"]))
-            self.wifi_stats["rate"].configure(text="%.0f MB/s  ·  peak %.0f MB/s" % (rate/1048576, getattr(self, "_wifi_peak", rate)/1048576))
-            self.wifi_stats["eta"].configure(text=("%d s" % left if left<90 else "%d min" % (left/60)) if left is not None else "-")
             self.set_status("WiFi: %.0f%%" % (100*frac))
-            if not self.wifi_proj.cget("text") or not getattr(self, "_wifi_thumb_ok", False):   # name as soon as the folder exists; the picture arrives later in the transfer, keep trying
-                try:
-                    projs=[d for d in os.listdir(rx.stage) if os.path.isdir(os.path.join(rx.stage, d))]
-                    if projs:
-                        if not self.wifi_proj.cget("text"): self.wifi_proj.configure(text="%s%s" % (self.disp(projs[0]), "  (+%d more)" % (len(projs)-1) if len(projs)>1 else ""))
-                        pv=sorted(glob.glob(os.path.join(rx.stage, projs[0], "data", "*", "preview.png")))
-                        if pv and os.path.getsize(pv[0])>2000:
-                            self.imgs["wifi_thumb"]=cimg(pv[0], 84); self.wifi_thumb.configure(image=self.imgs["wifi_thumb"]); self._wifi_thumb_ok=True
-                except Exception: pass
+            if ui:
+                self._wifi_graph_add(frac, rate)
+                left=(tot-info["bytes"])/avg if (tot and avg>0) else None
+                self.wifi_stats["got"].configure(text=("%.0f%%  ·  %.0f / %.0f MB" % (100*frac, info["bytes"]/1048576, tot/1048576)) if tot else "%.0f MB" % (info["bytes"]/1048576))
+                self.wifi_stats["files"].configure(text=str(info["files"]))
+                self.wifi_stats["rate"].configure(text="%.0f MB/s  ·  peak %.0f MB/s" % (rate/1048576, getattr(self, "_wifi_peak", rate)/1048576))
+                self.wifi_stats["eta"].configure(text=("%d s" % left if left<90 else "%d min" % (left/60)) if left is not None else "-")
+                if not self.wifi_proj.cget("text") or not getattr(self, "_wifi_thumb_ok", False):   # name as soon as the folder exists; the picture arrives later in the transfer, keep trying
+                    try:
+                        projs=[d for d in os.listdir(rx.stage) if os.path.isdir(os.path.join(rx.stage, d))]
+                        if projs:
+                            if not self.wifi_proj.cget("text"): self.wifi_proj.configure(text="%s%s" % (self.disp(projs[0]), "  (+%d more)" % (len(projs)-1) if len(projs)>1 else ""))
+                            pv=sorted(glob.glob(os.path.join(rx.stage, projs[0], "data", "*", "preview.png")))
+                            if pv and os.path.getsize(pv[0])>2000:
+                                self.imgs["wifi_thumb"]=cimg(pv[0], 84); self.wifi_thumb.configure(image=self.imgs["wifi_thumb"]); self._wifi_thumb_ok=True
+                    except Exception: pass
         elif kind=="done":
-            self._wifi=None; threading.Thread(target=rx.stop, daemon=True).start(); self._wifi_close_dialog(); self.wifi_btn.configure(text="📶  WiFi", fg_color="transparent")
+            self._wifi=None; self._wifi_bg=False; threading.Thread(target=rx.stop, daemon=True).start(); self._wifi_close_dialog(); self.wifi_btn.configure(text="📶  WiFi", fg_color="transparent")
             projects=info["projects"]
             if not projects:
                 threading.Thread(target=shutil.rmtree, args=(rx.stage,), kwargs={"ignore_errors": True}, daemon=True).start()

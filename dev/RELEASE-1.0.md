@@ -16,8 +16,12 @@ Everything since 0.7.0 is local. 1.0.0 is a decision, not a version count. Do th
       rotation for base removal, auto-hide scrollbars. (0.9.56-pre, 2026-09-15)
 - [x] The MIRACO's own screenshots in Help and the README (Help "On the scanner" row: share/Wi-Fi/USB;
       README "How to use" step 1 row: assets/device/scanner-{usb-tab,share-icon,wifi-code}.png). (2026-09-15)
-- [ ] WiFi transfer window: Run in background; review window with the raw-only warning (concepts).
-- [ ] Menu: fold "Also export as" on Import into the Export dialog? (decide; STL on import is handy)
+- [x] WiFi transfer window: Run in background (keeps receiving, hides the window, WiFi button turns
+      "Receiving…" and reopens it, progress stays in the status bar); the review picker already carries
+      the raw-only warning ("Raw scan data only… the full project is kept"). (2026-09-15)
+- [x] Menu: keep "Also export as" on Import (decided). It's a quick bulk copy of every scan as it
+      arrives (STL/OBJ/GLB, originals kept); the Export dialog on Projects is the curated per-model
+      export with size + mesh check. Import label reworded to say so, so it doesn't read as a duplicate. (2026-09-15)
 
 ## Test on real hardware
 - [ ] MIRACO USB import of a fresh project, models only and full (the user's save folder was emptied
