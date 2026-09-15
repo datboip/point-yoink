@@ -2637,7 +2637,7 @@ class App(ctk.CTk):
             self.big_hint.configure(text="Scanner's own preview · could not draw the 3D model"); return
         if mesh.startswith(PROJECTS) and self.pulling:
             self.big_hint.configure(text="Scanner preview · the 3D render waits for the import to finish"); return
-        self.big_hint.configure(text="Drawing the 3D model…"); self._dim_preview(); self._preview_busy("Drawing the 3D model")
+        self._dim_preview(); self._preview_busy("Drawing the 3D model")   # spinner box carries the text; _preview_busy clears the bottom hint
         with self._shade_lock:
             self._shade_want=(key, mode, name, mesh, out); start=not self._shade_running; self._shade_running=True
         if start: threading.Thread(target=self._shade_thread, daemon=True).start()
@@ -2669,6 +2669,7 @@ class App(ctk.CTk):
         """Show the spinner overlay with a step name (call again to change the text)."""
         try:
             self.big_loader_lbl.configure(text=text)
+            self.big_hint.configure(text="")   # the spinner box already says it; don't repeat it in the bottom hint
             if not self.big_loader.winfo_ismapped(): self.big_loader.place(relx=0.5, rely=0.5, anchor="center")
             self.big_loader.lift()
             if self._spin_job is None: self._spin_tick()
@@ -2729,7 +2730,7 @@ class App(ctk.CTk):
         want=self._mv_want
         if not want or self._mv_key==want[0] or not os.path.exists(want[1]): return
         key,path=want; self._mv_key=key; self.mv.wire=(self.shade_mode=="wire")
-        self.big_hint.configure(text="Still image · loading the live 3D view…"); self._preview_busy("Loading the live 3D view")
+        self._preview_busy("Loading the live 3D view")   # spinner box carries the text; _preview_busy clears the bottom hint
         # The GL view only gets a context, and only uploads the mesh (which is what fires ready()),
         # once it is MAPPED (<Map> -> initgl; a hidden view must never touch GL, see glview.py). It used
         # to be mapped only from ready() - a circular wait: the spinner sat there forever while the
