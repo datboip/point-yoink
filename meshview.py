@@ -13,7 +13,7 @@ class MeshView(tk.Label):
     def __init__(self, master, bg="#0a0c10", **kw):
         super().__init__(master, bg=bg, bd=0, highlightthickness=0, text="", fg="#98a2b3", **kw)
         self.lo = self.hi = None; self.path = None; self.wire = False; self._photo = None
-        self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 0.82, [0.0, 0.0]
+        self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 0.71, [0.0, 0.0]
         self._drag = None; self._hi_job = None; self._busy = False; self._gen = 0
         self.bind("<ButtonPress-1>", self._press); self.bind("<B1-Motion>", self._rotate)
         self.bind("<ButtonPress-3>", self._press); self.bind("<B3-Motion>", self._pan)
@@ -63,7 +63,7 @@ class MeshView(tk.Label):
     def set_wire(self, on):
         self.wire = bool(on); self.draw(hi=True)
     def reset(self, draw=True):
-        self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 0.82, [0.0, 0.0]
+        self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 0.71, [0.0, 0.0]
         if draw: self.draw(hi=True)
     def set_view(self, azim, elev, draw=True):
         """Snap to a standard view (Top/Front/Right/…), matching GLView."""

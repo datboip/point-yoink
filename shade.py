@@ -75,7 +75,7 @@ def view_to_world(p, tf):
     p[..., 2] += tf["zshift"]
     return (p @ tf["R"]) * tf["scale"] + tf["mean"]
 
-def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0, zoom=0.82, pan=(0.0, 0.0), grid=True, gizmo=True):
+def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0, zoom=0.71, pan=(0.0, 0.0), grid=True, gizmo=True):
     """Draw the mesh with flat shading (painter's algorithm) on a grid floor. Returns a PIL image.
     zoom scales the view, pan shifts it in screen fractions; both are what the live viewer drives."""
     from PIL import Image, ImageDraw
@@ -86,7 +86,7 @@ def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0, zoom=0.82, 
     def proj(p):
         q = (p @ Rz.T) @ Rx.T; d = 3.2 + q[:, 1]
         x = q[:, 0] / d * 2.6 * zoom; y = q[:, 2] / d * 2.6 * zoom
-        return np.stack([W / 2 + (x + pan[0]) * W * 0.42, H * 0.52 - (y + pan[1]) * H * 0.42], 1), q[:, 1]
+        return np.stack([W / 2 + (x + pan[0]) * W * 0.42, H * 0.48 - (y + pan[1]) * H * 0.42], 1), q[:, 1]
     img = Image.new("RGB", size, BG); dr = ImageDraw.Draw(img)
     for x in (np.linspace(-1.1, 1.1, 11) if grid else []):
         p, _ = proj(np.array([[x, -1.1, 0], [x, 1.1, 0]])); dr.line([tuple(p[0]), tuple(p[1])], fill=GRID, width=1)
