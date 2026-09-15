@@ -2250,6 +2250,17 @@ class App(ctk.CTk):
         threading.Thread(target=work, daemon=True).start()
 
     # ---- list ----
+    def _list_thumb(self, name, fallback=None):
+        """Best thumbnail for a project row: a cached shaded render of its model (combined first, else the
+        newest scan render) so the list matches the big preview; falls back to the scanner's flat preview."""
+        try:
+            cands=[c for c in glob.glob(os.path.join(THUMBS, glob.escape(name)+"__*__shaded.png")) if os.path.getsize(c)>1024]
+            if cands:
+                comb=os.path.join(THUMBS, name+"__combined__shaded.png")
+                return comb if comb in cands else max(cands, key=os.path.getmtime)
+        except Exception as e:
+            log_error("list-thumb", e)
+        return fallback
     def render_list(self, projs):
         # include imported/changed state and the search text so the list re-renders when files or the filter change
         q=(self.search.get() or "").strip().lower()
@@ -2298,10 +2309,12 @@ class App(ctk.CTk):
                                 variable=var, fg_color=AC, hover_color=AC_H).grid(row=0,column=0, padx=(8,0), pady=10)
             tbox=ctk.CTkFrame(card, fg_color="#0a0c10", corner_radius=8, width=60, height=50); tbox.grid(row=0,column=1, padx=(2,2), pady=8); tbox.grid_propagate(False)
             tbox.grid_columnconfigure(0, weight=1); tbox.grid_rowconfigure(0, weight=1)
-            if p.get("thumb"):
-                try: self.imgs["row_"+name]=cimg(p["thumb"],54); ctk.CTkLabel(tbox, image=self.imgs["row_"+name], text="").grid(row=0,column=0)
-                except Exception: ctk.CTkLabel(tbox, text="-", text_color=MUT).grid(row=0,column=0)
-            else: ctk.CTkLabel(tbox, text="-", text_color=MUT).grid(row=0,column=0)
+            thumb=self._list_thumb(name, p.get("thumb"))   # prefer a shaded render of the model over the scanner's flat preview
+            if thumb:
+                try: self.imgs["row_"+name]=cimg(thumb,54); card._thumb_lbl=ctk.CTkLabel(tbox, image=self.imgs["row_"+name], text=""); card._thumb_lbl.grid(row=0,column=0)
+                except Exception: card._thumb_lbl=ctk.CTkLabel(tbox, text="-", text_color=MUT); card._thumb_lbl.grid(row=0,column=0)
+            else:
+                card._thumb_lbl=ctk.CTkLabel(tbox, text="-", text_color=MUT); card._thumb_lbl.grid(row=0,column=0)
             txt=ctk.CTkFrame(card, fg_color="transparent"); txt.grid(row=0,column=2, sticky="ew", padx=(4,8), pady=6)
             ctk.CTkLabel(txt, text=self.disp(name), text_color=TX, font=ctk.CTkFont(size=12,weight="bold"),
                          anchor="w", justify="left", wraplength=150).pack(anchor="w", fill="x")
@@ -5251,6 +5264,12 @@ class App(ctk.CTk):
                     if (key,mode)==self._shade_key:
                         if out: self._show_shaded(out)
                         else: self.big_hint.configure(text="Scanner's own preview · could not draw the 3D model (see Help > Log)"); self._preview_idle()
+                    if mode=="solid" and out:                       # upgrade this project's list thumbnail to the shaded render, in place (no re-render)
+                        nm=key.rsplit("__",1)[0]; row=self.rows.get(nm)
+                        lbl=getattr(row, "_thumb_lbl", None) if row is not None else None
+                        if lbl is not None:
+                            try: self.imgs["row_"+nm]=cimg(out,54); lbl.configure(image=self.imgs["row_"+nm], text="")
+                            except Exception: pass
                 elif kind=="shade_msg":
                     if self._shade_key and rest[0]==self._shade_key[0]: self.big_hint.configure(text=rest[1])
                 elif kind=="mesh_stats":
