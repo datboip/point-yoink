@@ -16,6 +16,53 @@ except Exception as e:
 def emit(stage, **kw):
     print("STAGE %s %s" % (stage, json.dumps(kw)), flush=True)
 
+def _smooth_fill_faces(m, old_fcount, iters=120):
+    """Round flat, ear-clipped hole fills (the faces at/after old_fcount) into the surface. Splits only
+    the fill patches' INTERIOR edges — the rim edges shared with the untouched original faces stay whole,
+    so watertightness is preserved (no T-junction cracks) — then relaxes the new midpoints toward a smooth
+    surface while every original vertex stays put."""
+    import numpy as np, trimesh
+    from collections import defaultdict
+    V = [np.asarray(x, np.float64) for x in m.vertices]; n_orig_v = len(V)
+    F = np.asarray(m.faces, np.int64); orig = F[:old_fcount]; fill = F[old_fcount:]
+    if len(fill) == 0: return m
+    ec = defaultdict(int)
+    for a, b, c in fill:
+        for x, y in ((a, b), (b, c), (c, a)): ec[(min(x, y), max(x, y))] += 1
+    interior = {k for k, v in ec.items() if v == 2}      # edges shared by two fill faces: safe to split
+    if not interior: return m
+    mid = {}
+    def mp(a, b):
+        k = (min(a, b), max(a, b))
+        if k not in interior: return None
+        if k in mid: return mid[k]
+        i = len(V); V.append((V[a] + V[b]) * 0.5); mid[k] = i; return i
+    nf = []
+    for a, b, c in fill:
+        a, b, c = int(a), int(b), int(c)
+        mab, mbc, mca = mp(a, b), mp(b, c), mp(c, a)
+        present = [nm for nm, mm in (('ab', mab), ('bc', mbc), ('ca', mca)) if mm is not None]
+        k = len(present)
+        if k == 0: nf.append((a, b, c))
+        elif k == 3: nf += [(a, mab, mca), (mab, b, mbc), (mca, mbc, c), (mab, mbc, mca)]
+        elif k == 1:
+            e = present[0]
+            if e == 'ab': nf += [(a, mab, c), (mab, b, c)]
+            elif e == 'bc': nf += [(b, mbc, a), (mbc, c, a)]
+            else: nf += [(c, mca, b), (mca, a, b)]
+        else:
+            s = set(present)
+            if s == {'ab', 'ca'}: nf += [(a, mab, mca), (mab, b, c), (mab, c, mca)]
+            elif s == {'ab', 'bc'}: nf += [(b, mbc, mab), (a, mab, mbc), (a, mbc, c)]
+            else: nf += [(c, mca, mbc), (a, b, mbc), (a, mbc, mca)]
+    V = np.array(V, np.float64); fillf = np.array(nf, int)
+    free = np.zeros(len(V), bool); free[n_orig_v:] = True     # only the new midpoints move
+    e = np.vstack([fillf[:, [0, 1]], fillf[:, [1, 2]], fillf[:, [2, 0]]]); e = np.vstack([e, e[:, ::-1]])
+    deg = np.bincount(e[:, 0], minlength=len(V)).astype(np.float64); deg[deg == 0] = 1.0
+    for _ in range(iters):
+        acc = np.zeros_like(V); np.add.at(acc, e[:, 0], V[e[:, 1]]); V[free] = (acc / deg[:, None])[free]
+    return trimesh.Trimesh(V, np.vstack([orig, fillf]), process=False)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("infile"); ap.add_argument("outfile", nargs="?")
@@ -131,11 +178,18 @@ def main():
             filled = False
             try:
                 import open3d as o3d
+                old_fcount = len(m.faces)
                 tm = o3d.t.geometry.TriangleMesh.from_legacy(o3d.geometry.TriangleMesh(
                     o3d.utility.Vector3dVector(np.asarray(m.vertices, np.float64)),
                     o3d.utility.Vector3iVector(np.asarray(m.faces, np.int32))))
                 lg = tm.fill_holes(hole_size=hole_mm).to_legacy()
                 m = trimesh.Trimesh(np.asarray(lg.vertices), np.asarray(lg.triangles), process=False)
+                # Open3D ear-clips holes flat with no new vertices, so a fill reads as a coarse web that
+                # doesn't follow the surface. Round it: subdivide only the new fill faces' interior edges
+                # (the shared rim stays put, so it's still watertight) and relax the new midpoints.
+                if len(m.faces) > old_fcount:
+                    try: m = _smooth_fill_faces(m, old_fcount)
+                    except Exception: pass
                 emit("filled", hole_mm=round(hole_mm, 1), faces=len(m.faces)); filled = True
             except Exception:
                 pass
