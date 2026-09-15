@@ -40,8 +40,13 @@ Everything since 0.7.0 is local. 1.0.0 is a decision, not a version count. Do th
       README links/badges and the install snippet's download URL.
 - [ ] `packaging/build-deb.sh`, install from the LOCAL .deb (never `gh release download`, it
       inflates the counter), launch from the desktop entry, WiFi and USB both work from the install.
+      (verified 2026-09-15: every file the script copies exists, and every local module the app
+      imports — fuse/glview/meshview/range/shade/wifi — is in the copy set; the build itself pulls
+      from PyPI so run it with network at release time.)
 - [ ] CHANGELOG: collapse the 0.8.x / 0.9.x local entries into the 1.0.0 notes.
 - [ ] Screenshot for the README from the release build (dev/render.py, no desktop capture).
+      (dev/render.py fixed 2026-09-15: `--mode Local --section none` renders the Projects page
+      cleanly at 1090x1070 — use it once VERSION is 1.0.0 so the wordmark reads the release version.)
 
 ## Release
 - [ ] VERSION = "1.0.0", commit, tag v1.0.0, push main + tags, GitHub release with the .deb attached.
