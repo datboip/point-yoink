@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.58-pre"
+APP = "PointYoink"; VERSION = "0.9.59-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -4028,14 +4028,14 @@ class App(ctk.CTk):
         if not name: return
         nodes=[n for n in self._proc_nodes(name) if n!="combined" and self._proc_current(name, n)]
         if len(nodes)<2: self._alert("Combine scans", "This project needs at least two scans with a 3D model.\nBuild them first (Build model on each scan)."); return
-        t=self._top("Combine scans · %s" % self.disp(name), 1180, 820, key="align")
+        t=self._top("Combine scans · %s" % self.disp(name), 1180, 1000, key="align")
         if t is None: return
         rec=self.records.setdefault(name,{}).setdefault("align",{})
         st={"base": rec.get("_base") if rec.get("_base") in nodes else nodes[0], "moving": None, "pairs": [], "pending": None, "result": None, "busy": False}
         st["moving"]=next((n for n in nodes if n!=st["base"]), None)
         lab=lambda n: self._scan_label(name, n)
         card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
-        card.grid_columnconfigure((0,1), weight=1); card.grid_rowconfigure(2, weight=1)
+        card.grid_columnconfigure((0,1), weight=1); card.grid_rowconfigure(2, weight=1); card.grid_rowconfigure(3, weight=1)
         menu=dict(fg_color="#0d0f14", button_color=CARD2, button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=8)
         bar=ctk.CTkFrame(card, fg_color="transparent"); bar.grid(row=0,column=0, columnspan=2, sticky="ew", padx=14, pady=(12,4))
         ctk.CTkLabel(bar, text="Base scan", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
@@ -4045,21 +4045,23 @@ class App(ctk.CTk):
         mmenu=ctk.CTkOptionMenu(bar, values=[lab(n) for n in nodes if n!=st["base"]], variable=msel, width=130, command=lambda _: pick_moving(), **menu); mmenu.pack(side="left", padx=(8,18))
         chips=ctk.CTkLabel(bar, text="", text_color=OK, font=ctk.CTkFont(size=12)); chips.pack(side="left", padx=6)
         hint=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=12), justify="left", wraplength=1100, anchor="w"); hint.grid(row=1,column=0, columnspan=2, sticky="ew", padx=16, pady=(0,6))
-        frames=[ctk.CTkFrame(card, fg_color="#0a0c10", corner_radius=10) for _ in range(2)]
+        # two pick views on top (base | moving), the merged result wide below (the user's chosen layout)
+        frames=[ctk.CTkFrame(card, fg_color="#0a0c10", corner_radius=10) for _ in range(3)]
         frames[0].grid(row=2,column=0, sticky="nsew", padx=(14,4), pady=4); frames[1].grid(row=2,column=1, sticky="nsew", padx=(4,14), pady=4)
+        frames[2].grid(row=3,column=0, columnspan=2, sticky="nsew", padx=14, pady=4)
         caps=[ctk.CTkLabel(f, text="", text_color=MUT, font=ctk.CTkFont(size=11)) for f in frames]
         views=[self._new_view(f) for f in frames]
         loads=[ctk.CTkLabel(f, text="Loading the 3D view…", text_color=MUT, font=ctk.CTkFont(size=14), fg_color="#0a0c10") for f in frames]
         for f,c,v,l in zip(frames, caps, views, loads):
             f.grid_columnconfigure(0, weight=1); f.grid_rowconfigure(1, weight=1); c.grid(row=0,column=0, sticky="w", padx=10, pady=(6,0)); v.grid(row=1,column=0, sticky="nsew", padx=6, pady=6)
             l.grid(row=1,column=0, sticky="nsew", padx=6, pady=6); l.lift()
-        can_pick=all(hasattr(v, "pick") for v in views)
+        can_pick=all(hasattr(v, "pick") for v in views[:2])   # only the two top views take point clicks; the merge view just shows the result
         def able(b, on, fill=AC):
             """Buttons read as off when off: grey with dim text, instead of a bright button with invisible text."""
             b.configure(state=("normal" if on else "disabled"), fg_color=(fill if on else CARD2), text_color=("#04121f" if on else DIM), text_color_disabled=DIM,
                         hover_color=(AC_H if fill==AC else "#35b57c") if on else CARD2)
-        status=ctk.CTkLabel(card, text="", text_color=TX, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=1100); status.grid(row=3,column=0, columnspan=2, sticky="ew", padx=16, pady=(6,0))
-        btns=ctk.CTkFrame(card, fg_color="transparent"); btns.grid(row=4,column=0, columnspan=2, sticky="ew", padx=12, pady=(6,12))
+        status=ctk.CTkLabel(card, text="", text_color=TX, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=1100); status.grid(row=4,column=0, columnspan=2, sticky="ew", padx=16, pady=(6,0))
+        btns=ctk.CTkFrame(card, fg_color="transparent"); btns.grid(row=5,column=0, columnspan=2, sticky="ew", padx=12, pady=(6,12))
         def refresh_chips():
             done=[n for n in nodes if n in rec and isinstance(rec[n], dict) and rec[n].get("base")==st["base"]]
             chips.configure(text=("Lined up so far: "+", ".join(lab(n) for n in done)) if done else "Nothing lined up yet")
@@ -4071,19 +4073,21 @@ class App(ctk.CTk):
                 if hasattr(v, "clear_layers"): v.clear_layers(draw=False)
             caps[0].configure(text="Base · %s · click a recognisable spot" % lab(st["base"]))
             caps[1].configure(text="%s · then click the same spot here" % (lab(st["moving"]) if st["moving"] else "no scan"))
+            caps[2].configure(text="Merged · %s (grey) + %s (orange) as you line them up" % (lab(st["base"]), lab(st["moving"]) if st["moving"] else "…"))
             saved=rec.get(st["moving"]) if st["moving"] else None
             saved=saved if (isinstance(saved, dict) and saved.get("base")==st["base"]) else None
             if saved: st["pairs"]=[list(pr) for pr in saved.get("pairs", [])]
             def restore(i):
-                """Put a kept alignment back on screen: its dots on both views, its overlay on the base view."""
-                if not saved or not can_pick or getattr(views[i], "tf", None) is None: return
+                """Put a kept alignment back on screen: the pair dots on the two pick views, the orange overlay on the merged view."""
+                if getattr(views[i], "tf", None) is None: return
                 import shade
-                pts=[pr[0] for pr in st["pairs"]] if i==0 else [pr[1] for pr in st["pairs"]]
-                views[i].markers=[(shade.world_to_view(pt, views[i].tf), self.PAIR_COLOURS[k % len(self.PAIR_COLOURS)]) for k,pt in enumerate(pts)]
-                views[i].draw()
-                if i==0 and hasattr(views[0], "add_layer") and st["moving"]:
-                    views[0].clear_layers(draw=False); views[0].add_layer(self._proc_current(name, st["moving"])[2], saved["matrix"], colour=(1.0,0.55,0.25))
-                    caps[0].configure(text="Base · %s (grey) with %s as kept (orange)" % (lab(st["base"]), lab(st["moving"])))
+                if i in (0,1) and can_pick and saved:
+                    pts=[pr[0] for pr in st["pairs"]] if i==0 else [pr[1] for pr in st["pairs"]]
+                    views[i].markers=[(shade.world_to_view(pt, views[i].tf), self.PAIR_COLOURS[k % len(self.PAIR_COLOURS)]) for k,pt in enumerate(pts)]
+                    views[i].draw()
+                if i==2 and saved and hasattr(views[2], "add_layer") and st["moving"]:
+                    views[2].clear_layers(draw=False); views[2].add_layer(self._proc_current(name, st["moving"])[2], saved["matrix"], colour=(1.0,0.55,0.25))
+                    caps[2].configure(text="Merged · %s (grey) with %s kept (orange)" % (lab(st["base"]), lab(st["moving"])))
             def shown(i):
                 def cb(ok):
                     if not t.winfo_exists(): return
@@ -4093,6 +4097,7 @@ class App(ctk.CTk):
                 return cb
             for i,l in enumerate(loads): l.configure(text="Loading the 3D view…"); l.grid(); l.lift()
             views[0].load(self._proc_current(name, st["base"])[2], shown(0), max_faces=600000)     # lighter copies: they appear in seconds and picking stays accurate
+            views[2].load(self._proc_current(name, st["base"])[2], shown(2), max_faces=600000)     # merged view starts as the base (grey); the moving scan drops in as an orange layer once lined up
             if st["moving"]: views[1].load(self._proc_current(name, st["moving"])[2], shown(1), max_faces=600000)
             else: loads[1].grid_remove()
             keepb.pack_forget()
@@ -4145,6 +4150,7 @@ class App(ctk.CTk):
                 if hasattr(v, "clear_layers"): v.clear_layers(draw=False)
                 v.draw()
             caps[0].configure(text="Base · %s · click a recognisable spot" % lab(st["base"]))
+            caps[2].configure(text="Merged · %s (grey) + %s (orange) as you line them up" % (lab(st["base"]), lab(st["moving"]) if st["moving"] else "…"))
             pairs_lbl.configure(text="0 pairs"); able(alignb, False); keepb.pack_forget(); status.configure(text="Cleared. Click new points, or Auto.", text_color=MUT)
         def undo():
             pend=st["pending"]
@@ -4158,7 +4164,7 @@ class App(ctk.CTk):
             if busy["msg"] is not None: status.configure(text="Working: %s… %ds" % (busy["msg"] or "starting", int(time.time()-busy["t0"])), text_color=TX)
             busy["job"]=t.after(500, busy_tick)
         def busy_on(m):
-            busy["t0"]=time.time(); busy["msg"]=m; bar.grid(row=5,column=0, columnspan=2, sticky="ew", padx=16, pady=(0,10)); bar.configure(mode="indeterminate"); bar.start()
+            busy["t0"]=time.time(); busy["msg"]=m; bar.grid(row=6,column=0, columnspan=2, sticky="ew", padx=16, pady=(0,10)); bar.configure(mode="indeterminate"); bar.start()
             for b in (alignb, autob, comb): b.configure(state="disabled")
             busy["job"]=t.after(10, busy_tick)
         def busy_off():
@@ -4203,9 +4209,9 @@ class App(ctk.CTk):
                     if pe is not None: words+="; your points land %.1f mm apart" % pe
                     verdict="Looks good." if (fit is None or (fit>=0.3 and (rmse or 0)<1.5)) else "Weak fit: check the overlay before keeping it."
                     status.configure(text="%s %s" % (words, verdict), text_color=(TX if verdict.startswith("Looks") else WARN))
-                    if hasattr(views[0], "add_layer"):
-                        views[0].clear_layers(draw=False); views[0].add_layer(mov_p, res["matrix"], colour=(1.0,0.55,0.25))
-                        caps[0].configure(text="Base · %s (grey) with %s lined up (orange)" % (lab(st["base"]), lab(st["moving"])))
+                    if hasattr(views[2], "add_layer"):
+                        views[2].clear_layers(draw=False); views[2].add_layer(mov_p, res["matrix"], colour=(1.0,0.55,0.25))
+                        caps[2].configure(text="Merged · %s (grey) with %s lined up (orange)" % (lab(st["base"]), lab(st["moving"])))
                     keepb.pack(side="right", padx=6)
                 self.q.put(("call", done))
             threading.Thread(target=work, daemon=True).start()
