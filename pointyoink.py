@@ -95,14 +95,57 @@ def _acquire_single_instance():
         return True   # never block a real launch over a lock-file problem
 
 def _show_single_instance_error():
-    msg = "PointYoink is already running.\n\nClose the existing PointYoink window before opening another copy."
+    """A dark, on-theme 'already running' dialog (not the plain gray Tk messagebox) with a button that
+    brings the window that's already open to the front."""
+    msg = "PointYoink is already running.\nUse the window that's already open."
+    try: log_line("single-instance-blocked")
+    except Exception: pass
     try:
-        r = tk.Tk(); r.withdraw()
-        try: r.attributes("-topmost", True)
+        try: ctk.set_appearance_mode("dark")
         except Exception: pass
-        messagebox.showerror(APP, msg, parent=r)
-        r.destroy()
-    except Exception:
+        win = ctk.CTk(); win.title(APP); win.configure(fg_color=BG); win.resizable(False, False)
+        W,H = 440, 250
+        try:
+            sw,sh = win.winfo_screenwidth(), win.winfo_screenheight()
+            win.geometry("%dx%d+%d+%d" % (W,H,(sw-W)//2,(sh-H)//2))
+        except Exception:
+            win.geometry("%dx%d" % (W,H))
+        try:
+            if os.path.exists(ICON):
+                from PIL import Image as _Img, ImageTk as _ITk
+                win._icon = _ITk.PhotoImage(_Img.open(ICON).convert("RGBA").resize((48,48), _Img.LANCZOS))
+                win.iconphoto(True, win._icon)
+        except Exception: pass
+        try: win.attributes("-topmost", True)
+        except Exception: pass
+        card = ctk.CTkFrame(win, fg_color=CARD, corner_radius=14, border_width=1, border_color=STROKE)
+        card.pack(fill="both", expand=True, padx=16, pady=16)
+        head = ctk.CTkFrame(card, fg_color="transparent"); head.pack(fill="x", padx=20, pady=(20,2))
+        try:
+            if os.path.exists(ICON):
+                from PIL import Image as _Img2
+                win._hdr = ctk.CTkImage(_Img2.open(ICON).convert("RGBA"), size=(30,30))
+                ctk.CTkLabel(head, image=win._hdr, text="").pack(side="left", padx=(0,10))
+        except Exception: pass
+        ctk.CTkLabel(head, text="PointYoink is already running", text_color=TX,
+                     font=ctk.CTkFont(family=WORDMARK, size=17, weight="bold")).pack(side="left")
+        ctk.CTkLabel(card, text="Only one copy runs at a time, so it never fights the scanner with itself.\nUse the window that's already open.",
+                     text_color=MUT, font=ctk.CTkFont(size=13), justify="left", wraplength=348).pack(anchor="w", padx=20, pady=(6,0))
+        row = ctk.CTkFrame(card, fg_color="transparent"); row.pack(side="bottom", fill="x", padx=20, pady=18)
+        def show_it():
+            try: subprocess.run(["wmctrl","-a",APP], timeout=3)
+            except Exception: pass
+            win.destroy()
+        ctk.CTkButton(row, text="Show the open window", height=34, corner_radius=17, fg_color=AC, hover_color=AC_H,
+                      text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=show_it).pack(side="right")
+        ctk.CTkButton(row, text="OK", width=72, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE,
+                      text_color=TX, command=win.destroy).pack(side="right", padx=(0,8))
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+        win.after(60000, win.destroy)   # never hang forever if left unattended
+        win.mainloop()
+    except Exception as e:
+        try: log_error("single-instance-dialog", e)
+        except Exception: pass
         try: _sys.stderr.write(msg + "\n")
         except Exception: pass
 
@@ -1420,7 +1463,10 @@ class App(ctk.CTk):
         self.reset_view_btn.pack(side="right", padx=(0,8))
         # preview box: the rendered PNG (or the scanner's preview) with a hint line at the bottom
         pv.grid_columnconfigure(0, weight=1); pv.grid_rowconfigure(0, weight=1, minsize=120)
-        bigwrap=ctk.CTkFrame(pv, fg_color="#0a0c10", corner_radius=12, height=120, border_width=1, border_color=STROKE)
+        # corner_radius=0: this panel holds the OpenGL 3D view, which is a real X child window and can't be
+        # clipped to rounded corners - its square edges bled past a rounded frame (reported 2026-09-15). A
+        # square panel matches the viewport it holds. The rest of the app stays rounded.
+        bigwrap=ctk.CTkFrame(pv, fg_color="#0a0c10", corner_radius=0, height=120, border_width=1, border_color=STROKE)
         bigwrap.grid(row=0,column=0, sticky="nsew", pady=(10,8)); bigwrap.grid_propagate(False)
         bigwrap.grid_columnconfigure(0, weight=1); bigwrap.grid_rowconfigure(0, weight=1)
         self.big=ctk.CTkLabel(bigwrap, text="Select a project to preview its scans", fg_color="transparent", text_color=MUT)
