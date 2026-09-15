@@ -2657,7 +2657,13 @@ class App(ctk.CTk):
         """Show the cached shaded render for this scan, or queue one. Never blocks the UI thread."""
         mesh=self._mesh_for_node(name, node) if node else self._find_mesh(name)
         if not mesh:
-            self.big_hint.configure(text="No 3D model yet: this scan is raw data. Build it on the Projects page (or One-tap Edit on the scanner)."); self._preview_idle(); return
+            # genuinely no fused mesh (only raw frames). Clear the interactive target so clicking the
+            # preview doesn't open the PREVIOUS scan's 3D view - that was the "says no model but then
+            # loads" bug (2026-09-15).
+            self._mv_want=None; self._mv_key=None; self._cancel_mv_start()
+            try: self.mv.grid_remove(); self.big.grid()
+            except Exception: pass
+            self.big_hint.configure(text="No 3D model for this scan yet — it's raw data (no fused mesh). Build it on the Projects page, or One-tap Edit on the scanner."); self._preview_idle(); return
         node=node or self._node_of(name, mesh)
         if node and node!=self._film_sel: self._film_sel=node; self._mark_scan(node)
         key="%s__%s"%(name, node) if node else name; mode=self.shade_mode
