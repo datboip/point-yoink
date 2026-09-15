@@ -1484,6 +1484,15 @@ class App(ctk.CTk):
         self.big_loader_lbl=ctk.CTkLabel(self.big_loader, text="", text_color=TX, font=ctk.CTkFont(size=12)); self.big_loader_lbl.pack(padx=22, pady=(0,16))
         self._spin_job=None; self._spin_ang=0
         self.renders_lbl=ctk.CTkLabel(bigwrap, text="", text_color=MUT, font=ctk.CTkFont(size=11), fg_color="#0a0c10", corner_radius=6)
+        # standard-view nav (Fusion-style): snap the 3D view to Home / Top / Front / Back / Left / Right,
+        # so the model is never lost off-screen; drag still gives free rotation to any angle.
+        self.view_nav=ctk.CTkFrame(bigwrap, fg_color="#0d1017", corner_radius=6, border_width=1, border_color=STROKE)
+        for lab, az, el, tip in (("⌂",-35,30,"Home view (isometric)"), ("Top",0,90,"Top-down"),
+                                 ("Front",0,0,"Front"), ("Back",180,0,"Back"), ("Left",-90,0,"Left side"), ("Right",90,0,"Right side")):
+            b=ctk.CTkButton(self.view_nav, text=lab, width=(30 if lab=="⌂" else 42), height=22, corner_radius=4,
+                            fg_color="transparent", hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11),
+                            command=lambda a=az,e=el: self._set_view(a,e))
+            b.pack(side="left", padx=1, pady=1); self._tip(b, tip)
         # nothing selected: an empty state sits over the box (inset so the rounded border stays visible); select_project hides it
         self.big_empty=self._empty_state(bigwrap, "preview"); self.big_empty.grid(row=0,column=0, sticky="nsew", padx=6, pady=6)
         self.film=ctk.CTkScrollableFrame(pv, orientation="horizontal", fg_color="transparent", height=128)
@@ -1753,6 +1762,7 @@ class App(ctk.CTk):
         try:
             self.next_strip.pack_forget(); self.projbar.grid_remove(); self.film.grid_remove(); self.proj_empty.grid()
             self._mv_key=None; self.mv.grid_remove(); self.big.grid(); self.big_empty.grid(); self.big_empty.lift()
+            self.view_nav.place_forget()
         except Exception as e: log_error("clear selection", e)
     def _bottom_refresh(self):
         if getattr(self, "pulling", False): return
@@ -2425,6 +2435,7 @@ class App(ctk.CTk):
         self._fill_header(p, name, counts)
         self.proj_empty.grid_remove(); self.projbar.grid(); self.film.grid()
         self.renders_lbl.configure(text=""); self.renders_lbl.place(relx=1.0, rely=0.0, x=-12, y=10, anchor="ne")
+        self.view_nav.place(relx=0.0, rely=0.0, x=8, y=8, anchor="nw"); self.view_nav.lift()
         if p.get("meshes") or p.get("nodes"): self.tools.grid()   # Process on PC works on unfused scans too
         else: self.tools.grid_remove()
         if getattr(self, "page", "import")=="projects": self._schedule_panel_refresh(20)
@@ -2546,6 +2557,17 @@ class App(ctk.CTk):
             else:
                 self.set_status("Reset view works once the 3D model is loaded (click a scan).")
         except Exception as e: log_error("reset-view", e)
+    def _set_view(self, azim, elev):
+        """Snap the 3D view to a standard angle (Home/Top/Front/…). If the live view isn't up yet, load
+        it and apply the angle once it's ready."""
+        try:
+            mv=getattr(self, "mv", None)
+            if mv is not None and mv.winfo_manager():
+                mv.set_view(azim, elev); return
+        except Exception as e:
+            log_error("set-view", e); return
+        self._pending_view=(azim, elev)
+        if getattr(self, "_mv_want", None): self._mv_start()   # ready() applies _pending_view
     def _schedule_shaded(self, name, node=None, delay=250):
         """Debounce expensive mesh preview work so rapid scan clicks do not start a render/load per click."""
         job=getattr(self, "_shade_job", None)
@@ -2714,6 +2736,13 @@ class App(ctk.CTk):
             self._preview_idle()
             if ok:
                 self.big.grid_remove(); self.mv.grid(); self.mv.lift()
+                for _w in (self.view_nav, self.renders_lbl, self.big_hint):   # keep overlays above the GL viewport (an X child window)
+                    try: _w.lift()
+                    except Exception: pass
+                pv=self.__dict__.pop("_pending_view", None)   # a view button was clicked while it was still loading
+                if pv:
+                    try: self.mv.set_view(*pv)
+                    except Exception: pass
                 self.big_hint.configure(text="Drag to rotate · scroll to zoom · right-drag to pan · double-click to reset")
             else:
                 # this used to reuse the exact "...is loading" text shown WHILE still loading, so a real

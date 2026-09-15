@@ -65,6 +65,10 @@ class MeshView(tk.Label):
     def reset(self, draw=True):
         self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 1.0, [0.0, 0.0]
         if draw: self.draw(hi=True)
+    def set_view(self, azim, elev, draw=True):
+        """Snap to a standard view (Top/Front/Right/…), matching GLView."""
+        self.azim = float(azim); self.elev = float(elev); self.pan = [0.0, 0.0]
+        if draw: self.draw(hi=True)
     def snapshot(self, path, size=(900, 600)):
         """Full-quality PNG of the current view (for thumbnails/sharing)."""
         if self.hi is None: return None

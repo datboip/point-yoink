@@ -293,6 +293,10 @@ class GLView(OpenGLFrame):
     def reset(self, draw=True):
         self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 1.0, [0.0, 0.0]; self.rot = self._default_rot()
         if draw: self.draw()
+    def set_view(self, azim, elev, draw=True):
+        """Snap to a standard view (Top/Front/Right/…) - azimuth about up, elevation above the floor."""
+        self.azim = float(azim); self.elev = float(elev); self.pan = [0.0, 0.0]; self.rot = self._default_rot()
+        if draw: self.draw()
     def snapshot(self, path, size=None):
         """PNG of the current view read back from the GPU."""
         try:
