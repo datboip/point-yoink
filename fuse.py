@@ -233,4 +233,11 @@ if __name__ == "__main__":
     except MemoryError:
         emit("error", msg="out of memory - try a larger --voxel or --every 2"); sys.exit(3)
     except Exception as e:
-        emit("error", msg=str(e)); sys.exit(1)
+        msg = str(e)
+        # A GPU that runs out of VRAM (big combines fuse hundreds of frames at once) shouldn't just fail:
+        # re-exec on CPU. A fresh process means no leftover CUDA context and the CPU memory cap applies
+        # cleanly; the parent keeps reading this same stdout, so the fallback is seamless (just slower).
+        if "--gpu" in sys.argv and ("out of memory" in msg.lower() or "cuda" in msg.lower()):
+            emit("warn", msg="GPU out of memory - falling back to CPU (slower)")
+            os.execv(sys.executable, [sys.executable] + [a for a in sys.argv if a != "--gpu"])
+        emit("error", msg=msg); sys.exit(1)
