@@ -1414,6 +1414,10 @@ class App(ctk.CTk):
                                              fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE,
                                              text_color=TX, font=ctk.CTkFont(size=11))
         self.shade_sw.pack(side="right"); self.shade_sw.set("Solid")
+        self.reset_view_btn=ctk.CTkButton(ctl, text="⟲ Reset view", width=96, height=30, corner_radius=8, fg_color="transparent", border_width=1,
+                                          border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=12), command=self._reset_view)
+        self._tip(self.reset_view_btn, "Reset the 3D view to its default angle and zoom (or double-click the model).")
+        self.reset_view_btn.pack(side="right", padx=(0,8))
         # preview box: the rendered PNG (or the scanner's preview) with a hint line at the bottom
         pv.grid_columnconfigure(0, weight=1); pv.grid_rowconfigure(0, weight=1, minsize=120)
         bigwrap=ctk.CTkFrame(pv, fg_color="#0a0c10", corner_radius=12, height=120, border_width=1, border_color=STROKE)
@@ -2473,6 +2477,15 @@ class App(ctk.CTk):
         self.shade_mode="wire" if v=="Wireframe" else "solid"
         if self.mv.winfo_manager(): self.mv.set_wire(self.shade_mode=="wire"); return   # live view: just redraw
         if self.selected: self._maybe_schedule_shaded(self.selected, self._film_sel, 150)
+    def _reset_view(self, _=None):
+        """Reset the live 3D view to its default angle and zoom (same as double-clicking the model)."""
+        try:
+            mv=getattr(self, "mv", None)
+            if mv is not None and mv.winfo_manager():   # only meaningful while the interactive view is showing
+                mv.reset()
+            else:
+                self.set_status("Reset view works once the 3D model is loaded (click a scan).")
+        except Exception as e: log_error("reset-view", e)
     def _schedule_shaded(self, name, node=None, delay=250):
         """Debounce expensive mesh preview work so rapid scan clicks do not start a render/load per click."""
         job=getattr(self, "_shade_job", None)
