@@ -4,7 +4,8 @@
 # variant. Used for the big preview and the list thumbnails. Renders are cached next to the
 # app's other thumbnails and only redone when the mesh file changes.
 #   python3 shade.py mesh.ply out.png [--wire] [--size 900x600]
-import os, sys, time
+import os, sys, time, hashlib, struct
+from collections import OrderedDict
 import numpy as np
 
 BG = (10, 12, 16)
@@ -14,6 +15,77 @@ WIRE = (110, 170, 255)
 WIRE_FILL = (14, 17, 24)
 MAX_FACES = 40000
 
+# ---- prepared-mesh cache ---------------------------------------------------
+# The expensive step for EVERY render (still, interactive GL/software view, strip thumbnail) is the same:
+# trimesh-parse the .ply, decimate to max_faces, orient it. That output (view-space vertices, faces,
+# transform) depends only on the source file + max_faces, so we cache it: an in-memory LRU for the running
+# app (reopening a scan is instant, no disk) backed by an on-disk .npz keyed on the source's mtime/size, so
+# a fresh launch skips the parse+simplify too. Editing the mesh (Prepare / base-cut writes a new file, new
+# mtime) misses and recomputes. This is what makes clicking Scan 1 -> Scan 2 -> Scan 1 stop re-loading.
+MESH_CACHE = os.path.expanduser("~/.cache/pointyoink/mesh")
+CACHE_STATS = {"mem": 0, "disk": 0, "compute": 0}   # the app logs deltas around a view open to PROVE reuse
+_MEM = OrderedDict(); _MEM_MAX = 6
+
+def _mesh_key(path, max_faces, tf):
+    try:
+        st = os.stat(path)
+        h = hashlib.sha1()
+        h.update(os.path.abspath(path).encode("utf-8", "replace"))
+        h.update(b"|"); h.update(("%d|%d|%d" % (int(st.st_mtime), st.st_size, int(max_faces))).encode())
+        if tf is not None:                          # a second mesh oriented to match the first: key on that transform too
+            h.update(b"|tf|"); h.update(np.asarray(tf["mean"], np.float64).tobytes())
+            h.update(np.asarray(tf["R"], np.float64).tobytes())
+            h.update(struct.pack("<dd", float(tf["scale"]), float(tf["zshift"])))
+        return h.hexdigest()
+    except Exception:
+        return None
+
+def _cache_get(key):
+    m = _MEM.get(key)
+    if m is not None:
+        _MEM.move_to_end(key); CACHE_STATS["mem"] += 1
+        vv, f, tf = m; return vv.copy(), f.copy(), dict(tf)
+    cpath = os.path.join(MESH_CACHE, key + ".npz")
+    try:
+        if os.path.exists(cpath):
+            d = np.load(cpath, allow_pickle=False)
+            vv = d["v"].astype(np.float32); f = d["f"].astype(np.int32)
+            tf = {"mean": np.asarray(d["mean"], np.float64), "scale": float(d["scale"][0]),
+                  "R": np.asarray(d["R"], np.float64), "zshift": float(d["zshift"][0])}
+            _MEM[key] = (vv.copy(), f.copy(), dict(tf)); _MEM.move_to_end(key)
+            while len(_MEM) > _MEM_MAX: _MEM.popitem(last=False)
+            CACHE_STATS["disk"] += 1; return vv, f, tf
+    except Exception:
+        pass
+    return None
+
+def _cache_put(key, vv, f, tf):
+    _MEM[key] = (vv.copy(), f.copy(), dict(tf)); _MEM.move_to_end(key)   # store copies so a caller mutating vv/f can't corrupt the cache
+    while len(_MEM) > _MEM_MAX: _MEM.popitem(last=False)
+    try:
+        os.makedirs(MESH_CACHE, exist_ok=True)
+        cpath = os.path.join(MESH_CACHE, key + ".npz")
+        tmp = cpath + ".tmp.%d" % os.getpid()
+        with open(tmp, "wb") as fh:                 # file object -> np.savez keeps the name (no .npz appended); atomic replace
+            np.savez(fh, v=vv.astype(np.float32), f=f.astype(np.int32),
+                     mean=np.asarray(tf["mean"], np.float64), scale=np.array([float(tf["scale"])], np.float64),
+                     R=np.asarray(tf["R"], np.float64), zshift=np.array([float(tf["zshift"])], np.float64))
+        os.replace(tmp, cpath)
+        if key[-2:] == "00": _cache_prune()          # ~1/256 of writes: keep the folder from growing without bound
+    except Exception:
+        pass
+
+def _cache_prune(cap=400):
+    try:
+        files = [os.path.join(MESH_CACHE, n) for n in os.listdir(MESH_CACHE) if n.endswith(".npz")]
+        if len(files) <= cap: return
+        files.sort(key=lambda p: os.path.getmtime(p))          # oldest first
+        for p in files[:len(files) - cap]:
+            try: os.remove(p)
+            except Exception: pass
+    except Exception:
+        pass
+
 def load_oriented(path, max_faces=MAX_FACES):
     """Mesh -> (vertices, faces) decimated, centred, unit-scaled, with the scan's table plane as the floor."""
     v, f, _ = load_oriented_tf(path, max_faces)
@@ -22,7 +94,14 @@ def load_oriented(path, max_faces=MAX_FACES):
 def load_oriented_tf(path, max_faces=MAX_FACES, tf=None):
     """Like load_oriented but also returns the transform, so a point picked in the view can be mapped back
     to the scan's own millimetre coordinates (view_to_world). Pass tf= to orient a second mesh exactly like
-    the first (needed to draw two scans in one view)."""
+    the first (needed to draw two scans in one view).
+    Cached: the parsed+decimated+oriented result is reused from memory or disk when the source file and
+    max_faces are unchanged, so only the FIRST open of a scan pays the trimesh parse + simplify."""
+    key = _mesh_key(path, max_faces, tf)
+    if key is not None:
+        got = _cache_get(key)
+        if got is not None: return got
+    CACHE_STATS["compute"] += 1
     import trimesh
     m = trimesh.load(path, force="mesh")
     v = np.asarray(m.vertices, dtype=np.float32); f = np.asarray(m.faces, dtype=np.int32)
@@ -62,8 +141,9 @@ def load_oriented_tf(path, max_faces=MAX_FACES, tf=None):
             pass
         zshift = float(vr[:, 2].min())
         tf = {"mean": mean.astype(np.float64), "scale": scale, "R": R, "zshift": zshift}
-    vv = world_to_view(v, tf)
-    return vv.astype(np.float32), f, tf
+    vv = world_to_view(v, tf).astype(np.float32)
+    if key is not None: _cache_put(key, vv, f, tf)
+    return vv, f, tf
 
 def world_to_view(p, tf):
     p = np.asarray(p, dtype=np.float64)

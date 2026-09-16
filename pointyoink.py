@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.83-pre"
+APP = "PointYoink"; VERSION = "0.9.84-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3001,6 +3001,8 @@ class App(ctk.CTk):
         want=self._mv_want
         if not want or self._mv_key==want[0] or not os.path.exists(want[1]): return
         key,path=want; self._mv_key=key; self.mv.wire=(self.shade_mode=="wire")
+        try: import shade; self._mv_c0=(dict(shade.CACHE_STATS), time.time())   # snapshot to log mesh-cache reuse for THIS open
+        except Exception: self._mv_c0=None
         self._preview_busy("Loading the live 3D view")   # spinner box carries the text; _preview_busy clears the bottom hint
         # The GL view only gets a context, and only uploads the mesh (which is what fires ready()),
         # once it is MAPPED (<Map> -> initgl; a hidden view must never touch GL, see glview.py). It used
@@ -3016,6 +3018,15 @@ class App(ctk.CTk):
                 except Exception: pass
                 self.mv=self._make_mv(software=True); self.mv.wire=(self.shade_mode=="wire"); self._map_mv_under_still(); self.mv.load(path, ready, max_faces=300000); return
             self._preview_idle()
+            c0=getattr(self, "_mv_c0", None)
+            if c0:
+                try:
+                    import shade; now=shade.CACHE_STATS; b,t0=c0
+                    d={s: now[s]-b.get(s,0) for s in now}
+                    log_line("mesh-cache open %s: reused mem=%d disk=%d, parsed=%d in %.2fs" %
+                             (k, d["mem"], d["disk"], d["compute"], time.time()-t0))
+                except Exception: pass
+                self._mv_c0=None
             if ok:
                 self.big.grid_remove(); self.mv.grid(); self.mv.lift()
                 for _w in (self.view_nav, self.renders_lbl, self.big_hint):   # keep overlays above the GL viewport (an X child window)
