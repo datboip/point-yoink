@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.93-pre"
+APP = "PointYoink"; VERSION = "0.9.94-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1835,6 +1835,8 @@ class App(ctk.CTk):
         if m in ("Projects","Local"): self._apply_page()
         elif m=="Process": self._proc_refresh()
         if m=="Projects" and self.tabs.get()=="Files" and not self._folder_loaded: self._folder_loaded=True; self.refresh_folder()
+        if m=="Captures" and mountpoint_seen() and not getattr(self,"_shots_loaded",False) and not getattr(self,"_shots_busy",False):
+            self.after(60, self.refresh_screenshots)   # land on Captures with the scanner mounted -> read its screenshots/recordings automatically (never sit on "No captures yet" while connected), with the banner showing "Reading screenshots…"
         self.update_summary()   # refresh the bottom bar for the tab we switched to (clears a stale "Editing <project>" on Captures/Live)
     def _page_filter(self, projs):
         if self.page=="projects": return [p for p in projs if p.get("local") or self.is_imported(p["name"])]
@@ -5613,13 +5615,14 @@ class App(ctk.CTk):
         self.hold_banner("Pulling screenshots & recordings…", AC)
         threading.Thread(target=self._pull_shots_worker, args=(list(imgs), list(recs), dest), daemon=True).start()
     def _pull_shots_worker(self, imgs, recs, dest):
-        n=0
-        for nm,path in imgs:
+        n=0; total=len(imgs)+len(recs)
+        for i,(nm,path) in enumerate(imgs):
+            if i%4==0 or i==len(imgs)-1: self.q.put(("shots_progress", i+1, total, ""))   # screenshots were copied silently; show progress so it never looks frozen
             try: shutil.copyfile(path, os.path.join(dest, nm)); n+=1
             except Exception as e: log_error("pull-shot "+nm, e)
         for j,(nm,path,sz) in enumerate(recs):
             try:
-                self.q.put(("status", "Pulling recording %d/%d (%s)…"%(j+1, len(recs), human(sz))))
+                self.q.put(("shots_progress", len(imgs)+j+1, total, " · recording "+human(sz)))
                 shutil.copyfile(path, os.path.join(dest, nm)); n+=1
             except Exception as e: log_error("pull-rec "+nm, e)
         self.q.put(("shots_pulled", (n, dest)))
@@ -5905,6 +5908,9 @@ class App(ctk.CTk):
                     i,t=rest; self.hold_banner("Reading scanner projects… %d of %d" % (i, t), AC)   # live count = obviously working, not frozen (MTP is just slow)
                 elif kind=="projects":
                     self.listing=False; self.listed=True; self.listed_src=self._listing_src; self.set_status("")   # clear "Refreshing projects…" — done, or it lingers as a fake perpetual-loading label
+                    if self.listed_src=="device":                    # flip the "reading… N of M" banner to a clear DONE state instead of sticking at "10 of 10"
+                        self._dev_hold=0.0; n=len(rest[0])
+                        self.set_banner("Connected · read %d project%s — tick scans to import" % (n, "" if n==1 else "s"), OK)
                     if not getattr(self, "_first_listed", False):
                         self._first_listed=True
                         if self.listed_src=="local" and any(p.get("local") for p in rest[0]): self._set_mode("Local")   # no scanner: start on what is on this PC
@@ -6006,14 +6012,19 @@ class App(ctk.CTk):
                     self._open3d_probe_busy=False
                     if self._status_msg=="Checking Open3D…": self.set_status("")
                 elif kind=="shots":
-                    self._shots_busy=False; self.render_shots(rest[0]); self.set_status("")
+                    self._shots_busy=False; self._shots_loaded=True; self._dev_hold=0.0   # loaded once (don't re-read the slow mount on every Captures visit); release the "Reading…" hold
+                    self.render_shots(rest[0]); self.set_status("")
+                    n=len(rest[0]); self.set_banner(("Connected · %d capture%s on the scanner" % (n, "" if n==1 else "s")) if n else "Connected · no screenshots or recordings on the scanner", OK)
                 elif kind=="shots_unmounted":
                     self._shots_busy=False; self.set_status(""); self.set_banner("Screenshots come over USB: plug in, tap File Transfer, click USB.", WARN)
                 elif kind=="shots_failed":
                     self._shots_busy=False; self.set_status(""); self.set_banner("Couldn't read screenshots - see Help > Log.", WARN)
+                elif kind=="shots_progress":
+                    i,t=rest[0],rest[1]; extra=rest[2] if len(rest)>2 else ""
+                    self.hold_banner("Pulling captures… %d of %d%s" % (i, t, extra), AC)
                 elif kind=="shots_pulled":
-                    n, d = rest[0]; self.set_status("")
-                    self.set_banner("Pulled %d screenshot%s -> %s" % (n, "" if n==1 else "s", d), OK)
+                    n, d = rest[0]; self.set_status(""); self._dev_hold=0.0
+                    self.set_banner("Pulled %d capture%s → %s" % (n, "" if n==1 else "s", d), OK)
                     if self.auto_open.get(): subprocess.Popen(["xdg-open", d])
                 elif kind=="fuse_node": self._proc_progress(rest[0], rest[1], rest[2])
                 elif kind=="splash_preload":
