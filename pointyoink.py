@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.63-pre"
+APP = "PointYoink"; VERSION = "0.9.64-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1778,6 +1778,7 @@ class App(ctk.CTk):
         if not imp:
             self._panel_refresh()
             if not self.cfg.get("seen_howto") and self.projects and os.environ.get("POINTYOINK_NO_HOWTO")!="1": self._howto_when_ready()
+        self.update_summary()   # bottom status reflects the page (Import: batch selection; Projects: what's open)
     def _clear_selection(self):
         """Nothing selected on this page: the centre goes back to its empty state."""
         self.selected=None; self._film_sel=None; self._film_cells={}
@@ -1788,6 +1789,8 @@ class App(ctk.CTk):
             self.files_box.configure(state="normal"); self.files_box.delete("1.0","end")   # don't leave the last project's file list up when nothing is picked
             self.files_box.insert("end","Pick a project to see its model files.\n"); self.files_box.configure(state="disabled")
         except Exception as e: log_error("clear selection", e)
+        try: self.update_summary()
+        except Exception: pass
     def _bottom_refresh(self):
         if getattr(self, "pulling", False): return
         if self.page=="import": self.import_btn.grid(row=0,column=3, padx=(6,20), pady=(12,4))
@@ -2240,6 +2243,14 @@ class App(ctk.CTk):
         for v in self.pull_sel.values(): v.set(False)
         self.update_summary()
     def update_summary(self):
+        if getattr(self, "page", "import")=="projects":
+            # the Projects page has no batch checkboxes: show what is OPEN, not the Import page's
+            # "No projects selected" (which read as a contradiction while a project was clearly open).
+            nm=self.disp(self.selected) if self.selected else None
+            self.sel_lbl.configure(text=("Open: %s" % nm) if nm else "Working locally")
+            try: self.summary.configure(text=("Editing %s" % nm) if nm else "Working locally · pick a project on the left")
+            except Exception: pass
+            return
         sel=[n for n,v in self.pull_sel.items() if v.get()]; n=len(sel); s="" if n==1 else "s"
         self.sel_lbl.configure(text=("%d project%s selected"%(n,s)) if n else "No projects selected")
         if not sel:
@@ -2459,6 +2470,7 @@ class App(ctk.CTk):
         self.detail.configure(text="%s\n%s\n%s · %s" % (self.disp(name), ("edited "+p["date"]) if p.get("date") else "", " · ".join(counts), where))
         self._fill_header(p, name, counts)
         self.proj_empty.grid_remove(); self.projbar.grid(); self.film.grid()
+        self.update_summary()   # bottom status shows the open project on the Projects page
         self.renders_lbl.configure(text=""); self.renders_lbl.place(relx=1.0, rely=0.0, x=-12, y=10, anchor="ne")
         self.view_nav.place(relx=0.0, rely=0.0, x=8, y=8, anchor="nw"); self.view_nav.lift()
         if p.get("meshes") or p.get("nodes"): self.tools.grid()   # Process on PC works on unfused scans too
@@ -3290,7 +3302,9 @@ class App(ctk.CTk):
     def _build_process_page(self, pr):
         pr.grid_columnconfigure(0, weight=1); pr.grid_rowconfigure(1, weight=1)
         ph=ctk.CTkFrame(pr, fg_color="transparent"); ph.grid(row=0,column=0, sticky="ew", padx=16, pady=(14,4))
-        ctk.CTkLabel(ph, text="Prepare", font=ctk.CTkFont(size=18, weight="bold"), text_color=TX).pack(side="left")
+        ctk.CTkButton(ph, text="‹  Back", width=76, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
+                      hover_color=CARD2, text_color=TX, command=lambda: self._set_mode("Local")).pack(side="left", padx=(0,12))
+        ctk.CTkLabel(ph, text="All scans", font=ctk.CTkFont(size=18, weight="bold"), text_color=TX).pack(side="left")
         self.proc_pick=ctk.CTkOptionMenu(ph, values=["No projects on this PC yet"], width=230, command=self._proc_pick, fg_color="#0d0f14", button_color=CARD2,
                                          button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=10)
         self.proc_pick.pack(side="left", padx=(16,8))
@@ -3564,7 +3578,7 @@ class App(ctk.CTk):
            ("Cut base", "✂", "Every scan carries the table under the part. Drag one line above it and apply. The cut is remembered for that scan and applied again when scans are combined, so the table never gets fused in."),
            ("Combine", "⧉", "Scanned each side separately? Pick a base scan, click three to five matching spots on it and on another scan, Line up, check the orange overlay, Keep. Repeat for each side, then Build one model from all their frames at once. Your points stay editable."),
            ("Prepare", "✦", "Remove floating pieces, smooth, fill small holes, reduce triangles. It runs on a copy and shows before and after; Keep or Discard. Once Combined exists, prepare that one."),
-           ("Export", "⬆", "Pick the version, the format (STL for slicers, OBJ, GLB, PLY) and the folder. The size and a mesh check are shown first: open edges and extra pieces mean the surface is not closed."))
+           ("Export", "⬆", "Pick the version, the format (STL for slicers, OBJ, GLB, PLY) and the folder. The size and a mesh check are shown first: open edges are gaps in the surface; separate pieces are disconnected chunks (not the same thing)."))
     def _when_ready(self, fn):
         """Run fn once the splash is gone and the main window is on screen. A dialog opened earlier is attached to the
         withdrawn main window and drags it onto the screen half-built."""
@@ -3724,10 +3738,10 @@ class App(ctk.CTk):
                 b.pack(fill="x", padx=6, pady=(6,0)); self._tip(b, tip); return b
             if node!="combined": mk("build", "⚙  Build model", bool(raw), lambda n=name,nd=node: self._proc_build(n, [nd]), "Build this scan's 3D model from its raw data, on this PC." if raw else "No raw data on this PC for this scan (share the project over WiFi as Full project).")
             if node!="combined": mk("cut", "✂  Remove base…", bool(vs), lambda nd=node: self.on_remove_base(nd), "Drag one line just above the table and apply. Saves a prepared version and remembers the cut for combining.")
-            aside="This project has a Combined model: prepare and export that one (pick the Combined tile). The cards page still allows it per scan."
-            mk("prepare", "✦  Prepare…", bool(vs) and not combined_exists, lambda n=name,nd=node: self._prepare_dialog(n, nd), aside if combined_exists else "Remove floating pieces, smooth, fill holes, reduce triangles. Before and after, then keep or discard.")
-            mk("export", "⬆  Export…", bool(vs) and not combined_exists, lambda n=name,nd=node: self._export_dialog(n, nd), aside if combined_exists else "Save as STL, OBJ, GLB or PLY with a size and mesh check.")
-            if combined_exists: ctk.CTkLabel(pp, text="Combined exists: prepare and export it instead of single scans.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=230).pack(fill="x", padx=6, pady=(4,0))
+            aside="This project has a Combined model - usually you prepare and export that (the Combined tile). This still works on just this scan."
+            mk("prepare", "✦  Prepare…", bool(vs), lambda n=name,nd=node: self._prepare_dialog(n, nd), aside if combined_exists else "Remove floating pieces, smooth, fill holes, reduce triangles. Before and after, then keep or discard.")
+            mk("export", "⬆  Export…", bool(vs), lambda n=name,nd=node: self._export_dialog(n, nd), aside if combined_exists else "Save as STL, OBJ, GLB or PLY with a size and mesh check.")
+            if combined_exists and node!="combined": ctk.CTkLabel(pp, text="Combined recommended - but you can still prepare/export this scan.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=230).pack(fill="x", padx=6, pady=(4,0))
         self._hr(pp, pady=(14,6)); self._title(pp, "Whole project", size=13)
         def act(text, cmd, tip=None, danger=False):
             b=ctk.CTkButton(pp, text=text, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=("#3a2530" if danger else CARD2), text_color=(MUT if danger else TX), anchor="w", command=cmd)
@@ -3886,8 +3900,8 @@ class App(ctk.CTk):
                 if ok: loads[i].grid_remove(); sync(views[0], views[1]) if i==1 else None
                 else: loads[i].configure(text="Could not load this model")
             views[i].load(path, cb, max_faces=600000)
-        show(0, src, "Loading…"); loads[1].configure(text="Press Run to see the result here"); loads[1].grid(); loads[1].lift()
-        status=ctk.CTkLabel(card, text="Tick what to do, then Run. Nothing is changed until you press Keep.", text_color=MUT, font=ctk.CTkFont(size=12)); status.pack(anchor="w", padx=18, pady=(6,0))
+        show(0, src, "Loading…"); loads[1].configure(text="Press Preview changes to see the result here"); loads[1].grid(); loads[1].lift()
+        status=ctk.CTkLabel(card, text="Tick what to do, then Preview changes. Nothing is saved until you press Save prepared version.", text_color=MUT, font=ctk.CTkFont(size=12)); status.pack(anchor="w", padx=18, pady=(6,0))
         btns=ctk.CTkFrame(card, fg_color="transparent"); btns.pack(fill="x", padx=12, pady=(6,12))
         def able(b, on, fill=AC):
             b.configure(state=("normal" if on else "disabled"), fg_color=(fill if on else CARD2), text_color=("#04121f" if on else DIM), text_color_disabled=DIM)
@@ -3922,14 +3936,14 @@ class App(ctk.CTk):
                         st=None
                         try: st=os.path.getsize(tmp)
                         except Exception: pass
-                        status.configure(text="Done: %s → %s. Turn the views to compare, then Keep or Discard." % (human(os.path.getsize(src)), human(st or 0)), text_color=TX)
+                        status.configure(text="Done: %s → %s. Turn the views to compare, then Save prepared version or Discard." % (human(os.path.getsize(src)), human(st or 0)), text_color=TX)
                         show(1, tmp, "Loading the result…"); keepb.pack(side="right", padx=6); discb.pack(side="right", padx=6)
                     else: status.configure(text="Could not prepare this scan (see Help > Log).", text_color=WARN); loads[1].configure(text="No result")
                 self.q.put(("call", done))
             threading.Thread(target=work, daemon=True).start()
-        runb=ctk.CTkButton(btns, text="Run", width=110, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=run); runb.pack(side="left", padx=6)
+        runb=ctk.CTkButton(btns, text="Preview changes", width=150, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=run); runb.pack(side="left", padx=6)
         ctk.CTkButton(btns, text="Close", width=90, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=close).pack(side="left", padx=6)
-        keepb=ctk.CTkButton(btns, text="Keep", width=110, height=34, corner_radius=17, fg_color=OK, hover_color="#35b57c", text_color="#04121f", command=keep)
+        keepb=ctk.CTkButton(btns, text="Save prepared version", width=190, height=34, corner_radius=17, fg_color=OK, hover_color="#35b57c", text_color="#04121f", command=keep)
         discb=ctk.CTkButton(btns, text="Discard", width=100, height=34, corner_radius=17, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=discard)
     def _link_views(self, views):
         """Dragging, zooming or panning any of these views moves all of them the same way."""
@@ -4001,7 +4015,7 @@ class App(ctk.CTk):
         base=ctk.StringVar(value="%s_%s" % (self.disp(name).replace(" ","_"), self._scan_label(name, node).replace(" ","")))
         r=line("File name"); ctk.CTkEntry(r, textvariable=base, height=28, corner_radius=6, fg_color="#0d0f14", border_color=STROKE, text_color=TX).pack(side="left", fill="x", expand=True)
         info=ctk.CTkLabel(card, text="Measuring the model…", justify="left", anchor="w", text_color=TX, font=ctk.CTkFont(size=12), wraplength=560); info.pack(fill="x", padx=18, pady=(12,2))
-        ctk.CTkLabel(card, text="Open edges and extra pieces mean the surface is not closed. Slicers usually repair small gaps; big ones need Prepare or a mesh editor. An STL file on its own is not a promise that it prints.",
+        ctk.CTkLabel(card, text="Open edges are gaps in the surface. Separate pieces are disconnected chunks (loose bits, or sides scanned apart) - not the same thing, and not always a problem. Slicers bridge small gaps; big ones need Prepare or a mesh editor. An STL is not a promise that it prints.",
                      justify="left", anchor="w", text_color=DIM, font=ctk.CTkFont(size=10), wraplength=560).pack(fill="x", padx=18)
         def path_of(): return dict((l,p) for _,l,p in vs)[vsel.get()]
         def refresh():
@@ -4098,7 +4112,7 @@ class App(ctk.CTk):
                 if hasattr(v, "clear_layers"): v.clear_layers(draw=False)
             caps[0].configure(text="Base · %s · click a recognisable spot" % lab(st["base"]))
             caps[1].configure(text="%s · then click the same spot here" % (lab(st["moving"]) if st["moving"] else "no scan"))
-            caps[2].configure(text="Merged · %s (grey) + %s (orange) as you line them up" % (lab(st["base"]), lab(st["moving"]) if st["moving"] else "…"))
+            caps[2].configure(text="Alignment · %s (grey) + %s (orange) as you line them up" % (lab(st["base"]), lab(st["moving"]) if st["moving"] else "…"))
             saved=rec.get(st["moving"]) if st["moving"] else None
             saved=saved if (isinstance(saved, dict) and saved.get("base")==st["base"]) else None
             if saved: st["pairs"]=[list(pr) for pr in saved.get("pairs", [])]
@@ -4112,7 +4126,7 @@ class App(ctk.CTk):
                     views[i].draw()
                 if i==2 and saved and hasattr(views[2], "add_layer") and st["moving"]:
                     views[2].clear_layers(draw=False); views[2].add_layer(self._proc_current(name, st["moving"])[2], saved["matrix"], colour=(1.0,0.55,0.25))
-                    caps[2].configure(text="Merged · %s (grey) with %s kept (orange)" % (lab(st["base"]), lab(st["moving"])))
+                    caps[2].configure(text="Alignment · %s (grey) with %s kept (orange)" % (lab(st["base"]), lab(st["moving"])))
             def shown(i):
                 def cb(ok):
                     if not t.winfo_exists(): return
@@ -4175,7 +4189,7 @@ class App(ctk.CTk):
                 if hasattr(v, "clear_layers"): v.clear_layers(draw=False)
                 v.draw()
             caps[0].configure(text="Base · %s · click a recognisable spot" % lab(st["base"]))
-            caps[2].configure(text="Merged · %s (grey) + %s (orange) as you line them up" % (lab(st["base"]), lab(st["moving"]) if st["moving"] else "…"))
+            caps[2].configure(text="Alignment · %s (grey) + %s (orange) as you line them up" % (lab(st["base"]), lab(st["moving"]) if st["moving"] else "…"))
             pairs_lbl.configure(text="0 pairs"); able(alignb, False); keepb.pack_forget(); status.configure(text="Cleared. Click new points, or Auto.", text_color=MUT)
         def undo():
             pend=st["pending"]
@@ -4245,7 +4259,7 @@ class App(ctk.CTk):
                     status.configure(text="%s %s" % (words, verdict), text_color=(TX if verdict.startswith("Looks") else WARN))
                     if hasattr(views[2], "add_layer"):
                         views[2].clear_layers(draw=False); views[2].add_layer(mov_p, res["matrix"], colour=(1.0,0.55,0.25))
-                        caps[2].configure(text="Merged · %s (grey) with %s lined up (orange)" % (lab(st["base"]), lab(st["moving"])))
+                        caps[2].configure(text="Alignment · %s (grey) with %s lined up (orange)" % (lab(st["base"]), lab(st["moving"])))
                     keepb.pack(side="right", padx=6)
                 self.q.put(("call", done))
             threading.Thread(target=work, daemon=True).start()
