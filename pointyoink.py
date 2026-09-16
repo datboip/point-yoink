@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.110-pre"
+APP = "PointYoink"; VERSION = "0.9.111-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1448,10 +1448,12 @@ class App(ctk.CTk):
         cv=tk.Canvas(d, width=44, height=30, bg=CARD, highlightthickness=0, bd=0); cv.grid(row=0,column=0, padx=(18,10), pady=12)
         cv.create_rectangle(3,4,41,27, outline=MUT, width=2); cv.create_rectangle(8,9,26,22, fill="#0a0c10", outline=STROKE)
         cv.create_oval(30,11,37,18, outline=MUT, width=2)
-        ctk.CTkLabel(d, text="MIRACO", font=ctk.CTkFont(size=13, weight="bold"), text_color=TX).grid(row=0,column=1, padx=(0,16))
-        self.dot=ctk.CTkLabel(d, text="●", text_color=WARN, font=ctk.CTkFont(size=14), width=16); self.dot.grid(row=0,column=2, padx=(0,6))
-        self.banner=ctk.CTkLabel(d, text="…", text_color=TX, anchor="w", justify="left", font=ctk.CTkFont(size=12))
+        mlbl=ctk.CTkLabel(d, text="MIRACO", font=ctk.CTkFont(size=13, weight="bold"), text_color=TX); mlbl.grid(row=0,column=1, padx=(0,16))
+        self.dot=ctk.CTkLabel(d, text="●", text_color=MUT, font=ctk.CTkFont(size=14), width=16); self.dot.grid(row=0,column=2, padx=(0,6))
+        self.banner=ctk.CTkLabel(d, text="Checking for the scanner…", text_color=MUT, anchor="w", justify="left", font=ctk.CTkFont(size=12))
         self.banner.grid(row=0,column=3, sticky="ew", padx=(0,12))
+        _legend="Scanner status:\n  green = connected & ready\n  blue = working (connecting / reading / importing)\n  orange = needs attention (not in File Transfer, mount failed…)\n  grey = idle / no scanner"
+        for _w in (mlbl, self.dot): self._tip(_w, _legend)   # so the dot colour isn't a mystery
         self.banner.bind("<Configure>", self._wrap_banner)
         def vsep(col): tk.Frame(d, bg=STROKE, width=1, bd=0, highlightthickness=0).grid(row=0,column=col, sticky="ns", pady=13)
         vsep(4)
