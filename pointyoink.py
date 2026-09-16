@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.71-pre"
+APP = "PointYoink"; VERSION = "0.9.72-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1157,10 +1157,19 @@ class App(ctk.CTk):
                 cv.create_image(0,0, image=self.imgs["splashbg"], anchor="nw")
             except Exception as e: log_error("splashbg", e)
             cv.create_rectangle(0,0,W,3, fill=AC, outline="")                      # accent hairline
+            lx, ly = W//2, int(H*0.30)
+            # a spinner ring around the logo: a faint full track with one bright arc that rotates.
+            # It runs on its own timer (see _splash_anim), decoupled from the setup checks, so the
+            # motion stays smooth however fast or slow the probes finish.
+            R=98
+            cv.create_oval(lx-R, ly-R, lx+R, ly+R, outline="#1b2230", width=3)
+            self._sp_ring=cv.create_arc(lx-R, ly-R, lx+R, ly+R, start=90, extent=95,
+                                        style="arc", outline=AC, width=3)
+            self._sp_ring_a=90.0
             if os.path.exists(ICON):
                 try:
-                    self.imgs["splash"]=ImageTk.PhotoImage(Image.open(ICON).convert("RGBA").resize((158,158), Image.LANCZOS))
-                    cv.create_image(W//2, int(H*0.30), image=self.imgs["splash"], anchor="center")
+                    self.imgs["splash"]=ImageTk.PhotoImage(Image.open(ICON).convert("RGBA").resize((150,150), Image.LANCZOS))
+                    cv.create_image(lx, ly, image=self.imgs["splash"], anchor="center")
                 except Exception as e: log_error("splash-logo", e)
             cv.create_text(W//2, int(H*0.555), text=APP, fill=TX, font=(WORDMARK, 30, "bold"))
             cv.create_text(W//2, int(H*0.635), text="Y O I N K   Y O U R   S C A N S   O F F ,   O N   L I N U X",
@@ -1169,7 +1178,7 @@ class App(ctk.CTk):
             cv.create_rectangle(px0, py, px0+pw, py+ph, fill="#0c0f15", outline="")
             self._sp_fill=cv.create_rectangle(px0, py, px0+1, py+ph, fill=AC, outline="")
             self._sp_px0, self._sp_pw, self._sp_py, self._sp_ph = px0, pw, py, ph
-            self._sp_status=cv.create_text(W//2, int(H*0.865), text="checking your setup…", fill=MUT, font=(WORDMARK, 10))
+            self._sp_status=cv.create_text(W//2, int(H*0.865), text="Getting things ready…", fill=MUT, font=(WORDMARK, 10))
             cv.create_text(W-22, H-20, text="v"+VERSION, fill=STROKE, font=(WORDMARK, 9), anchor="e")
             self._checklist=[
                 {"pkg":"jmtpfs","fn":lambda:bool(shutil.which("jmtpfs")),"req":True,"ok":None},
@@ -1189,8 +1198,17 @@ class App(ctk.CTk):
             # holding the module's import lock, the other blocked forever waiting for that same lock.
             _preload()
             self.after(60, lambda: self._run_checks(0))
+            self._splash_anim()
         except Exception as e:
             log_error("splash", e); self.deiconify()
+    def _splash_anim(self):
+        """Spin the bright arc of the loader ring. Self-reschedules until the splash is gone."""
+        if not self._splash: return
+        try:
+            self._sp_ring_a=(self._sp_ring_a-9)%360
+            self._sp_cv.itemconfigure(self._sp_ring, start=self._sp_ring_a)
+        except Exception: return
+        self.after(16, self._splash_anim)
     def _splash_fade(self, d):
         sp=self._splash
         if not sp: return
@@ -1224,7 +1242,7 @@ class App(ctk.CTk):
                 self.after(250, self._close_splash)
             return
         c=self._checklist[i]
-        setstatus("checking "+c["pkg"]+" …", MUT)
+        # one steady line instead of flickering through every package name; the bar carries the progress
         def work():                                 # off the UI thread: a slow probe (a subprocess import under load) must not freeze the window
             try: ok=bool(c["fn"]())
             except Exception: ok=False
@@ -2615,6 +2633,11 @@ class App(ctk.CTk):
 
     def _set_big_image(self, path):
         """Show a preview that scales to fill the box and re-fits on window resize."""
+        if not path or not os.path.exists(path):      # a scan node with no preview render is normal, not an error to log
+            self._big_src=None
+            try: self.big._label.configure(image=""); self.big.configure(image=None, text="(preview unavailable)")
+            except Exception: pass
+            return
         try:
             self._big_src=Image.open(path).convert("RGBA")
             new=ctk.CTkImage(light_image=self._big_src, dark_image=self._big_src, size=(320,240))
