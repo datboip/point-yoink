@@ -36,8 +36,11 @@ Everything since 0.7.0 is local. 1.0.0 is a decision, not a version count. Do th
       preview tabs, right-panel actions and footer all fit, no overlap). (2026-09-15)
 
 ## Package
-- [ ] Rename the GitHub repo to `point-yoink` (GitHub redirects the old name); update the remote,
-      README links/badges and the install snippet's download URL.
+- [ ] Rename the GitHub repo to `point-yoink` (GitHub redirects the old name). Repo SLUG only -
+      the package/app name stays `pointyoink` (usr/lib/pointyoink, ~/.config/pointyoink, the module).
+      Exactly 6 spots to swap datboip/pointyoink -> datboip/point-yoink (inventoried 2026-09-15):
+      `git remote set-url origin`; pointyoink.py GITHUB const; packaging/build-deb.sh Homepage;
+      README.md 3 badge URLs + the Releases link + the git clone URL.
 - [ ] `packaging/build-deb.sh`, install from the LOCAL .deb (never `gh release download`, it
       inflates the counter), launch from the desktop entry, WiFi and USB both work from the install.
       (verified 2026-09-15: every file the script copies exists, and every local module the app
