@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.106-pre"
+APP = "PointYoink"; VERSION = "0.9.107-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -388,42 +388,45 @@ def quick_mounted(probe=False, timeout=2):
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout).returncode == 0
     except Exception: return False
 
-def do_mount():
-    if NO_DEVICE: return (False, "device access is off in this instance")
-    if quick_mounted(probe=True, timeout=2): return True, "already mounted"
-    # Clear our OWN mountpoint gracefully first (don't blanket-kill MTP for other
-    # devices the user may have connected). Release any gvfs claim on the device,
-    # lazily unmount our path, and only then kill a jmtpfs still holding OUR mount.
-    # GNOME auto-mounts the scanner through gvfs the moment it enters File Transfer mode, which
-    # makes it "busy" for jmtpfs. Unmount only OUR device's gvfs MTP claim - matched by bus/dev
-    # number - never someone else's phone or camera also plugged in right now.
+def _release_gvfs_claim():
+    """Release GNOME's gvfs MTP claim on OUR scanner only (matched by bus/dev or the Revopoint/Chishine
+    name) - never someone else's phone or camera also plugged in right now."""
     try:
         bd=_revo_busdev()
         tag=("[usb:%s,%s]" % bd) if bd else None
         lst=subprocess.run(["gio","mount","-l"], capture_output=True, text=True, timeout=10).stdout
         for m in re.findall(r"(mtp://[^\s/]+/)", lst):
-            # gvfs names the mount either mtp://[usb:BUS,DEV]/ (older) or mtp://<Maker_Model_Serial>/
-            # (newer GNOME, e.g. Chishine3d_REVO_PRODUCT_… — Chishine3d is Revopoint's OEM). Match
-            # either form so we always release OUR scanner's gvfs claim before jmtpfs, never a phone.
             ml=m.lower()
             if (tag and tag in m) or "revo" in ml or "chishine" in ml:
                 subprocess.run(["gio","mount","-u",m], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
     except Exception: pass
-    subprocess.run(["fusermount","-uz",MOUNT], stderr=subprocess.DEVNULL)
-    subprocess.run(["pkill","-9","-f","jmtpfs .*%s" % os.path.basename(MOUNT)], stderr=subprocess.DEVNULL)
-    if not os.path.isdir(MOUNT):
-        try: os.makedirs(MOUNT, exist_ok=True)
-        except FileExistsError: pass
-    time.sleep(1.5)
-    try: r = subprocess.run(["jmtpfs",MOUNT], capture_output=True, text=True, timeout=30)
-    except subprocess.TimeoutExpired: return False, "jmtpfs timed out -- unplug/replug & re-tap File Transfer"
-    time.sleep(2)
-    if quick_mounted(probe=True, timeout=2): return True, "mounted"
-    err=(r.stderr or r.stdout or "").strip()
+
+def do_mount():
+    if NO_DEVICE: return (False, "device access is off in this instance")
+    if quick_mounted(probe=True, timeout=2): return True, "already mounted"
+    # GNOME auto-mounts the scanner through gvfs the moment it enters File Transfer mode, which makes it
+    # "busy" for jmtpfs - and it re-grabs in the gap after we release it. So retry the whole release+mount
+    # a few times instead of failing on the first collision.
+    err=""
+    for attempt in range(3):
+        _release_gvfs_claim()
+        subprocess.run(["fusermount","-uz",MOUNT], stderr=subprocess.DEVNULL)
+        subprocess.run(["pkill","-9","-f","jmtpfs .*%s" % os.path.basename(MOUNT)], stderr=subprocess.DEVNULL)
+        if not os.path.isdir(MOUNT):
+            try: os.makedirs(MOUNT, exist_ok=True)
+            except FileExistsError: pass
+        time.sleep(1.2 + 0.6*attempt)          # let GNOME actually let go before we grab
+        try: r = subprocess.run(["jmtpfs",MOUNT], capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            err="jmtpfs timed out"; continue
+        time.sleep(1.5)
+        if quick_mounted(probe=True, timeout=3): return True, "mounted"
+        err=(r.stderr or r.stdout or "").strip() or "device busy"
+        # a "busy" failure is almost always GNOME re-grabbing - loop and release it again
     # libmtp's raw panics are noise to a user; say what it actually means
-    if any(k in err for k in ("device is busy", "Can't open device", "MtpErrorCantOpenDevice", "Unable to open")):
-        return False, ("The scanner isn't available over USB right now. If it's in PC mode or on a Model "
-                       "screen, tap File Transfer on the scanner, then click USB.")
+    if any(k in err for k in ("device is busy", "busy", "Can't open device", "MtpErrorCantOpenDevice", "Unable to open", "timed out")):
+        return False, ("The scanner isn't available over USB. Make sure it's on File Transfer (not PC mode "
+                       "or a Model screen); if it keeps failing, unplug/replug and tap File Transfer, then click USB.")
     return False, (err or "mount failed - replug USB & re-tap File Transfer")
 
 def list_projects(progress=None):
@@ -3228,27 +3231,37 @@ class App(ctk.CTk):
         nodes=sorted(glob.glob(os.path.join(src, "data", "*")))
         if nodes is not None and keep is not None: nodes=[nd for nd in nodes if os.path.basename(nd) in keep]
         n=max(1,len(nodes))
-        meshes=[]; _t0=time.time(); _bytes=0
-        for j,nd in enumerate(nodes):
-            if self.cancel: return
+        # plan the files first so we know the total byte count -> a smooth speed graph (byte-based, not per-scan)
+        plan=[]; total_bytes=0
+        for nd in nodes:
             if not os.path.isdir(nd): continue
             node=os.path.basename(nd)
-            self.q.put(("prog", (i*100 + j*90//n)/(total*100), "Importing %s - scan %d/%d"%(name, j+1, n)))
-            m=os.path.join(nd,"fuse_mesh.ply"); c=os.path.join(nd,"fuse.ply"); pv=os.path.join(nd,"preview.png")
-            if os.path.exists(m):
-                d=os.path.join(out, "%s_%s.ply"%(name,node)); shutil.copyfile(m, d); meshes.append(d)
-                try: _bytes+=os.path.getsize(d)
-                except Exception: pass
-            if os.path.exists(c):
-                cc=os.path.join(out, "%s_%s_cloud.ply"%(name,node)); shutil.copyfile(c, cc)
-                try: _bytes+=os.path.getsize(cc)
-                except Exception: pass
-            if os.path.exists(pv):
-                try: shutil.copyfile(pv, os.path.join(out, "%s_%s.png"%(name,node)))
-                except Exception: pass
-            rate=_bytes/max(0.2, time.time()-_t0)   # MTP read is the bottleneck; this is the real transfer speed
-            self.q.put(("prog", (i*100 + (j+1)*90//n)/(total*100),
-                        "Project %d of %d · %s · scan %d/%d · %s · %s/s" % (i+1,total,name,j+1,n,human(_bytes),human(rate)), rate))
+            for fn,outn,kind in (("fuse_mesh.ply","%s_%s.ply"%(name,node),"mesh"),
+                                 ("fuse.ply","%s_%s_cloud.ply"%(name,node),"cloud"),
+                                 ("preview.png","%s_%s.png"%(name,node),"prev")):
+                sp=os.path.join(nd,fn)
+                if os.path.exists(sp):
+                    try: total_bytes+=os.path.getsize(sp)
+                    except Exception: pass
+                    plan.append((sp, os.path.join(out,outn), kind, node))
+        total_bytes=max(1,total_bytes)
+        meshes=[]; _t0=time.time(); done=[0]; _last=[0.0]; nscan=[0]; last_node=[None]
+        def rep(force=False):
+            now=time.time()
+            if not force and now-_last[0]<0.2: return
+            _last[0]=now; rate=done[0]/max(0.2, now-_t0)
+            self.q.put(("prog", (i*100 + 90*done[0]//total_bytes)/(total*100),
+                        "Project %d of %d · %s · scan %d/%d · %s / %s · %s/s"
+                        % (i+1,total,name,min(n,nscan[0]),n,human(done[0]),human(total_bytes),human(rate)), rate))
+        def on_bytes(b): done[0]+=b; rep()
+        for sp,dp,kind,node in plan:
+            if self.cancel: return
+            if node!=last_node[0]: nscan[0]+=1; last_node[0]=node
+            try:
+                self._copy_chunked(sp, dp, on_bytes)     # chunked -> reports bytes/sec continuously (shutil.copyfile is one opaque blocking call)
+                if kind=="mesh": meshes.append(dp)
+            except Exception as e: log_error("copy "+kind, e)
+        rep(force=True)
         if (fmts or cleanup) and not self.cancel:
             self._process_meshes(meshes, name, fmts, cleanup, i, total, clean_opts=clean_opts)
         return len(meshes)
@@ -3330,6 +3343,15 @@ class App(ctk.CTk):
                 if not self._convert_subprocess(src, src[:-4]+"."+ext):
                     self._export_fails.append(os.path.basename(src)[:-4]+"."+ext)
 
+    def _copy_chunked(self, src, dst, on_bytes, chunk=1<<20):
+        """Copy a file in 1 MB chunks, calling on_bytes(n) after each - lets the import report bytes/sec
+        continuously so the speed graph is a real curve, not one flat block per file."""
+        with open(src, "rb") as fi, open(dst, "wb") as fo:
+            while True:
+                if self.cancel: break
+                buf=fi.read(chunk)
+                if not buf: break
+                fo.write(buf); on_bytes(len(buf))
     def _import_full(self, name, dest, i, total):
         """Full project including raw frames - kept in the device's nested layout (needed to re-process)."""
         src=os.path.join(PROJECTS,name)+"/"; dst=os.path.join(dest,name)+"/"; os.makedirs(dst, exist_ok=True)
