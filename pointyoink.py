@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.75-pre"
+APP = "PointYoink"; VERSION = "0.9.76-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -399,11 +399,15 @@ def do_mount():
     # number - never someone else's phone or camera also plugged in right now.
     try:
         bd=_revo_busdev()
-        if bd:
-            tag="[usb:%s,%s]" % bd
-            lst=subprocess.run(["gio","mount","-l"], capture_output=True, text=True, timeout=10).stdout
-            for m in re.findall(r"(mtp://[^\s/]+/)", lst):
-                if tag in m: subprocess.run(["gio","mount","-u",m], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        tag=("[usb:%s,%s]" % bd) if bd else None
+        lst=subprocess.run(["gio","mount","-l"], capture_output=True, text=True, timeout=10).stdout
+        for m in re.findall(r"(mtp://[^\s/]+/)", lst):
+            # gvfs names the mount either mtp://[usb:BUS,DEV]/ (older) or mtp://<Maker_Model_Serial>/
+            # (newer GNOME, e.g. Chishine3d_REVO_PRODUCT_… — Chishine3d is Revopoint's OEM). Match
+            # either form so we always release OUR scanner's gvfs claim before jmtpfs, never a phone.
+            ml=m.lower()
+            if (tag and tag in m) or "revo" in ml or "chishine" in ml:
+                subprocess.run(["gio","mount","-u",m], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
     except Exception: pass
     subprocess.run(["fusermount","-uz",MOUNT], stderr=subprocess.DEVNULL)
     subprocess.run(["pkill","-9","-f","jmtpfs .*%s" % os.path.basename(MOUNT)], stderr=subprocess.DEVNULL)
@@ -589,7 +593,7 @@ def cimg(path, w):
     im=Image.open(path); r=w/im.width; return ctk.CTkImage(light_image=im, dark_image=im, size=(w, int(im.height*r)))
 
 # ---- side-panel "inspector" building blocks ----
-DIM="#5a6474"; DIM2="#414b5a"; CHIP="#232a36"; CHIP_TX="#c8d0db"
+DIM="#828d9c"; DIM2="#5a6474"; CHIP="#232a36"; CHIP_TX="#c8d0db"   # DIM lifted for readability (was #5a6474, too low-contrast on the dark cards)
 def hairline(master, padx=16):
     """1px separator between inspector rows (instead of bordered buttons)."""
     tk.Frame(master, bg=STROKE, height=1, bd=0, highlightthickness=0).pack(fill="x", padx=padx)   # a 1px CTkFrame draws nothing
@@ -3730,13 +3734,13 @@ class App(ctk.CTk):
     def _next_refresh_body(self, ns, name, nodes, local):
         if self.page!="projects" or not name: ns.pack_forget(); return
         title, detail, btxt, cmd, step, alt = self._proc_next(name, nodes, local)
-        ns.pack(fill="x", pady=(2,6)); ns.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(ns, text="N E X T", text_color=MUT, font=ctk.CTkFont(size=9, weight="bold")).grid(row=0,column=0, padx=(14,10), pady=(12,0), sticky="w")   # a quiet section label, not a button
+        ns.pack(fill="x", pady=(2,4)); ns.grid_columnconfigure(1, weight=1)   # compact: give the 3D preview more room
+        ctk.CTkLabel(ns, text="N E X T", text_color=MUT, font=ctk.CTkFont(size=9, weight="bold")).grid(row=0,column=0, padx=(14,10), pady=(9,0), sticky="w")   # a quiet section label, not a button
         hb=ctk.CTkButton(ns, text="How this works  (?)", width=152, height=24, corner_radius=12, fg_color="transparent", border_width=1, border_color=STROKE, hover_color="#15304d", text_color=AC, font=ctk.CTkFont(size=11), command=self._howto_dialog)
-        hb.grid(row=2,column=0, padx=(12,26), pady=(0,10), sticky="w")   # right pad separates it from the step trail
-        tl=ctk.CTkLabel(ns, text=title, text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w", justify="left"); tl.grid(row=0,column=1, sticky="w", pady=(10,0))
+        hb.grid(row=2,column=0, padx=(12,26), pady=(0,8), sticky="w")   # right pad separates it from the step trail
+        tl=ctk.CTkLabel(ns, text=title, text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w", justify="left"); tl.grid(row=0,column=1, sticky="w", pady=(8,0))
         self._tip(tl, detail)   # the per-step "why" on hover — no inline expand that jumps the layout; the full guide is the How this works button
-        trail=ctk.CTkFrame(ns, fg_color="transparent"); trail.grid(row=2,column=1, sticky="w", pady=(0,10))
+        trail=ctk.CTkFrame(ns, fg_color="transparent"); trail.grid(row=2,column=1, sticky="w", pady=(0,8))
         nb=[None]
         def relayout(e):
             """Wide: the button sits on the right, text wraps before it. Narrow: the button drops under the text."""
@@ -3755,7 +3759,7 @@ class App(ctk.CTk):
             if i<len(self.STEPS)-1: ctk.CTkLabel(trail, text="  →  ", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left")
         if btxt:
             bwrap=ctk.CTkFrame(ns, fg_color="transparent")
-            ctk.CTkButton(bwrap, text=btxt, width=220, height=40, corner_radius=20, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).pack()
+            ctk.CTkButton(bwrap, text=btxt, width=210, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).pack()
             if alt:   # a secondary "No base — skip" / suggestion opt-out sits under the main action
                 ctk.CTkButton(bwrap, text=alt[0], width=220, height=26, corner_radius=13, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=alt[1]).pack(pady=(6,0))
             nb[0]=bwrap; nb[0].grid(row=0,column=2, rowspan=3, padx=16, pady=10, sticky="e")
