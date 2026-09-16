@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.69-pre"
+APP = "PointYoink"; VERSION = "0.9.70-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1433,7 +1433,7 @@ class App(ctk.CTk):
                         fg_color="#0d0f14", border_color=STROKE, text_color=TX, placeholder_text_color=MUT, font=ctk.CTkFont(size=12))
         se.grid(row=1,column=0, sticky="ew", padx=18, pady=(0,6))
         se.bind("<KeyRelease>", lambda e: self.search.set(se.get()))
-        self.llist=ctk.CTkScrollableFrame(left, fg_color="transparent"); self.llist.grid(row=2,column=0, sticky="nsew", padx=(8,2), pady=0)
+        self.llist=ctk.CTkScrollableFrame(left, fg_color="transparent"); self.llist.grid(row=2,column=0, sticky="nsew", padx=(8,2), pady=0); self._autohide(self.llist)
         self.llist.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.llist, "vertical"), add="+")
         self.llist.grid_columnconfigure(0, weight=1)
         self.list_empty=None   # the "No projects yet" panel, created by render_list; kept as tall as the list's visible area
@@ -1512,7 +1512,7 @@ class App(ctk.CTk):
             b.pack(side="left", padx=1, pady=1); self._tip(b, tip)
         # nothing selected: an empty state sits over the box (inset so the rounded border stays visible); select_project hides it
         self.big_empty=self._empty_state(bigwrap, "preview"); self.big_empty.grid(row=0,column=0, sticky="nsew", padx=6, pady=6)
-        self.film=ctk.CTkScrollableFrame(pv, orientation="horizontal", fg_color="transparent", height=128)
+        self.film=ctk.CTkScrollableFrame(pv, orientation="horizontal", fg_color="transparent", height=128); self._autohide(self.film, "horizontal")
         self.film.grid(row=1,column=0, sticky="ew"); self.film.grid_remove()
         self.film.bind("<Configure>", lambda e: self.after(80, self._film_fit))
         # Files tab: the project's model files (what an import copies) above the save folder on this PC
@@ -1526,9 +1526,9 @@ class App(ctk.CTk):
         tk.Frame(pm, bg=STROKE, width=1, bd=0, highlightthickness=0).grid(row=0,column=3, sticky="ns")
         self.side=ctk.CTkFrame(pm, fg_color="transparent", width=278); self.side.grid(row=0,column=4, sticky="nsew")
         self.side.grid_propagate(False); self.side.grid_columnconfigure(0, weight=1); self.side.grid_rowconfigure(0, weight=1)
-        self.opts=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.opts.grid(row=0,column=0, sticky="nsew", padx=(6,0))
+        self.opts=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.opts.grid(row=0,column=0, sticky="nsew", padx=(6,0)); self._autohide(self.opts)
         self.opts.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.opts, "vertical"), add="+")
-        self.projpanel=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.projpanel.grid(row=0,column=0, sticky="nsew", padx=(6,0)); self.projpanel.grid_remove()
+        self.projpanel=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.projpanel.grid(row=0,column=0, sticky="nsew", padx=(6,0)); self.projpanel.grid_remove(); self._autohide(self.projpanel)
         self.projpanel.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.projpanel, "vertical"), add="+")
         self.rail_btns={}; self.rail_bars={}
 
@@ -1545,7 +1545,7 @@ class App(ctk.CTk):
                       hover_color=CARD2, text_color=TX, command=self.pull_screenshots).pack(side="right", padx=4)
         ctk.CTkButton(sctop, text="↻ Refresh", width=96, height=30, corner_radius=8, fg_color=CARD2,
                       hover_color=STROKE, text_color=TX, command=self.refresh_screenshots).pack(side="right", padx=4)
-        self.shots=ctk.CTkScrollableFrame(sc, fg_color="#0a0c10", corner_radius=10)
+        self.shots=ctk.CTkScrollableFrame(sc, fg_color="#0a0c10", corner_radius=10); self._autohide(self.shots)
         self.shots.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.shots, "vertical"), add="+")
         self.shots.grid(row=1,column=0, sticky="nsew", padx=10, pady=(0,10))
         for c in range(4): self.shots.grid_columnconfigure(c, weight=1)
@@ -2583,6 +2583,22 @@ class App(ctk.CTk):
             if need: sb.grid()
             else: sb.grid_remove()
         except Exception: pass
+    def _autohide(self, frame, orient="vertical"):
+        """Reliable scrollbar auto-hide: drive visibility from the canvas's own scroll state. The canvas
+        calls this on every view/scrollregion change with (first,last) fractions; if the whole content is
+        visible (0..1) the bar is removed, otherwise shown - regardless of CTk re-gridding it on resize."""
+        try:
+            canvas=frame._parent_canvas; sb=frame._scrollbar
+            def on_set(first, last):
+                try: sb.set(first, last)
+                except Exception: pass
+                try:
+                    if float(first)<=0.0001 and float(last)>=0.9999: sb.grid_remove()
+                    else: sb.grid()
+                except Exception: pass
+            canvas.configure(**{("yscrollcommand" if orient=="vertical" else "xscrollcommand"): on_set})
+            canvas.after(0, lambda: canvas.event_generate("<Configure>"))   # kick one recompute so it hides straight away
+        except Exception: pass
     def _fit_scrollbar_later(self, frame, orient="vertical", ms=80):
         try: self.after(ms, lambda: self._fit_scrollbar(frame, orient))
         except Exception: pass
@@ -3338,7 +3354,7 @@ class App(ctk.CTk):
         self.proc_detail.pack(side="left", padx=10); self.proc_detail.set(lab)
         ctk.CTkLabel(dr, text="Normal matches the scanner. Finer takes longer and needs more graphics memory (about 2 GB per scan at Normal).",
                      text_color=DIM, font=ctk.CTkFont(size=10)).pack(side="left")
-        self.proc_cards=ctk.CTkScrollableFrame(pr, fg_color="transparent"); self.proc_cards.grid(row=1,column=0, sticky="nsew", padx=10)
+        self.proc_cards=ctk.CTkScrollableFrame(pr, fg_color="transparent"); self.proc_cards.grid(row=1,column=0, sticky="nsew", padx=10); self._autohide(self.proc_cards)
         self.proc_cards.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.proc_cards, "vertical"), add="+")
         self.proc_cards.grid_columnconfigure(0, weight=1)
         self.tools=ctk.CTkFrame(pr, fg_color="transparent", height=1); self.tools.grid(row=4,column=0); self.tools.grid_remove()   # kept for older call sites
