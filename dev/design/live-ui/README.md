@@ -1,7 +1,11 @@
-# Live UI screenshots (0.9.62-pre, build 6de4d7c, 2026-09-15)
+# Live UI screenshots
 
-Real captures of the running app on the marker test project, for review of the
-actual interface (not mockups). Rendered headless at 1200x1000.
+Real captures of the running app, for review of the actual interface (not
+mockups). Rendered headless at 1200x1000 via `dev/render.py`.
+
+- 01_projects_next / 02_import / 03_files_tab: refreshed at 0.9.111-pre (2026-09-16).
+- 04_help..08_export (dialogs): still from 0.9.62-pre - render.py can't open the
+  modal dialogs, so these need a live capture to refresh.
 
 - 01_projects_next.png — Projects page: list, NEXT bar, 3D preview, scan strip, right-panel actions.
 - 02_import.png — Import page (no scanner attached).
