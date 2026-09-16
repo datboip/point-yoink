@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.89-pre"
+APP = "PointYoink"; VERSION = "0.9.90-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2711,8 +2711,12 @@ class App(ctk.CTk):
                 except Exception: pass
                 self._shade_job=None
             self._request_shaded(name, node)     # fresh cache: shows grey now, no render, no blue
+        elif self._auto_mesh_preview() and self._mesh_for_node(name, node):
+            # not cached yet but the scan HAS a mesh: go straight to the "Drawing the 3D model" spinner and
+            # swap grey in when ready — never flash the blue point cloud first (that reads as "loaded twice").
+            self._request_shaded(name, node)
         else:
-            self._set_big_image(path); self._maybe_schedule_shaded(name, node, 350)
+            self._set_big_image(path); self._maybe_schedule_shaded(name, node, 350)   # raw scan / previews off: the scanner's own preview is the right fallback
         if self.page=="projects": self._schedule_panel_refresh()
     def _mark_scan(self, node):
         for nd,cell in self._film_cells.items():
