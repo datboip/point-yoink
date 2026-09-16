@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.94-pre"
+APP = "PointYoink"; VERSION = "0.9.95-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -5578,19 +5578,29 @@ class App(ctk.CTk):
         if not images and not recs:
             ctk.CTkLabel(self.shots, text="Nothing found on the device.\n(Take a screenshot or recording on the scanner, then Refresh.)",
                          text_color=MUT, justify="left").grid(row=0,column=0, padx=20, pady=20, sticky="w"); return
-        idx=0; labels={}
-        for nm,path in images:
-            r,c=divmod(idx, 4); idx+=1
-            cell=ctk.CTkFrame(self.shots, fg_color=CARD2, corner_radius=10); cell.grid(row=r,column=c, padx=6, pady=6, sticky="nsew")
-            lbl=ctk.CTkLabel(cell, text="loading…", text_color=DIM, width=150, height=110); lbl.pack(padx=6, pady=(6,2))
-            lbl.bind("<Button-1>", lambda e,p=path: self._enlarge(p)); labels[path]=lbl
-            ctk.CTkLabel(cell, text=nm[:20], text_color=MUT, font=ctk.CTkFont(size=9)).pack(pady=(0,6))
-        for nm,path,sz in recs:
-            r,c=divmod(idx, 4); idx+=1
-            cell=ctk.CTkFrame(self.shots, fg_color=CARD2, corner_radius=10); cell.grid(row=r,column=c, padx=6, pady=6, sticky="nsew")
-            ctk.CTkLabel(cell, text="▶", text_color=AC, font=ctk.CTkFont(size=40)).pack(padx=6, pady=(14,2))
-            ctk.CTkLabel(cell, text=nm[:20], text_color=MUT, font=ctk.CTkFont(size=9)).pack()
-            ctk.CTkLabel(cell, text=human(sz), text_color="#5a6474", font=ctk.CTkFont(size=9)).pack(pady=(0,8))
+        labels={}; base=0
+        def section(title, n, top):   # a labelled divider so images and videos read as two distinct groups
+            ctk.CTkLabel(self.shots, text="%s  ·  %d" % (title, n), text_color=TX, font=ctk.CTkFont(size=12, weight="bold"),
+                         anchor="w").grid(row=base, column=0, columnspan=4, padx=10, pady=(top,4), sticky="w")
+        def ceil4(n): return -(-n//4)
+        if images:
+            section("SCREENSHOTS", len(images), 6); base+=1
+            for idx,(nm,path) in enumerate(images):
+                r,c=divmod(idx,4)
+                cell=ctk.CTkFrame(self.shots, fg_color=CARD2, corner_radius=10); cell.grid(row=base+r,column=c, padx=6, pady=6, sticky="nsew")
+                lbl=ctk.CTkLabel(cell, text="loading…", text_color=DIM, width=150, height=110); lbl.pack(padx=6, pady=(6,2))
+                lbl.bind("<Button-1>", lambda e,p=path: self._enlarge(p)); labels[path]=lbl
+                ctk.CTkLabel(cell, text=nm[:20], text_color=MUT, font=ctk.CTkFont(size=9)).pack(pady=(0,6))
+            base+=ceil4(len(images))
+        if recs:
+            section("RECORDINGS", len(recs), 14 if images else 6); base+=1
+            for idx,(nm,path,sz) in enumerate(recs):
+                r,c=divmod(idx,4)
+                cell=ctk.CTkFrame(self.shots, fg_color=CARD2, corner_radius=10); cell.grid(row=base+r,column=c, padx=6, pady=6, sticky="nsew")
+                ctk.CTkLabel(cell, text="🎞", text_color=AC, font=ctk.CTkFont(size=38)).pack(padx=6, pady=(16,2))
+                ctk.CTkLabel(cell, text=nm[:20], text_color=TX, font=ctk.CTkFont(size=9)).pack()
+                ctk.CTkLabel(cell, text="video · "+human(sz), text_color=MUT, font=ctk.CTkFont(size=9)).pack(pady=(0,10))
+            base+=ceil4(len(recs))
         def work():
             for nm,path in images:
                 if gen!=self._shots_gen: return                # a newer refresh replaced this one: stop early
