@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.100-pre"
+APP = "PointYoink"; VERSION = "0.9.101-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -6197,13 +6197,11 @@ class App(ctk.CTk):
                     self._open3d_probe_busy=False
                     if self._status_msg=="Checking Open3D…": self.set_status("")
                 elif kind=="shots":
-                    self._shots_busy=False; self._shots_loaded=True; self._dev_hold=0.0   # loaded once (don't re-read the slow mount on every Captures visit); release the "Reading…" hold
-                    self.render_shots(rest[0]); self.set_status("")
-                    n=len(rest[0]); self.set_banner(("Connected · %d capture%s on the scanner" % (n, "" if n==1 else "s")) if n else "Connected · no screenshots or recordings on the scanner", OK)
+                    self._shots_busy=False; self._shots_loaded=True; self._dev_hold=0.0   # loaded once; release the "Reading…" hold and let the probe own the device banner
+                    self.render_shots(rest[0]); self.set_status("")   # the capture count lives in the panel header, NOT the device banner (or it leaks onto Import/Projects)
                 elif kind=="shots_offline":
                     self._shots_busy=False; self._shots_loaded=True; self._dev_hold=0.0
-                    data=rest[0]; self.render_shots(data); self.set_status("")
-                    n=len(data[0]); self.set_banner("Showing %d saved capture%s · scanner not connected" % (n, "" if n==1 else "s"), MUT)
+                    self.render_shots(rest[0]); self.set_status("")
                 elif kind=="shots_unmounted":
                     self._shots_busy=False; self.set_status(""); self._dev_hold=0.0
                     self.set_banner("No saved captures yet · connect the scanner over USB (tap File Transfer).", WARN)
