@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.72-pre"
+APP = "PointYoink"; VERSION = "0.9.73-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3604,23 +3604,44 @@ class App(ctk.CTk):
             return ("Build the 3D model%s" % ("" if len(unbuilt)==1 else "s"),
                     "%d scan%s %s raw data only. Easiest is One-tap Edit on the scanner, then share the project again. Or build here now (seconds on a graphics card) and prepare it yourself." % (len(unbuilt), "" if len(unbuilt)==1 else "s", "has" if len(unbuilt)==1 else "have"),
                     "⚙  Build %d model%s here" % (len(unbuilt), "" if len(unbuilt)==1 else "s"), lambda: self._proc_build(name, unbuilt), 0, None)
-        target="combined" if "combined" in nodes else (built[0] if built else None)
-        if len(built)>=2 and "combined" not in nodes:
-            return ("Line up the scans and build one model", "You scanned %d sides. Click matching spots on two scans at a time, then build one model from all of them." % len(built),
-                    "⧉  Combine scans…", lambda: self._align_dialog(name), 2, None)
+        keep_sep=bool(self.records.get(name, {}).get("keep_separate"))
+        # Several built scans and no combined model yet: PointYoink assumes they're sides of one object and
+        # pushes Combine — but they might be separate objects. Offer the choice instead of assuming, and
+        # remember it (reversible below with "Combine them after all").
+        if len(built)>=2 and "combined" not in nodes and not keep_sep:
+            return ("Combine these scans into one model?",
+                    "You have %d scans. If they're sides of one object, line them up into a single model. If they're separate objects, keep them apart and prepare or export each on its own." % len(built),
+                    "⧉  Combine scans…", lambda: self._align_dialog(name), 2,
+                    ("Keep separate — different objects", lambda: self._keep_separate(name)))
+        if keep_sep and "combined" not in nodes and len(built)>=2:
+            unprepared=[n for n in built if not any(k=="clean" for k,_,_ in self._proc_versions(name, n))]
+            target=unprepared[0] if unprepared else built[0]          # walk each scan on its own
+        else:
+            target="combined" if "combined" in nodes else (built[0] if built else None)
         if not target: return ("Nothing to prepare yet", "Share this project over WiFi as Full project to get its raw data, or plug the scanner in.", None, None, 0, None)
+        undo=("⧉  Combine them after all", lambda: self._unkeep_separate(name)) if (keep_sep and len(built)>=2 and "combined" not in nodes) else None
         vs=self._proc_versions(name, target); lab=self._scan_label(name, target)
         if not any(k=="clean" for k,_,_ in vs):
             return ("Prepare the %s model" % lab.lower() if target=="combined" else "Prepare %s" % lab, "Remove floating pieces, smooth, fill holes. You see before and after and keep or discard.",
-                    "✦  Prepare…", lambda: self._prepare_dialog(name, target), 3, None)
-        return ("Export", "%s is prepared. Save it as STL for a slicer, or OBJ, GLB, PLY." % lab, "⬆  Export…", lambda: self._export_dialog(name, target), 4, None)
+                    "✦  Prepare…", lambda: self._prepare_dialog(name, target), 3, undo)
+        return ("Export", "%s is prepared. Save it as STL for a slicer, or OBJ, GLB, PLY." % lab, "⬆  Export…", lambda: self._export_dialog(name, target), 4, undo)
     def _skip_base(self, name, node):
         """Mark a scan as having no base to cut (the NEXT bar suggested it, but detection is not certain).
         Same as choosing No base inside the cut dialog: remembered, and treated as 'no table' when combining."""
         self.records.setdefault(name,{}).setdefault("base_plane",{})[node]={"skip": True}; self._persist()
         self.set_banner("Marked %s as no base to cut." % self._scan_label(name, node), MUT)
         if self.selected==name:
-            self._panel_refresh(); self._next_refresh(name)
+            self._panel_refresh()                       # rebuilds the NEXT bar too (with proper nodes/local)
+    def _keep_separate(self, name):
+        """The user says these scans are different objects, not sides of one. Stop pushing Combine on the
+        NEXT bar; each scan is prepared/exported on its own. Reversible ("Combine them after all")."""
+        self.records.setdefault(name, {})["keep_separate"]=True; self._persist()
+        self.set_banner("Keeping these scans separate — prepare or export each on its own. Combine is still one click away if you change your mind.", MUT)
+        if self.selected==name: self._panel_refresh()
+    def _unkeep_separate(self, name):
+        """Undo Keep separate: the NEXT bar offers Combine again."""
+        self.records.setdefault(name, {}).pop("keep_separate", None); self._persist()
+        if self.selected==name: self._panel_refresh()
     def _pick_scan_by_node(self, name, node):
         """Select a scan tile the way a click on the strip would (so Remove base and the preview follow)."""
         if self.selected!=name: self.select_project(name)
@@ -3859,13 +3880,17 @@ class App(ctk.CTk):
         if custom: return custom
         dev=self._device_scan_names(name).get(node)
         if dev: return dev
-        return node                                  # the scan's number on the device, the same name it shows there
+        order=[n for n in self._proc_nodes(name) if n!="combined"]   # no custom or device name: a friendly default
+        if node in order: return "Scan %d" % (order.index(node)+1)   # "Scan 1 / Scan 2…" instead of the raw 09142026… id
+        return node
     def _rename_scan(self, name, node):
         """Give a scan a name like front, back, left side. Shown on the strip, the panel, the cards and in Combine."""
         cur=(self.records.get(name, {}).get("scan_labels", {}) or {}).get(node, "")
         t=self._top("Name this scan", 420, 190, key="scanname")
         if t is None: return
-        ctk.CTkLabel(t, text="A name for this scan (front, back, left side…). Leave empty for Scan %02d." % (1+[n for n in self._proc_nodes(name) if n!="combined"].index(node) if node in self._proc_nodes(name) else 0),
+        _order=[n for n in self._proc_nodes(name) if n!="combined"]
+        _dflt="Scan %d" % (_order.index(node)+1) if node in _order else "its default name"
+        ctk.CTkLabel(t, text="A name for this scan (front, back, left side…). Leave empty to keep %s." % _dflt,
                      text_color=MUT, font=ctk.CTkFont(size=12), wraplength=380, justify="left").pack(anchor="w", padx=20, pady=(18,6))
         v=ctk.StringVar(value=cur); e=ctk.CTkEntry(t, textvariable=v, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=10); e.pack(fill="x", padx=20); e.focus_set()
         def ok(*_):
