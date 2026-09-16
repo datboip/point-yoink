@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.62-pre"
+APP = "PointYoink"; VERSION = "0.9.63-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -498,7 +498,7 @@ def list_local_projects(dest):
             for suf in ("_pcfused","_clean"):
                 if n.endswith(suf): n=n[:-len(suf)]
             return n
-        flat=[x for x in glob.glob(os.path.join(pdir, name+"_*.ply")) if not x.endswith("_cloud.ply")]
+        flat=[x for x in glob.glob(os.path.join(pdir, name+"_*.ply")) if not x.endswith("_cloud.ply") and not x.endswith(".tmp.ply")]
         nested=glob.glob(os.path.join(pdir, "data", "*", "fuse_mesh.ply"))
         clouds=glob.glob(os.path.join(pdir, name+"_*_cloud.ply")) or glob.glob(os.path.join(pdir, "data", "*", "fuse.ply"))
         mesh_nodes=set(node_of(x) for x in flat) | set(os.path.basename(os.path.dirname(x)) for x in nested)
@@ -3348,6 +3348,7 @@ class App(ctk.CTk):
         for d in glob.glob(os.path.join(local, "data", "*")):
             if os.path.isdir(d): nodes.add(os.path.basename(d))
         for f in glob.glob(os.path.join(local, name+"_*.ply")):
+            if f.endswith(".tmp.ply"): continue      # a Prepare temp file mid-write, not a scan node
             n=os.path.basename(f)[len(name)+1:-4]
             for suf in ("_cloud","_pcfused","_clean"):
                 if n.endswith(suf): n=n[:-len(suf)]
@@ -3524,23 +3525,34 @@ class App(ctk.CTk):
         if built and nobase:
             n0=nobase[0]
             def go(n=n0): self._pick_scan_by_node(name, n); self.on_remove_base(n)
+            def skip(n=n0): self._skip_base(name, n)
+            # a suggestion, not a diagnosis: whether the scan has a table is not actually detected, so
+            # offer "No base — skip" right here instead of only inside the cut dialog.
             return ("Cut the base off %s" % self._scan_label(name, n0),
-                    "%d of %d scan%s still %s the table under the part. Drag one line above it and apply. The cut is remembered and applied again when the scans are combined, so the base never gets fused in." % (len(nobase), len(built), "" if len(built)==1 else "s", "has" if len(nobase)==1 else "have"),
-                    "✂  Remove base on %s" % self._scan_label(name, n0), go, 1)
+                    "%d of %d scan%s may still have the table under the part. Drag one line above it and apply, or skip if this scan has no base. The cut is remembered and applied when the scans are combined." % (len(nobase), len(built), "" if len(built)==1 else "s"),
+                    "✂  Remove base on %s" % self._scan_label(name, n0), go, 1,
+                    ("No base — skip", skip))
         if unbuilt:
             return ("Build the 3D model%s" % ("" if len(unbuilt)==1 else "s"),
                     "%d scan%s %s raw data only. Easiest is One-tap Edit on the scanner, then share the project again. Or build here now (seconds on a graphics card) and prepare it yourself." % (len(unbuilt), "" if len(unbuilt)==1 else "s", "has" if len(unbuilt)==1 else "have"),
-                    "⚙  Build %d model%s here" % (len(unbuilt), "" if len(unbuilt)==1 else "s"), lambda: self._proc_build(name, unbuilt), 0)
+                    "⚙  Build %d model%s here" % (len(unbuilt), "" if len(unbuilt)==1 else "s"), lambda: self._proc_build(name, unbuilt), 0, None)
         target="combined" if "combined" in nodes else (built[0] if built else None)
         if len(built)>=2 and "combined" not in nodes:
             return ("Line up the scans and build one model", "You scanned %d sides. Click matching spots on two scans at a time, then build one model from all of them." % len(built),
-                    "⧉  Combine scans…", lambda: self._align_dialog(name), 2)
-        if not target: return ("Nothing to prepare yet", "Share this project over WiFi as Full project to get its raw data, or plug the scanner in.", None, None, 0)
+                    "⧉  Combine scans…", lambda: self._align_dialog(name), 2, None)
+        if not target: return ("Nothing to prepare yet", "Share this project over WiFi as Full project to get its raw data, or plug the scanner in.", None, None, 0, None)
         vs=self._proc_versions(name, target); lab=self._scan_label(name, target)
         if not any(k=="clean" for k,_,_ in vs):
             return ("Prepare the %s model" % lab.lower() if target=="combined" else "Prepare %s" % lab, "Remove floating pieces, smooth, fill holes. You see before and after and keep or discard.",
-                    "✦  Prepare…", lambda: self._prepare_dialog(name, target), 3)
-        return ("Export", "%s is prepared. Save it as STL for a slicer, or OBJ, GLB, PLY." % lab, "⬆  Export…", lambda: self._export_dialog(name, target), 4)
+                    "✦  Prepare…", lambda: self._prepare_dialog(name, target), 3, None)
+        return ("Export", "%s is prepared. Save it as STL for a slicer, or OBJ, GLB, PLY." % lab, "⬆  Export…", lambda: self._export_dialog(name, target), 4, None)
+    def _skip_base(self, name, node):
+        """Mark a scan as having no base to cut (the NEXT bar suggested it, but detection is not certain).
+        Same as choosing No base inside the cut dialog: remembered, and treated as 'no table' when combining."""
+        self.records.setdefault(name,{}).setdefault("base_plane",{})[node]={"skip": True}; self._persist()
+        self.set_banner("Marked %s as no base to cut." % self._scan_label(name, node), MUT)
+        if self.selected==name:
+            self._panel_refresh(); self._next_refresh(name)
     def _pick_scan_by_node(self, name, node):
         """Select a scan tile the way a click on the strip would (so Remove base and the preview follow)."""
         if self.selected!=name: self.select_project(name)
@@ -3591,7 +3603,7 @@ class App(ctk.CTk):
             ns.pack_forget()
     def _next_refresh_body(self, ns, name, nodes, local):
         if self.page!="projects" or not name: ns.pack_forget(); return
-        title, detail, btxt, cmd, step = self._proc_next(name, nodes, local)
+        title, detail, btxt, cmd, step, alt = self._proc_next(name, nodes, local)
         ns.pack(fill="x", pady=(2,6)); ns.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(ns, text="NEXT", text_color=AC, font=ctk.CTkFont(size=10, weight="bold")).grid(row=0,column=0, padx=(14,10), pady=(10,0), sticky="w")
         hb=ctk.CTkButton(ns, text="how this works", width=90, height=20, corner_radius=6, fg_color="transparent", hover_color="#15304d", text_color=DIM, font=ctk.CTkFont(size=10), command=self._howto_dialog)
@@ -3615,9 +3627,14 @@ class App(ctk.CTk):
             col=(OK if i<step else (AC if i==step else DIM)); mark=("✓ " if i<step else ("▶ " if i==step else ""))
             ctk.CTkLabel(trail, text=mark+nm, text_color=col, font=ctk.CTkFont(size=11, weight=("bold" if i==step else "normal"))).pack(side="left")
             if i<len(self.STEPS)-1: ctk.CTkLabel(trail, text="  →  ", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left")
-        if btxt: nb[0]=ctk.CTkButton(ns, text=btxt, width=220, height=40, corner_radius=20, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd); nb[0].grid(row=0,column=2, rowspan=3, padx=16, pady=10, sticky="e")
+        if btxt:
+            bwrap=ctk.CTkFrame(ns, fg_color="transparent")
+            ctk.CTkButton(bwrap, text=btxt, width=220, height=40, corner_radius=20, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).pack()
+            if alt:   # a secondary "No base — skip" / suggestion opt-out sits under the main action
+                ctk.CTkButton(bwrap, text=alt[0], width=220, height=26, corner_radius=13, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=alt[1]).pack(pady=(6,0))
+            nb[0]=bwrap; nb[0].grid(row=0,column=2, rowspan=3, padx=16, pady=10, sticky="e")
     def _proc_next_strip(self, name, nodes, local):
-        title, detail, btxt, cmd, step = self._proc_next(name, nodes, local)
+        title, detail, btxt, cmd, step, alt = self._proc_next(name, nodes, local)
         strip=ctk.CTkFrame(self.proc_cards, fg_color="#0f1a2b", corner_radius=14, border_width=1, border_color="#1f3a5f"); strip.grid(row=0, column=0, sticky="ew", padx=6, pady=(4,10))
         strip.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(strip, text="NEXT", text_color=AC, font=ctk.CTkFont(size=11, weight="bold")).grid(row=0,column=0, padx=(16,10), pady=(12,0), sticky="w")
@@ -3629,7 +3646,9 @@ class App(ctk.CTk):
             ctk.CTkLabel(trail, text=mark+nm, text_color=col, font=ctk.CTkFont(size=11, weight=("bold" if i==step else "normal"))).pack(side="left")
             if i<len(self.STEPS)-1: ctk.CTkLabel(trail, text="  →  ", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left")
         if btxt:
-            ctk.CTkButton(strip, text=btxt, width=190, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).grid(row=0,column=2, rowspan=3, padx=16, pady=12)
+            bw=ctk.CTkFrame(strip, fg_color="transparent"); bw.grid(row=0,column=2, rowspan=3, padx=16, pady=12)
+            ctk.CTkButton(bw, text=btxt, width=190, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).pack()
+            if alt: ctk.CTkButton(bw, text=alt[0], width=190, height=24, corner_radius=12, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=alt[1]).pack(pady=(6,0))
     def _schedule_panel_refresh(self, delay=80):
         job=getattr(self, "_panel_job", None)
         if job:
