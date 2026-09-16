@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.92-pre"
+APP = "PointYoink"; VERSION = "0.9.93-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1827,6 +1827,7 @@ class App(ctk.CTk):
         elif m=="Projects": self.page="import"; target=self.mode_frames["Projects"]
         elif m in self.mode_frames: target=self.mode_frames[m]
         else: return
+        self._cur_mode=m   # remember the visible tab so the bottom bar doesn't say "Editing <project>" on Captures/Live
         for k,f in self.mode_frames.items():
             if f is target: f.grid()
             else: f.grid_remove()
@@ -1834,6 +1835,7 @@ class App(ctk.CTk):
         if m in ("Projects","Local"): self._apply_page()
         elif m=="Process": self._proc_refresh()
         if m=="Projects" and self.tabs.get()=="Files" and not self._folder_loaded: self._folder_loaded=True; self.refresh_folder()
+        self.update_summary()   # refresh the bottom bar for the tab we switched to (clears a stale "Editing <project>" on Captures/Live)
     def _page_filter(self, projs):
         if self.page=="projects": return [p for p in projs if p.get("local") or self.is_imported(p["name"])]
         return [p for p in projs if not p.get("local")]
@@ -2326,6 +2328,11 @@ class App(ctk.CTk):
         for v in self.pull_sel.values(): v.set(False)
         self.update_summary()
     def update_summary(self):
+        cm=getattr(self, "_cur_mode", None)
+        if cm=="Captures":                      # not editing a project here — don't leave "Editing <project>" in the bottom bar
+            self.sel_lbl.configure(text="Captures"); self.summary.configure(text="Captures · the scanner's screenshots & recordings (USB)"); return
+        if cm=="Live":
+            self.sel_lbl.configure(text="Live view"); self.summary.configure(text="Live view · scanner cameras"); return
         if getattr(self, "page", "import")=="projects":
             # the Projects page has no batch checkboxes: show what is OPEN, not the Import page's
             # "No projects selected" (which read as a contradiction while a project was clearly open).
@@ -5926,7 +5933,7 @@ class App(ctk.CTk):
                         if out: self._show_shaded(out)
                         else: self.big_hint.configure(text="Scanner's own preview · could not draw the 3D model (see Help > Log)"); self._preview_idle()
                     if mode=="solid" and out:                       # upgrade this project's list thumbnail to the shaded render, in place (no re-render)
-                        nm=key.rsplit("__",1)[0]; row=self.rows.get(nm)
+                        nm=key.rsplit("__",2)[0]; row=self.rows.get(nm)   # key is name__node__verkey (3 parts since the verkey was added); rows are keyed by bare project name
                         lbl=getattr(row, "_thumb_lbl", None) if row is not None else None
                         if lbl is not None:
                             try: self.imgs["row_"+nm]=cimg(out,54); lbl.configure(image=self.imgs["row_"+nm], text="")
