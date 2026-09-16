@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.70-pre"
+APP = "PointYoink"; VERSION = "0.9.71-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3734,20 +3734,22 @@ class App(ctk.CTk):
         if node:
             vs=self._proc_versions(name, node); cur=self._proc_current(name, node)
             raw=self._has_raw_frames(local, node); has_prep=any(k=="clean" for k,_,_ in vs)
-            tr=ctk.CTkFrame(pp, fg_color="transparent"); tr.pack(fill="x", padx=6, pady=(10,0))
+            hdr=ctk.CTkFrame(pp, fg_color=CARD2, corner_radius=10); hdr.pack(fill="x", padx=6, pady=(10,4))   # group the scan status so it isn't loose floating text
+            tr=ctk.CTkFrame(hdr, fg_color="transparent"); tr.pack(fill="x", padx=12, pady=(10,2))
             ctk.CTkLabel(tr, text=self._scan_label(name, node), text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w").pack(side="left")
             if node!="combined":
-                rb=ctk.CTkButton(tr, text="✎", width=26, height=24, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=13), command=lambda n=name,nd=node: self._rename_scan(n, nd)); rb.pack(side="left", padx=(4,0))
+                rb=ctk.CTkButton(tr, text="✎", width=26, height=24, corner_radius=6, fg_color="transparent", hover_color=CARD, text_color=MUT, font=ctk.CTkFont(size=13), command=lambda n=name,nd=node: self._rename_scan(n, nd)); rb.pack(side="right")
                 self._tip(rb, "Name this scan: front, back, left side…")
             order=[n for n in nodes if n!="combined"]; pos=("scan %d of %d · " % (order.index(node)+1, len(order))) if node in order else ""
             sub=("built from the scans you lined up" if node=="combined" else (pos+("raw data on this PC" if raw else "no raw data on this PC")))
-            ctk.CTkLabel(pp, text=sub, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6)
+            ctk.CTkLabel(hdr, text=sub, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=12)
             if node!="combined":
                 stw, stc = self.STAGE_WORDS[self._device_stage(local, node)]
-                if stw: ctk.CTkLabel(pp, text="Scanner: "+stw, text_color=stc, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6)
+                if stw: ctk.CTkLabel(hdr, text="Scanner: "+stw, text_color=stc, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=12, pady=(2,0))
                 hasp=node in self._base_planes(name)
                 pl=self._base_planes(name).get(node)
-                ctk.CTkLabel(pp, text=(("No table in this scan ✓" if pl.get("skip") else "Base cut saved ✓ (applied when combining)") if hasp else "Base not cut yet"), text_color=(OK if hasp else WARN), font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6)
+                ctk.CTkLabel(hdr, text=(("No table in this scan ✓" if pl.get("skip") else "Base cut saved ✓ (applied when combining)") if hasp else "Base not cut yet"), text_color=(OK if hasp else WARN), font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=12)
+            ctk.CTkFrame(hdr, fg_color="transparent", height=8).pack()
             if vs:
                 ctk.CTkLabel(pp, text="Versions: the scanner's model (One-tap on the device), the PC build (from raw data), a prepared copy. Tick the one to use.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=230).pack(fill="x", padx=6, pady=(8,2))
                 for key,label,path in vs:
