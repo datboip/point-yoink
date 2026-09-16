@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.101-pre"
+APP = "PointYoink"; VERSION = "0.9.102-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3819,7 +3819,7 @@ class App(ctk.CTk):
         built=[n for n in scans if self._proc_versions(name, n)]
         planes=self._base_planes(name); nobase=[n for n in built if n not in planes]
         if built and nobase:
-            n0=nobase[0]
+            n0=self._film_sel if self._film_sel in nobase else nobase[0]   # if the scan you're looking at still needs its base cut, NEXT is about THAT scan, not always the first one
             def go(n=n0): self._pick_scan_by_node(name, n); self.on_remove_base(n)
             def skip(n=n0): self._skip_base(name, n)
             # a suggestion, not a diagnosis: whether the scan has a table is not actually detected, so
