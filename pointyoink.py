@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.108-pre"
+APP = "PointYoink"; VERSION = "0.9.109-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1721,14 +1721,15 @@ class App(ctk.CTk):
     def _empty_state(self, parent, kind):
         """The empty-state panel for one area (captures / projects / preview), with its buttons wired to the
         real handlers. Grid it with sticky='nsew'; it centres its content and re-centres on resize."""
-        btns={"captures": [("Connect over USB", self.on_mount)],                       # screenshots only come over USB
-              "projects": [("Connect over USB", self.on_mount), ("Share over WiFi", self.on_wifi)],
+        btns={"captures": [("Connect over USB", self.on_mount), ("How to connect?", self._usb_help)],   # screenshots only come over USB
+              "projects": [("Connect over USB", self.on_mount), ("Share over WiFi", self.on_wifi), ("How to connect?", self._usb_help)],
               "preview":  []}[kind]
         es=EmptyState(parent, kind, btns, scale=self._ui_scale)
         tips={"captures": "Plug in the USB-C cable and tap File Transfer on the scanner first.",
               "projects": "USB lists every project on the scanner (it must be in File Transfer mode)."}
         if es.buttons and kind in tips: self._tip(es.buttons[0], tips[kind])
-        if len(es.buttons)>1: self._tip(es.buttons[1], "No cable: the scanner's Share to PC > Wi-Fi sends one project straight here.")
+        if kind=="projects" and len(es.buttons)>1: self._tip(es.buttons[1], "No cable: the scanner's Share to PC > Wi-Fi sends one project straight here.")
+        if es.buttons: self._tip(es.buttons[-1], "Step-by-step: how to put the scanner in File Transfer mode and connect.")
         return es
     def _fit_empty(self, attr, sf):
         """Keep the empty-state frame stored as self.<attr> as tall as the scrollable frame's visible area
@@ -2038,6 +2039,35 @@ class App(ctk.CTk):
         if t is None: return
         box=ctk.CTkTextbox(t, fg_color=CARD, text_color=TX, corner_radius=12, wrap="word"); box.pack(fill="both", expand=True, padx=16, pady=16)
         box.insert("1.0", body); box.configure(state="disabled")
+    def _usb_help(self):
+        """Step-by-step for connecting over USB, matching the scanner's own 'Share to PC -> USB Cable' screen,
+        plus the recovery steps when it won't connect (unplug, wait, re-tap File Transfer)."""
+        t=self._top("Connect over USB", 560, 600)
+        if t is None: return
+        card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=16, pady=16)
+        ctk.CTkLabel(card, text="Connect the scanner over USB", text_color=TX, font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(18,2))
+        ctk.CTkLabel(card, text="On the scanner: Share to PC  ›  USB Cable", text_color=MUT, font=ctk.CTkFont(size=11)).pack()
+        body=ctk.CTkFrame(card, fg_color="transparent"); body.pack(fill="x", padx=22, pady=(14,4))
+        for num,txt in (("1","Plug the USB-C cable into the scanner and this PC."),
+                        ("2","A window pops up on the scanner - tap “File Transfer” (not “PC Mode”)."),
+                        ("3","Click “Connect over USB” here (or Rescan). The scanner's projects appear on the left.")):
+            row=ctk.CTkFrame(body, fg_color="transparent"); row.pack(fill="x", pady=6)
+            ctk.CTkLabel(row, text=num, text_color="#04121f", fg_color=AC, corner_radius=13, width=26, height=26,
+                         font=ctk.CTkFont(size=12, weight="bold")).pack(side="left", padx=(0,12))
+            ctk.CTkLabel(row, text=txt, text_color=TX, font=ctk.CTkFont(size=12), justify="left", wraplength=430, anchor="w").pack(side="left", fill="x", expand=True)
+        self._hr(card, pady=(10,8))
+        ctk.CTkLabel(card, text="If it won't connect", text_color=TX, font=ctk.CTkFont(size=13, weight="bold"), anchor="w").pack(fill="x", padx=22)
+        for txt in ("No pop-up on the scanner? It's on a Model/edit screen or in PC mode - go back to Share to PC first.",
+                    "Still stuck: unplug the cable, wait ~5 seconds for it to disconnect, then plug back in and tap File Transfer again.",
+                    "Need the raw scan data (to rebuild on the PC)? That's very slow over USB - use Share over WiFi › Full project instead."):
+            r=ctk.CTkFrame(card, fg_color="transparent"); r.pack(fill="x", padx=22, pady=3)
+            ctk.CTkLabel(r, text="•", text_color=MUT).pack(side="left", padx=(2,8), anchor="n")
+            ctk.CTkLabel(r, text=txt, text_color=MUT, font=ctk.CTkFont(size=11), justify="left", wraplength=440, anchor="w").pack(side="left", fill="x", expand=True)
+        br=ctk.CTkFrame(card, fg_color="transparent"); br.pack(side="bottom", pady=(10,16))
+        ctk.CTkButton(br, text="Connect over USB", width=170, height=36, corner_radius=8, fg_color=AC, hover_color=AC_H,
+                      text_color="#04121f", font=ctk.CTkFont(size=12, weight="bold"), command=lambda:(t.destroy(), self.on_mount())).pack(side="left", padx=6)
+        ctk.CTkButton(br, text="Close", width=100, height=36, corner_radius=8, fg_color="transparent", border_width=1,
+                      border_color=STROKE, hover_color=CARD2, text_color=TX, command=t.destroy).pack(side="left", padx=6)
     def dlg_help(self):
         t=self._top("How to use "+APP, 780, 700)
         if t is None: return
