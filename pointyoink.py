@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.112-pre"
+APP = "PointYoink"; VERSION = "0.9.113-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1376,7 +1376,8 @@ class App(ctk.CTk):
 
     _SPINNER=["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
     def _pulse(self):
-        busy = (self._mounting or self.listing or self.pulling
+        mv_loading=getattr(self,"_mv_loading",False)
+        busy = (self._mounting or self.listing or self.pulling or mv_loading
                 or getattr(self,"_basing",False) or getattr(self,"_loader",None) is not None)
         self._pt=getattr(self,"_pt",0)+1
         try:
@@ -1386,7 +1387,8 @@ class App(ctk.CTk):
                 self._spin.configure(text=self._SPINNER[self._pt % len(self._SPINNER)], text_color=AC)
                 msg = self._status_msg or ("Connecting to the scanner…" if self._mounting else
                       "Reading projects off the scanner…" if self.listing else
-                      "Importing…" if self.pulling else "Working…")
+                      "Importing…" if self.pulling else
+                      "Loading the 3D view…" if mv_loading else "Working…")   # so bottom no longer says "Ready" while the preview loads
                 self._status.configure(text=msg, text_color=TX)
             else:
                 self._spin.configure(text="●", text_color=OK)
@@ -1775,7 +1777,9 @@ class App(ctk.CTk):
         self._opt(op, "check", "STL", None, self.exp_stl, tip="For 3D printing")
         self._opt(op, "check", "OBJ", None, self.exp_obj, tip="For editing")
         self._opt(op, "check", "GLB", None, self.exp_glb, tip="For the web and editing")
-        ctk.CTkLabel(op, text="A quick copy of every scan as it comes in - originals kept. Export on the Projects page picks one model, with a size and mesh check.", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=300).pack(fill="x", padx=6, pady=(4,0))
+        _expl=ctk.CTkLabel(op, text="A quick copy of every scan as it comes in - originals kept. Export on the Projects page picks one model, with a size and mesh check.", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=240)
+        _expl.pack(fill="x", padx=6, pady=(4,0))
+        op.bind("<Configure>", lambda e,l=_expl: l.configure(wraplength=max(180, e.width-24)), add="+")   # wrap to the panel, don't clip at the right edge
         self._hr(op)
         # editing is an action with a result, not an import option: it lives on the Process page
         ctk.CTkLabel(op, text="After importing", text_color=TX, font=ctk.CTkFont(size=13, weight="bold"), anchor="w").pack(fill="x", padx=16, pady=(4,2))
@@ -3156,6 +3160,7 @@ class App(ctk.CTk):
         key,path=want; self._mv_key=key; self.mv.wire=(self.shade_mode=="wire")
         try: import shade; self._mv_c0=(dict(shade.CACHE_STATS), time.time())   # snapshot to log mesh-cache reuse for THIS open
         except Exception: self._mv_c0=None
+        self._mv_loading=True    # so the bottom bar shows activity, not "Ready", while the 3D view loads
         self._preview_busy("Loading the live 3D view")   # spinner box carries the text; _preview_busy clears the bottom hint
         # The GL view only gets a context, and only uploads the mesh (which is what fires ready()),
         # once it is MAPPED (<Map> -> initgl; a hidden view must never touch GL, see glview.py). It used
@@ -3170,6 +3175,7 @@ class App(ctk.CTk):
                 try: self.mv.destroy()
                 except Exception: pass
                 self.mv=self._make_mv(software=True); self.mv.wire=(self.shade_mode=="wire"); self._map_mv_under_still(); self.mv.load(path, ready, max_faces=300000); return
+            self._mv_loading=False
             self._preview_idle()
             c0=getattr(self, "_mv_c0", None)
             if c0:
@@ -4147,9 +4153,12 @@ class App(ctk.CTk):
             primary="build" if (raw and not vs) else ("cut" if (vs and node!="combined" and node not in self._base_planes(name)) else (None if combined_exists else ("prepare" if (vs and not has_prep) else ("export" if vs else None))))
             def mk(kind, text, enabled, cmd, tip):
                 if not enabled: return None   # only show what this scan can actually do: a raw scan (no model) shows Build, not greyed Remove base / Prepare / Export
-                filled=(kind==primary)
-                b=ctk.CTkButton(pp, text=text, height=32, corner_radius=8, fg_color=(AC if filled else "transparent"), hover_color=(AC_H if filled else CARD2), border_width=(0 if filled else 1), border_color=STROKE,
-                                text_color=("#04121f" if filled else TX), state="normal", anchor="w", command=cmd)
+                # NEXT bar is the ONE filled primary CTA; the sidebar's matching action gets a subtle accent
+                # (accent border + text), not a second full-fill button competing for attention.
+                accent=(kind==primary)
+                b=ctk.CTkButton(pp, text=text, height=32, corner_radius=8, fg_color="transparent", hover_color=CARD2,
+                                border_width=1, border_color=(AC if accent else STROKE),
+                                text_color=(AC if accent else TX), state="normal", anchor="w", command=cmd)
                 b.pack(fill="x", padx=6, pady=(6,0)); self._tip(b, tip); return b
             if node!="combined": mk("build", "⚙  Build model", bool(raw), lambda n=name,nd=node: self._proc_build(n, [nd]), "Build this scan's 3D model from its raw data, on this PC." if raw else "No raw data on this PC for this scan (share the project over WiFi as Full project).")
             if node!="combined": mk("cut", "✂  Remove base…", bool(vs), lambda nd=node: self.on_remove_base(nd), "Drag one line just above the table and apply. Saves a prepared version and remembers the cut for combining.")
