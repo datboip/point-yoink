@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.73-pre"
+APP = "PointYoink"; VERSION = "0.9.74-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2544,6 +2544,7 @@ class App(ctk.CTk):
                 cell.pack(side="left", padx=(0,10), pady=(6,4))
                 im=ctk.CTkLabel(cell, image=self.imgs["g_"+name+node], text=""); im.pack(padx=8, pady=(8,2))
                 cap=ctk.CTkLabel(cell, text=self._scan_label(name, node), text_color=(AC if node=="combined" else MUT), font=ctk.CTkFont(size=11)); cap.pack(pady=(0,6))
+                self._tip(cap, "the combined model" if node=="combined" else ("scanner id: "+node))   # the raw id, for cross-referencing the device
                 for w in (cell, im, cap): w.bind("<Button-1>", lambda e,nd=node,pp=path: self._pick_scan(name, nd, pp))
                 self._film_cells[node]=cell; self._film_imgs[node]=im
                 if thumb==path:                              # no shaded render yet: queue one so the blue preview is replaced
@@ -3693,18 +3694,27 @@ class App(ctk.CTk):
     def _next_refresh_body(self, ns, name, nodes, local):
         if self.page!="projects" or not name: ns.pack_forget(); return
         title, detail, btxt, cmd, step, alt = self._proc_next(name, nodes, local)
+        expanded=bool(self.cfg.get("next_details"))       # the long explanation is collapsed by default
         ns.pack(fill="x", pady=(2,6)); ns.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(ns, text="NEXT", text_color=AC, font=ctk.CTkFont(size=10, weight="bold")).grid(row=0,column=0, padx=(14,10), pady=(10,0), sticky="w")
-        hb=ctk.CTkButton(ns, text="how this works", width=90, height=20, corner_radius=6, fg_color="transparent", hover_color="#15304d", text_color=DIM, font=ctk.CTkFont(size=10), command=self._howto_dialog)
-        hb.grid(row=2,column=0, padx=(8,0), pady=(0,10), sticky="w")
-        tl=ctk.CTkLabel(ns, text=title, text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w", justify="left"); tl.grid(row=0,column=1, sticky="w", pady=(10,0))
-        dl=ctk.CTkLabel(ns, text=detail, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=520); dl.grid(row=1,column=1, sticky="w", padx=(0,14), pady=(0,2))
+        ctk.CTkLabel(ns, text="N E X T", text_color=MUT, font=ctk.CTkFont(size=9, weight="bold")).grid(row=0,column=0, padx=(14,10), pady=(12,0), sticky="w")   # a quiet section label, not a button
+        hb=ctk.CTkButton(ns, text="❔ How this works", width=138, height=24, corner_radius=12, fg_color="transparent", border_width=1, border_color=STROKE, hover_color="#15304d", text_color=AC, font=ctk.CTkFont(size=11), command=self._howto_dialog)
+        hb.grid(row=2,column=0, padx=(12,0), pady=(0,10), sticky="w")
+        thead=ctk.CTkFrame(ns, fg_color="transparent"); thead.grid(row=0,column=1, sticky="w", pady=(10,0))
+        tl=ctk.CTkLabel(thead, text=title, text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w", justify="left"); tl.pack(side="left")
+        def _toggle_why():
+            self.cfg["next_details"]=not expanded; save_cfg(self.cfg); self._next_refresh(name, nodes, local)
+        ctk.CTkButton(thead, text=("▾ why" if expanded else "▸ why"), width=50, height=20, corner_radius=6, fg_color="transparent",
+                      hover_color="#15304d", text_color=DIM, font=ctk.CTkFont(size=10), command=_toggle_why).pack(side="left", padx=(8,0))
+        dl=None
+        if expanded:
+            dl=ctk.CTkLabel(ns, text=detail, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=520); dl.grid(row=1,column=1, sticky="w", padx=(0,14), pady=(0,2))
         trail=ctk.CTkFrame(ns, fg_color="transparent"); trail.grid(row=2,column=1, sticky="w", pady=(0,10))
         nb=[None]
         def relayout(e):
             """Wide: the button sits on the right, text wraps before it. Narrow: the button drops under the text."""
             wide=e.width>=760
-            wrap=max(240, e.width-(320 if (wide and btxt) else 130)); tl.configure(wraplength=wrap); dl.configure(wraplength=wrap)
+            wrap=max(240, e.width-(320 if (wide and btxt) else 130)); tl.configure(wraplength=wrap)
+            if dl is not None: dl.configure(wraplength=wrap)
             if nb[0] is not None:
                 if wide: nb[0].grid(row=0,column=2, rowspan=3, padx=16, pady=10, sticky="e")
                 else: nb[0].grid(row=3,column=1, padx=(0,14), pady=(0,12), sticky="w")
@@ -3784,15 +3794,15 @@ class App(ctk.CTk):
             if node!="combined":
                 rb=ctk.CTkButton(tr, text="✎", width=26, height=24, corner_radius=6, fg_color="transparent", hover_color=CARD, text_color=MUT, font=ctk.CTkFont(size=13), command=lambda n=name,nd=node: self._rename_scan(n, nd)); rb.pack(side="right")
                 self._tip(rb, "Name this scan: front, back, left side…")
-            order=[n for n in nodes if n!="combined"]; pos=("scan %d of %d · " % (order.index(node)+1, len(order))) if node in order else ""
-            sub=("built from the scans you lined up" if node=="combined" else (pos+("raw data on this PC" if raw else "no raw data on this PC")))
+            order=[n for n in nodes if n!="combined"]; pos=("scan %d of %d" % (order.index(node)+1, len(order))) if node in order else ""
+            sub=("built from the scans you lined up" if node=="combined" else ((pos+" · " if pos else "")+"id "+node))   # show the real scanner id for reference, not the confusing raw/built wording
             ctk.CTkLabel(hdr, text=sub, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=12)
             if node!="combined":
                 stw, stc = self.STAGE_WORDS[self._device_stage(local, node)]
                 if stw: ctk.CTkLabel(hdr, text="Scanner: "+stw, text_color=stc, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=12, pady=(2,0))
                 hasp=node in self._base_planes(name)
                 pl=self._base_planes(name).get(node)
-                ctk.CTkLabel(hdr, text=(("No table in this scan ✓" if pl.get("skip") else "Base cut saved ✓ (applied when combining)") if hasp else "Base not cut yet"), text_color=(OK if hasp else WARN), font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=12)
+                ctk.CTkLabel(hdr, text=(("Marked: no base to cut ✓" if pl.get("skip") else "Base removed ✓ — reapplied when combining") if hasp else "Base not cut yet"), text_color=(OK if hasp else WARN), font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=12)
             ctk.CTkFrame(hdr, fg_color="transparent", height=8).pack()
             if vs:
                 ctk.CTkLabel(pp, text="Versions: the scanner's model (One-tap on the device), the PC build (from raw data), a prepared copy. Tick the one to use.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=230).pack(fill="x", padx=6, pady=(8,2))
