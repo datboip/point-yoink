@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.116-pre"
+APP = "PointYoink"; VERSION = "0.9.117-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3467,13 +3467,17 @@ class App(ctk.CTk):
         name=self.selected
         if not name: return
         # honor the scan + version the preview is showing (self._film_sel), so "View in 3D" opens THIS
-        # scan, not the largest/combined mesh. Fall back to the largest only when no scan is selected.
-        src=None
+        # scan, not the largest/combined mesh. Fall back to the largest ONLY when no scan is selected -
+        # if a scan is selected but has no mesh yet, say so instead of quietly opening a different scan.
         sel=getattr(self, "_film_sel", None)
-        if sel: src=self._mesh_for_node(name, sel)
-        if not src: src=self._find_mesh(name)
-        if not src:
-            self.set_banner("This project has no 3D model yet. Build one first.", WARN); return
+        if sel:
+            src=self._mesh_for_node(name, sel)
+            if not src:
+                self.set_banner("This scan has no 3D model yet. Build this scan first.", WARN); return
+        else:
+            src=self._find_mesh(name)
+            if not src:
+                self.set_banner("This project has no 3D model yet. Build one first.", WARN); return
         self.set_status("Loading 3D view: reading the model…")
         token=self._next_job("view"); self._view_job=token
         self._open_loader("Loading 3D view", "Reading the 3D model… large scans take a few seconds.", token=token)
@@ -3987,8 +3991,11 @@ class App(ctk.CTk):
                     "⧉  Combine scans…", lambda: self._align_dialog(name), 2,
                     ("Keep separate — different objects", lambda: self._keep_separate(name)))
         if keep_sep and "combined" not in nodes and len(built)>=2:
+            # SELECTION-FIRST: Prepare/Export the scan you're actually looking at, not just the first
+            # unprepared one - else viewing Scan 2 could Prepare/Export Scan 1. Only walk to the next
+            # unprepared scan when nothing (or a raw/uncut scan) is selected.
             unprepared=[n for n in built if not any(k=="clean" for k,_,_ in self._proc_versions(name, n))]
-            target=unprepared[0] if unprepared else built[0]          # walk each scan on its own
+            target=sel if (sel is not None and sel in built) else (unprepared[0] if unprepared else built[0])
         else:
             target="combined" if "combined" in nodes else (built[0] if built else None)
         if not target: return ("Nothing to prepare yet", "Share this project over WiFi as Full project to get its raw data, or plug the scanner in.", None, None, 0, None)
