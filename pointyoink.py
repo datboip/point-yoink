@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.82-pre"
+APP = "PointYoink"; VERSION = "0.9.83-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1245,7 +1245,7 @@ class App(ctk.CTk):
                 self.after(1700, self._close_splash)
             else:
                 setstatus("everything's here" if not opt else "ready (some optional tools missing)", OK)
-                self.after(250, self._close_splash)
+                self.after(250, self._splash_preload_start)   # warm the preview cache before opening, so nothing loads "as we go"
             return
         c=self._checklist[i]
         # one steady line instead of flickering through every package name; the bar carries the progress
@@ -1256,6 +1256,39 @@ class App(ctk.CTk):
                 c["ok"]=ok; setbar((i+1)/len(self._checklist)); self._run_checks(i+1)
             self.q.put(("call", done))           # never call Tk (not even after) from a worker thread: the queue is drained on the main thread
         threading.Thread(target=work, daemon=True).start()
+    def _splash_preload_start(self):
+        """During the splash, render MISSING scan previews so the workspace opens warm (no 'loading as we
+        go'). Most-recent projects first (the one you'll likely open). Capped so boot never hangs; the cache
+        persists, so later launches skip everything, and anything past the cap renders on first click."""
+        if not self._splash: return
+        dest=self.dest.get() or DEFAULT_DEST
+        try:
+            names=sorted((d for d in os.listdir(dest) if not d.startswith(".") and os.path.isdir(os.path.join(dest, d))),
+                         key=lambda d: -os.path.getmtime(os.path.join(dest, d)))
+        except Exception: names=[]
+        jobs=[]
+        for name in names:
+            try:
+                for node in self._proc_nodes(name): jobs.append((name, node))
+            except Exception: pass
+        if not jobs: self.after(150, self._close_splash); return
+        threading.Thread(target=self._splash_preload_worker, args=(jobs,), daemon=True).start()
+    def _splash_preload_worker(self, jobs):
+        import time as _t
+        deadline=_t.time()+25; total=len(jobs)
+        for i,(name,node) in enumerate(jobs, 1):
+            if _t.time()>deadline: break
+            try:
+                mesh=self._mesh_for_node(name, node)
+                if mesh and not mesh.startswith(PROJECTS):
+                    verkey=(self._proc_current(name, node) or (None,))[0]
+                    out=os.path.join(THUMBS, "%s__%s__%s__shaded.png" % (name, node, verkey or "v"))
+                    if not (os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh) and os.path.getsize(out)>1024):
+                        env=dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
+                        self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, out, "--size", "900x600"], timeout=120, env=env)
+            except Exception as e: log_error("preload", e)
+            self.q.put(("splash_preload", i, total))
+        self.q.put(("splash_preload_done",))
     def _close_splash(self, force=False):
         """The window appears only when it is complete: checks done and the first project list rendered."""
         if self._splash and not force and not getattr(self, "_first_render_done", False):
@@ -2854,6 +2887,8 @@ class App(ctk.CTk):
         if not jobs: return
         with self._warm_lock:
             if front:
+                drop=set(jobs)                                    # drop any already-queued copies, then jump them to the front —
+                self._warm_q[:]=[q for q in self._warm_q if q not in drop]   # reopening a project re-prioritises, never re-stacks it
                 for j in reversed(jobs): self._warm_q.insert(0, j)
             else:
                 seen=set(self._warm_q)
@@ -5888,6 +5923,16 @@ class App(ctk.CTk):
                     self.set_banner("Pulled %d screenshot%s -> %s" % (n, "" if n==1 else "s", d), OK)
                     if self.auto_open.get(): subprocess.Popen(["xdg-open", d])
                 elif kind=="fuse_node": self._proc_progress(rest[0], rest[1], rest[2])
+                elif kind=="splash_preload":
+                    done,total=rest
+                    if getattr(self, "_splash", None):
+                        try:
+                            self._sp_cv.itemconfigure(self._sp_status, text="Preloading previews…  %d / %d" % (done, total), fill=MUT)
+                            frac=done/max(1,total)
+                            self._sp_cv.coords(self._sp_fill, self._sp_px0, self._sp_py, self._sp_px0+int(self._sp_pw*frac), self._sp_py+self._sp_ph)
+                        except Exception: pass
+                elif kind=="splash_preload_done":
+                    self.after(120, self._close_splash)
                 elif kind=="call":
                     try: rest[0]()
                     except Exception as e: log_error("ui call", e)
