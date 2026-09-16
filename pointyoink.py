@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.99-pre"
+APP = "PointYoink"; VERSION = "0.9.100-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3041,12 +3041,12 @@ class App(ctk.CTk):
         except Exception: pass
     def _show_shaded(self, out):
         self._set_big_image(out); self._preview_idle()
-        # The still is the default: fast, always works. The interactive 3D view is opt-in - click the
-        # preview or a view button to open it - so nothing heavy runs until you ask (set
-        # "auto_live_preview": true to have it load on its own after a moment).
-        if self.cfg.get("auto_live_preview", False):
-            self.big_hint.configure(text="Still image · live 3D view will load when idle")
-            self._schedule_mv_start(self._shade_key[0], 1800)
+        # The mesh is cached now (parse+simplify+normals warmed on the splash), so the interactive 3D view
+        # loads in a fraction of a second and looks better than the flat still - so auto-load it by default
+        # instead of making the user click the still. Set "auto_live_preview": false to keep it click-to-open.
+        if self.cfg.get("auto_live_preview", True):
+            self.big_hint.configure(text="Loading the interactive 3D view…")
+            self._schedule_mv_start(self._shade_key[0], 300)   # was 1800ms and opt-in; snappy now that meshes are cached
         else:
             self.big_hint.configure(text="Still image · click to open the interactive 3D view (or pick a view above)")
     def _make_mv(self, software=False):
