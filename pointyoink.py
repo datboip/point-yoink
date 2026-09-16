@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.113-pre"
+APP = "PointYoink"; VERSION = "0.9.114-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3933,8 +3933,17 @@ class App(ctk.CTk):
         unbuilt=[n for n in scans if not self._proc_versions(name, n) and self._has_raw_frames(local, n)]
         built=[n for n in scans if self._proc_versions(name, n)]
         planes=self._base_planes(name); nobase=[n for n in built if n not in planes]
-        if built and nobase:
-            n0=self._film_sel if self._film_sel in nobase else nobase[0]   # if the scan you're looking at still needs its base cut, NEXT is about THAT scan, not always the first one
+        sel=self._film_sel if self._film_sel in scans else None   # the scan you're looking at
+        # SELECTION-FIRST: if the scan you're looking at is raw, NEXT is to build THAT scan
+        if sel is not None and sel in unbuilt:
+            return ("Build %s" % self._scan_label(name, sel),
+                    "This scan is still raw data. Build its 3D model on this PC (a few seconds on a graphics card), or use One-tap Edit on the scanner.",
+                    "⚙  Build model", lambda n=sel: self._proc_build(name, [n]), 0, None)
+        # base cut is about the scan you're looking at. If that scan's base is already done, don't nag about
+        # another scan's base while you inspect a finished one - move on to the project step (Combine still
+        # flags any uncut bases before it merges).
+        if nobase and not (sel is not None and sel in built and sel not in nobase):
+            n0=sel if sel in nobase else nobase[0]
             def go(n=n0): self._pick_scan_by_node(name, n); self.on_remove_base(n)
             def skip(n=n0): self._skip_base(name, n)
             # a suggestion, not a diagnosis: whether the scan has a table is not actually detected, so
