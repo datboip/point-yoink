@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.74-pre"
+APP = "PointYoink"; VERSION = "0.9.75-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -998,6 +998,7 @@ class App(ctk.CTk):
         self.refresh_loop(); self.drain_loop(); self._pulse()
         self.after(60000, lambda: self._close_splash(force=True))  # last-resort fallback only
         self._when_ready(self._wifi_recover)   # offer a stranded WiFi transfer, if any: after the splash, never before
+        self._when_ready(lambda: self.after(2500, self._start_prewarm))   # then quietly warm the preview cache in the background
 
     # ---- lifecycle helpers ----
     def _next_job(self, prefix):
@@ -2808,6 +2809,41 @@ class App(ctk.CTk):
                 self.q.put(("shaded", key, mode, out))
             except Exception as e:
                 log_error("shaded-preview "+key, e); self.q.put(("shaded", key, mode, None))
+    def _start_prewarm(self):
+        """After the window is up, quietly render any MISSING scan previews into the on-disk cache so
+        clicking a scan is instant. Runs once per session; the cache persists (~/.cache/pointyoink/thumbs),
+        so later runs skip almost everything. Yields to the user's own interactive render."""
+        if getattr(self, "_prewarm_started", False): return
+        self._prewarm_started=True
+        threading.Thread(target=self._prewarm_thread, daemon=True).start()
+    def _prewarm_thread(self):
+        import time as _t
+        dest=self.dest.get() or DEFAULT_DEST
+        try: names=[p["name"] for p in (getattr(self, "all_projects", None) or self.projects or [])]
+        except Exception: names=[]
+        jobs=[]
+        for name in names:
+            if not os.path.isdir(os.path.join(dest, name)): continue        # local projects only (device meshes need the slow mount)
+            try:
+                for node in self._proc_nodes(name): jobs.append((name, node))
+            except Exception: pass
+        for name, node in jobs:
+            try:
+                mesh=self._mesh_for_node(name, node)
+                if not mesh or mesh.startswith(PROJECTS): continue           # no fused mesh, or it's on the scanner mount
+                verkey=(self._proc_current(name, node) or (None,))[0]
+                key="%s__%s__%s" % (name, node, verkey or "v")
+                out=os.path.join(THUMBS, key+"__shaded.png")
+                if os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh) and os.path.getsize(out)>1024:
+                    continue                                                 # already cached and fresh — the whole point
+                while getattr(self, "_shade_running", False): _t.sleep(0.4) # let the user's own click take the machine
+                self.q.put(("prewarm_msg", "Caching previews…"))
+                env=dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
+                self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, out, "--size", "900x600"], timeout=600, env=env)
+            except Exception as e:
+                log_error("prewarm", e)
+            _t.sleep(0.15)                                                   # gentle: don't hog the CPU
+        self.q.put(("prewarm_msg", ""))
     def _preview_busy(self, text):
         """Show the spinner overlay with a step name (call again to change the text)."""
         try:
@@ -3694,27 +3730,18 @@ class App(ctk.CTk):
     def _next_refresh_body(self, ns, name, nodes, local):
         if self.page!="projects" or not name: ns.pack_forget(); return
         title, detail, btxt, cmd, step, alt = self._proc_next(name, nodes, local)
-        expanded=bool(self.cfg.get("next_details"))       # the long explanation is collapsed by default
         ns.pack(fill="x", pady=(2,6)); ns.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(ns, text="N E X T", text_color=MUT, font=ctk.CTkFont(size=9, weight="bold")).grid(row=0,column=0, padx=(14,10), pady=(12,0), sticky="w")   # a quiet section label, not a button
-        hb=ctk.CTkButton(ns, text="❔ How this works", width=138, height=24, corner_radius=12, fg_color="transparent", border_width=1, border_color=STROKE, hover_color="#15304d", text_color=AC, font=ctk.CTkFont(size=11), command=self._howto_dialog)
-        hb.grid(row=2,column=0, padx=(12,0), pady=(0,10), sticky="w")
-        thead=ctk.CTkFrame(ns, fg_color="transparent"); thead.grid(row=0,column=1, sticky="w", pady=(10,0))
-        tl=ctk.CTkLabel(thead, text=title, text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w", justify="left"); tl.pack(side="left")
-        def _toggle_why():
-            self.cfg["next_details"]=not expanded; save_cfg(self.cfg); self._next_refresh(name, nodes, local)
-        ctk.CTkButton(thead, text=("▾ why" if expanded else "▸ why"), width=50, height=20, corner_radius=6, fg_color="transparent",
-                      hover_color="#15304d", text_color=DIM, font=ctk.CTkFont(size=10), command=_toggle_why).pack(side="left", padx=(8,0))
-        dl=None
-        if expanded:
-            dl=ctk.CTkLabel(ns, text=detail, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=520); dl.grid(row=1,column=1, sticky="w", padx=(0,14), pady=(0,2))
+        hb=ctk.CTkButton(ns, text="How this works  (?)", width=152, height=24, corner_radius=12, fg_color="transparent", border_width=1, border_color=STROKE, hover_color="#15304d", text_color=AC, font=ctk.CTkFont(size=11), command=self._howto_dialog)
+        hb.grid(row=2,column=0, padx=(12,26), pady=(0,10), sticky="w")   # right pad separates it from the step trail
+        tl=ctk.CTkLabel(ns, text=title, text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w", justify="left"); tl.grid(row=0,column=1, sticky="w", pady=(10,0))
+        self._tip(tl, detail)   # the per-step "why" on hover — no inline expand that jumps the layout; the full guide is the How this works button
         trail=ctk.CTkFrame(ns, fg_color="transparent"); trail.grid(row=2,column=1, sticky="w", pady=(0,10))
         nb=[None]
         def relayout(e):
             """Wide: the button sits on the right, text wraps before it. Narrow: the button drops under the text."""
             wide=e.width>=760
             wrap=max(240, e.width-(320 if (wide and btxt) else 130)); tl.configure(wraplength=wrap)
-            if dl is not None: dl.configure(wraplength=wrap)
             if nb[0] is not None:
                 if wide: nb[0].grid(row=0,column=2, rowspan=3, padx=16, pady=10, sticky="e")
                 else: nb[0].grid(row=3,column=1, padx=(0,14), pady=(0,12), sticky="w")
@@ -4066,13 +4093,19 @@ class App(ctk.CTk):
             prev_archive=None
             try:
                 if os.path.exists(final):
-                    # keep the copy we're about to overwrite, so a re-Prepare doesn't silently lose it
+                    # keep the copy we're about to overwrite, so a re-Prepare doesn't silently lose it.
+                    # This MUST succeed before we overwrite: the UI promises earlier versions are preserved,
+                    # so if the backup fails we abort rather than destroy the previous version.
                     vdir=os.path.join(os.path.dirname(final), ".versions"); os.makedirs(vdir, exist_ok=True)
                     prev_archive=os.path.join(vdir, "%s_clean_%s.ply" % (node, time.strftime("%Y%m%d-%H%M%S")))
-                    try: shutil.copy2(final, prev_archive)
-                    except Exception: prev_archive=None
+                    shutil.copy2(final, prev_archive)
                 os.replace(tmp, final)
-            except Exception as e: log_error("prepare keep", e); status.configure(text="Could not save the prepared version (see Help > Log).", text_color=WARN); return
+            except Exception as e:
+                try:                                          # don't leave a stray/partial backup behind
+                    if prev_archive and os.path.exists(prev_archive): os.remove(prev_archive)
+                except Exception: pass
+                log_error("prepare keep", e)
+                status.configure(text="Couldn't back up the current version — nothing was overwritten, your prepared version is safe (see Help > Log).", text_color=WARN); return
             self._prep_record(name, node, pstate["opts"], prev_archive, os.path.getsize(final))
             self._persist(); self._mesh_stats={}; self.gallery_cache.pop(name, None); self.projects_sig=None
             n=len(self._prep_history(name, node))
@@ -5708,6 +5741,11 @@ class App(ctk.CTk):
                             except Exception: pass
                 elif kind=="shade_msg":
                     if self._shade_key and rest[0]==self._shade_key[0]: self.big_hint.configure(text=rest[1])
+                elif kind=="prewarm_msg":                       # subtle footer note; never overrides a real operation's status
+                    txt=rest[0]
+                    if txt:
+                        if not self._status_msg or getattr(self, "_prewarm_owns", False): self._status_msg=txt; self._prewarm_owns=True
+                    elif getattr(self, "_prewarm_owns", False): self._status_msg=None; self._prewarm_owns=False
                 elif kind=="mesh_stats":
                     key,st=rest; self._mesh_stats[key]=st
                     if self._shade_key and key==self._shade_key[0]: self._show_stats(st)
