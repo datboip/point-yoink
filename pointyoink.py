@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.96-pre"
+APP = "PointYoink"; VERSION = "0.9.97-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -5562,6 +5562,36 @@ class App(ctk.CTk):
             self.q.put(("shots", (local, recs)))
         except Exception as e:
             log_error("shots", e); self.q.put(("shots_failed", str(e)))
+    def _play_recording(self, path, nm):
+        """Open a recording in the system video player. MTP is flaky for video playback, so if it's still on
+        the scanner mount, copy it into the captures folder first (in the background) and play the local copy."""
+        try:
+            if path.startswith(MOUNT) or path.startswith(PROJECTS):
+                dest=os.path.join(self.dest.get() or DEFAULT_DEST, "captures"); os.makedirs(dest, exist_ok=True)
+                local=os.path.join(dest, nm)
+                try: fresh=os.path.exists(local) and os.path.getsize(local)==os.path.getsize(path)
+                except Exception: fresh=False
+                if fresh: subprocess.Popen(["xdg-open", local]); return
+                self.hold_banner("Copying %s off the scanner to play…" % nm[:24], AC)
+                threading.Thread(target=self._copy_and_play, args=(path, local, nm), daemon=True).start(); return
+            subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            log_error("play-rec", e); self.set_banner("Couldn't open that recording (see Help > Log).", WARN)
+    def _copy_and_play(self, src, local, nm):
+        try:
+            shutil.copyfile(src, local)
+            def done():
+                self.set_banner("Playing %s" % nm[:24], OK); self._dev_hold=0.0
+                try: subprocess.Popen(["xdg-open", local])
+                except Exception as e: log_error("xdg-open rec", e)
+                if getattr(self, "page", "")=="import" or getattr(self, "_cur_mode", "")=="Captures": self.refresh_screenshots_soft()
+            self.q.put(("call", done))
+        except Exception as e:
+            log_error("copy-play", e); self.q.put(("call", lambda: self.set_banner("Couldn't copy that recording to play (see Help > Log).", WARN)))
+    def refresh_screenshots_soft(self):
+        """Re-render the capture grid from what's already loaded (refresh the on-PC badges after a pull/copy) without re-reading the device."""
+        try: self.render_shots((getattr(self,"_shots_items",[]), getattr(self,"_recs",[])))
+        except Exception as e: log_error("shots-soft", e)
     def _shot_popout(self, path):
         """Full-size pop-out viewer for a capture: fits the image to the window, ← / → to step through the
         rest, Esc to close. Uses the local cached copies, so it works whether or not the scanner is attached."""
@@ -5571,17 +5601,30 @@ class App(ctk.CTk):
         body=ctk.CTkFrame(top, fg_color="#0a0c10"); body.pack(fill="both", expand=True)
         img_lbl=ctk.CTkLabel(body, text="", fg_color="#0a0c10"); img_lbl.pack(fill="both", expand=True, padx=10, pady=10)
         bar=ctk.CTkFrame(top, fg_color="transparent"); bar.pack(fill="x", pady=(0,8))
-        cap=ctk.CTkLabel(bar, text="", text_color=MUT, font=ctk.CTkFont(size=11)); cap.pack(side="left", padx=14)
+        cap=ctk.CTkLabel(bar, text="", text_color=TX, font=ctk.CTkFont(size=12, weight="bold")); cap.pack(side="left", padx=(14,10))
+        meta=ctk.CTkLabel(bar, text="", text_color=MUT, font=ctk.CTkFont(size=11)); meta.pack(side="left")
         st={"i": shots.index(path) if path in shots else 0}
         def show():
+            import datetime
             p=shots[st["i"]]
             try:
-                im=Image.open(p).convert("RGB")
+                im=Image.open(p); fmt=(im.format or "IMG"); im=im.convert("RGB"); ow,oh=im.width, im.height
                 W=max(400, top.winfo_width()-40); H=max(300, top.winfo_height()-110)
-                r=min(W/im.width, H/im.height); im=im.resize((max(1,int(im.width*r)), max(1,int(im.height*r))))
+                r=min(W/ow, H/oh); im=im.resize((max(1,int(ow*r)), max(1,int(oh*r))))
                 self.imgs["popout"]=ctk.CTkImage(light_image=im, dark_image=im, size=im.size)
                 img_lbl.configure(image=self.imgs["popout"], text="")
-                cap.configure(text="%s     %d / %d     (← →  to step · Esc to close)" % (os.path.basename(p), st["i"]+1, len(shots)))
+                stem=os.path.splitext(os.path.basename(p))[0]; dt=None   # scanner names shots MMDDYYYYHHMMSS.png
+                if len(stem)>=14 and stem[:14].isdigit():
+                    try: dt=datetime.datetime.strptime(stem[:14], "%m%d%Y%H%M%S")
+                    except Exception: dt=None
+                if dt is None:
+                    try: dt=datetime.datetime.fromtimestamp(os.path.getmtime(p))
+                    except Exception: dt=None
+                try: fsz=human(os.path.getsize(p))
+                except Exception: fsz="?"
+                cap.configure(text="%s   ·   %d / %d" % (os.path.basename(p), st["i"]+1, len(shots)))
+                meta.configure(text="%d × %d px  ·  %s  ·  %s  ·  %s     (← → step · Esc close)"
+                               % (ow, oh, fsz, fmt, dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "date unknown"))
             except Exception as e:
                 img_lbl.configure(image=None, text="Couldn't open this image (see Help > Log)"); log_error("popout-show", e)
         def nav(d): st["i"]=(st["i"]+d)%len(shots); show()
@@ -5623,6 +5666,11 @@ class App(ctk.CTk):
             ctk.CTkLabel(self.shots, text="%s  ·  %d" % (title, n), text_color=TX, font=ctk.CTkFont(size=12, weight="bold"),
                          anchor="w").grid(row=base, column=0, columnspan=4, padx=10, pady=(top,4), sticky="w")
         def ceil4(n): return -(-n//4)
+        capdir=os.path.join(self.dest.get() or DEFAULT_DEST, "captures")   # a capture is "on PC" once it's been pulled here
+        def badge(cell, nm):
+            onpc=os.path.exists(os.path.join(capdir, nm))
+            ctk.CTkLabel(cell, text=("✓ on PC" if onpc else "on device"), text_color=(OK if onpc else MUT),
+                         fg_color=("#173a2a" if onpc else CHIP), corner_radius=6, font=ctk.CTkFont(size=9), height=16).pack(pady=(0,8), ipadx=5)
         if images:
             section("SCREENSHOTS", len(images), 6); base+=1
             for idx,(nm,path) in enumerate(images):
@@ -5630,16 +5678,19 @@ class App(ctk.CTk):
                 cell=ctk.CTkFrame(self.shots, fg_color=CARD2, corner_radius=10); cell.grid(row=base+r,column=c, padx=6, pady=6, sticky="nsew")
                 lbl=ctk.CTkLabel(cell, text="loading…", text_color=DIM, width=250, height=150); lbl.pack(padx=8, pady=(8,2), fill="both", expand=True)
                 lbl.bind("<Button-1>", lambda e,p=path: self._shot_popout(p)); labels[path]=lbl
-                ctk.CTkLabel(cell, text=nm[:24], text_color=MUT, font=ctk.CTkFont(size=10)).pack(pady=(0,8))
+                ctk.CTkLabel(cell, text=nm[:24], text_color=MUT, font=ctk.CTkFont(size=10)).pack(pady=(0,2))
+                badge(cell, nm)
             base+=ceil4(len(images))
         if recs:
             section("RECORDINGS", len(recs), 14 if images else 6); base+=1
             for idx,(nm,path,sz) in enumerate(recs):
                 r,c=divmod(idx,4)
                 cell=ctk.CTkFrame(self.shots, fg_color=CARD2, corner_radius=10); cell.grid(row=base+r,column=c, padx=6, pady=6, sticky="nsew")
-                ctk.CTkLabel(cell, text="🎞", text_color=AC, font=ctk.CTkFont(size=38)).pack(padx=6, pady=(16,2))
+                ico=ctk.CTkLabel(cell, text="▶", text_color=AC, font=ctk.CTkFont(size=38)); ico.pack(padx=6, pady=(16,2))
                 ctk.CTkLabel(cell, text=nm[:20], text_color=TX, font=ctk.CTkFont(size=9)).pack()
-                ctk.CTkLabel(cell, text="video · "+human(sz), text_color=MUT, font=ctk.CTkFont(size=9)).pack(pady=(0,10))
+                ctk.CTkLabel(cell, text="video · "+human(sz)+" · click to play", text_color=MUT, font=ctk.CTkFont(size=9)).pack(pady=(0,4))
+                badge(cell, nm)
+                for w in (cell, ico): w.bind("<Button-1>", lambda e,p=path,n=nm: self._play_recording(p, n))
             base+=ceil4(len(recs))
         def work():
             for nm,path in images:
@@ -6079,6 +6130,7 @@ class App(ctk.CTk):
                 elif kind=="shots_pulled":
                     n, d = rest[0]; self.set_status(""); self._dev_hold=0.0
                     self.set_banner("Pulled %d capture%s → %s" % (n, "" if n==1 else "s", d), OK)
+                    self.refresh_screenshots_soft()   # flip the "on device" badges to "on PC" now they're saved
                     if self.auto_open.get(): subprocess.Popen(["xdg-open", d])
                 elif kind=="fuse_node": self._proc_progress(rest[0], rest[1], rest[2])
                 elif kind=="splash_preload":
