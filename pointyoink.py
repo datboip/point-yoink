@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.65-pre"
+APP = "PointYoink"; VERSION = "0.9.66-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3388,8 +3388,14 @@ class App(ctk.CTk):
         return vs[0]
     def _proc_set_current(self, name, node, key):
         self.records.setdefault(name,{}).setdefault("current",{})[node]=key; self._persist(); self._mesh_stats={}
-        self._proc_render(name)
-        if self.selected==name: self._mv_key=None; self._maybe_schedule_shaded(name, node, 250)
+        label={"clean":"prepared copy","scanner":"scanner's model","pcfused":"PC build"}.get(key,key)
+        if self.selected==name:
+            self._film_sel=node; self._mv_key=None
+            self.set_banner("Now showing the %s of %s." % (label, self._scan_label(name, node)), MUT)
+            try: self._request_shaded(name, node)               # re-render the preview from the chosen version now
+            except Exception: pass
+            if self.page=="projects": self._schedule_panel_refresh(50)   # move the ✓ / rebuild the version chips (deferred: don't destroy the clicked button mid-callback)
+        self.after(0, lambda: self._proc_render(name))          # rebuild the cards page too, deferred for the same reason
     def _trash(self, path):
         """Move a file or folder to the desktop trash (gio), else into <dest>/.trash. Can be slow
         for a big folder (the gio call is timeout-bounded, but its own fallback move is a real
