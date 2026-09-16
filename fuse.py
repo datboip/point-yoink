@@ -223,7 +223,9 @@ def main():
     mesh.compute_vertex_normals()
     # back to mm for the rest of the pipeline
     mesh.scale(1000.0, center=(0, 0, 0))
-    o3d.io.write_triangle_mesh(a.out, mesh, write_ascii=False)
+    _tmp = a.out + ".tmp.%d.ply" % os.getpid()   # write to a temp then atomically replace: a crash/OOM mid-write must not truncate the previous good model (a rebuild has no .versions backup)
+    o3d.io.write_triangle_mesh(_tmp, mesh, write_ascii=False)
+    os.replace(_tmp, a.out)
     emit("done", verts=len(mesh.vertices), faces=len(mesh.triangles),
          mb=round(os.path.getsize(a.out) / 1048576, 1))
     return 0

@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.90-pre"
+APP = "PointYoink"; VERSION = "0.9.91-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -426,12 +426,16 @@ def do_mount():
                        "screen, tap File Transfer on the scanner, then click USB.")
     return False, (err or "mount failed - replug USB & re-tap File Transfer")
 
-def list_projects():
+def list_projects(progress=None):
     out = []
     if not quick_mounted(probe=True, timeout=2): return out
     try: names = sorted(os.listdir(PROJECTS), reverse=True)
     except Exception: return out
-    for name in names:
+    total = len(names)
+    for i, name in enumerate(names):
+        if progress:
+            try: progress(i + 1, total)   # live count so the "reading scanner projects" banner visibly moves (MTP is slow, not frozen)
+            except Exception: pass
         pdir = os.path.join(PROJECTS, name)
         if not os.path.isdir(pdir): continue
         info = {"name": name, "meshes": None, "clouds": None, "date": None, "nodes": None, "thumb": None, "edit_time": None}
@@ -2404,7 +2408,7 @@ class App(ctk.CTk):
         self.listing=True; self._listing_src=source
         def work():
             try:
-                dev=list_projects() if source=="device" else []
+                dev=list_projects(progress=lambda i,t: self.q.put(("listing_progress", i, t))) if source=="device" else []
                 names={p["name"] for p in dev}; local=list_local_projects(dest); lmap={p["name"]: p for p in local}
                 for p in dev:                                  # a project that is also on this PC keeps what the PC knows about it
                     lp=lmap.get(p["name"])
@@ -2621,16 +2625,22 @@ class App(ctk.CTk):
         if todo: self._start_thread(self._film_thumb_worker, name, todo, name="film-thumbs")
     def _scan_thumb(self, name, node):
         """A cached small shaded render of one scan for the strip (grey on grid, like the big preview),
-        or None if it hasn't been rendered yet."""
-        p=os.path.join(THUMBS, "%s__%s__film.png" % (name, node))
+        or None if it hasn't been rendered yet. Keyed on the current version and checked against the mesh's
+        mtime, so switching version or editing the scan never shows the previous version's thumbnail."""
         try:
-            if os.path.exists(p) and os.path.getsize(p)>1024: return p
-        except Exception: pass
-        return None
+            verkey=(self._proc_current(name, node) or (None,))[0]
+            p=os.path.join(THUMBS, "%s__%s__%s__film.png" % (name, node, verkey or "v"))
+            if not (os.path.exists(p) and os.path.getsize(p)>1024): return None
+            mesh=self._mesh_for_node(name, node)
+            if mesh and not mesh.startswith(PROJECTS) and os.path.getmtime(p) < os.path.getmtime(mesh): return None   # mesh edited since: stale
+            return p
+        except Exception:
+            return None
     def _film_thumb_worker(self, name, todo):
         for node, mesh in todo:
             if self.selected!=name: return                    # moved on
-            out=os.path.join(THUMBS, "%s__%s__film.png" % (name, node))
+            verkey=(self._proc_current(name, node) or (None,))[0]
+            out=os.path.join(THUMBS, "%s__%s__%s__film.png" % (name, node, verkey or "v"))
             try:
                 src=mesh
                 if mesh.startswith(PROJECTS):                  # device mount is slow: reuse the local view-cache copy if present
@@ -4144,7 +4154,7 @@ class App(ctk.CTk):
             cur_arch=None
             if os.path.exists(final):
                 cur_arch=os.path.join(vdir, "%s_clean_%s.ply" % (node, time.strftime("%Y%m%d-%H%M%S"))); shutil.copy2(final, cur_arch)
-            shutil.copy2(arch, final)
+            shutil.copy2(arch, final); os.utime(final, None)   # copy2 keeps the archive's OLD mtime; bump it to now, or the freshness-by-mtime preview/mesh cache serves the PREVIOUS version and Restore shows the wrong model
         except Exception as e: log_error("prep restore", e); self.set_banner("Could not restore that version (see Help > Log).", WARN); return
         for h in hist:
             if h.get("current"): h["current"]=False; h["archive"]=cur_arch
@@ -4711,6 +4721,13 @@ class App(ctk.CTk):
         dest=self.dest.get() or DEFAULT_DEST; voxel=float(self.fuse_voxel.get() or 0.4); fuse_device=self.cfg.get("fuse_device","auto"); register_drift=bool(self.cfg.get("register_drift", True)); self._fuse_name=name
         self._start_thread(self._fuse_worker, name, None, dest, voxel, fuse_device, register_drift, name="fuse")
     def _fuse_worker(self, name, only_nodes=None, dest=None, voxel=None, fuse_device="auto", register_drift=True):
+        # thin guard: the impl emits fuse_done on every normal path, but an exception outside its inner
+        # try (e.g. os.makedirs) used to skip that emit and leave _fusing=True (Build stuck "already running").
+        try:
+            self._fuse_worker_impl(name, only_nodes, dest, voxel, fuse_device, register_drift)
+        except Exception as e:
+            log_error("fuse-worker", e); self.q.put(("fuse_done", name, ("err", "the build stopped unexpectedly - see the log")))
+    def _fuse_worker_impl(self, name, only_nodes=None, dest=None, voxel=None, fuse_device="auto", register_drift=True):
         dest=dest or DEFAULT_DEST; local=os.path.join(dest, name)
         nodes=[]
         for base in (os.path.join(PROJECTS, name), local):          # device listing first, else local
@@ -5868,6 +5885,8 @@ class App(ctk.CTk):
                     else: self.set_banner("Couldn't connect: "+msg, WARN); log_line("mount failed: "+msg)
                 elif kind=="refresh_probe":
                     self._refresh_probe_done(*rest)
+                elif kind=="listing_progress":
+                    i,t=rest; self.hold_banner("Reading scanner projects… %d of %d" % (i, t), AC)   # live count = obviously working, not frozen (MTP is just slow)
                 elif kind=="projects":
                     self.listing=False; self.listed=True; self.listed_src=self._listing_src; self.set_status("")   # clear "Refreshing projects…" — done, or it lingers as a fake perpetual-loading label
                     if not getattr(self, "_first_listed", False):
@@ -5893,6 +5912,7 @@ class App(ctk.CTk):
                 elif kind=="shaded":
                     key,mode,out=rest
                     if out is None: self._shade_failed.add((key,mode))
+                    else: self._shade_failed.discard((key,mode))   # a success clears the fail-mark, or one transient render error blocks this scan's preview until app restart
                     if (key,mode)==self._shade_key:
                         if out: self._show_shaded(out)
                         else: self.big_hint.configure(text="Scanner's own preview · could not draw the 3D model (see Help > Log)"); self._preview_idle()
