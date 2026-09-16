@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.103-pre"
+APP = "PointYoink"; VERSION = "0.9.104-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1925,6 +1925,8 @@ class App(ctk.CTk):
         self.summary=ctk.CTkLabel(self._barleft, text="No projects selected", text_color=TX, anchor="w", font=ctk.CTkFont(size=13))
         self.summary.pack(side="left")
         self.progress=ctk.CTkProgressBar(a, height=6, corner_radius=3, progress_color=AC); self.progress.set(0)
+        self.imp_graph=tk.Canvas(a, height=60, bg="#0d0f14", highlightthickness=0)   # USB import speed graph (same look as WiFi); shown only during a pull
+        self._imp_samples=[]; self._imp_last=0.0
         self.progline=ctk.CTkLabel(a, text="", text_color=MUT, anchor="w", font=ctk.CTkFont(size=11))
         def outlined(text, cmd, w=130):
             return ctk.CTkButton(a, text=text, width=w, height=40, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
@@ -3148,8 +3150,10 @@ class App(ctk.CTk):
                 if not sel:
                     self.set_banner("Nothing to import (all already imported).", MUT); return
         self.pulling=True; self.cancel=False; self._pull_list=sel; self._export_fails=[]
+        self._imp_samples=[]; self._imp_last=0.0   # fresh speed graph for this import
         self.import_btn.grid_remove(); self.cancel_btn.grid(row=0,column=3)
         self.progress.grid(row=1,column=0, columnspan=3, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=3, sticky="w", padx=(20,0), pady=(0,10))
+        self.imp_graph.grid(row=3,column=0, columnspan=4, sticky="ew", padx=20, pady=(0,10))   # the WiFi-style speed graph
         dest=self.dest.get() or DEFAULT_DEST; mo=self.models_only.get(); cleanup=self.cleanup.get(); clean_opts=self._clean_options() if cleanup else None; self._persist()
         fmts=[]
         if self.exp_stl.get(): fmts.append("stl")
@@ -3188,7 +3192,7 @@ class App(ctk.CTk):
         nodes=sorted(glob.glob(os.path.join(src, "data", "*")))
         if nodes is not None and keep is not None: nodes=[nd for nd in nodes if os.path.basename(nd) in keep]
         n=max(1,len(nodes))
-        meshes=[]
+        meshes=[]; _t0=time.time(); _bytes=0
         for j,nd in enumerate(nodes):
             if self.cancel: return
             if not os.path.isdir(nd): continue
@@ -3197,11 +3201,18 @@ class App(ctk.CTk):
             m=os.path.join(nd,"fuse_mesh.ply"); c=os.path.join(nd,"fuse.ply"); pv=os.path.join(nd,"preview.png")
             if os.path.exists(m):
                 d=os.path.join(out, "%s_%s.ply"%(name,node)); shutil.copyfile(m, d); meshes.append(d)
+                try: _bytes+=os.path.getsize(d)
+                except Exception: pass
             if os.path.exists(c):
-                shutil.copyfile(c, os.path.join(out, "%s_%s_cloud.ply"%(name,node)))
+                cc=os.path.join(out, "%s_%s_cloud.ply"%(name,node)); shutil.copyfile(c, cc)
+                try: _bytes+=os.path.getsize(cc)
+                except Exception: pass
             if os.path.exists(pv):
                 try: shutil.copyfile(pv, os.path.join(out, "%s_%s.png"%(name,node)))
                 except Exception: pass
+            rate=_bytes/max(0.2, time.time()-_t0)   # MTP read is the bottleneck; this is the real transfer speed
+            self.q.put(("prog", (i*100 + (j+1)*90//n)/(total*100),
+                        "Project %d of %d · %s · scan %d/%d · %s · %s/s" % (i+1,total,name,j+1,n,human(_bytes),human(rate)), rate))
         if (fmts or cleanup) and not self.cancel:
             self._process_meshes(meshes, name, fmts, cleanup, i, total, clean_opts=clean_opts)
         return len(meshes)
@@ -3300,8 +3311,10 @@ class App(ctk.CTk):
                 if m:
                     by=int(m.group(1).replace(",","")); fp=int(m.group(2)); spd=m.group(3); eta=m.group(4)
                     if eta.startswith("0:"): eta=eta[2:]                # drop the zero-hour -> mm:ss
+                    rm=re.match(r"([\d.]+)\s*([kKmMgG]?)", spd); rb=0.0   # "12.34MB/s" -> bytes/s for the speed graph
+                    if rm: rb=float(rm.group(1))*{"":1,"k":1e3,"m":1e6,"g":1e9}.get(rm.group(2).lower(),1)
                     self.q.put(("prog",(i*100+fp)/(total*100),
-                                "Project %d of %d · %s · %s · %s · %s left" % (i+1,total,name,human(by),spd,eta)))
+                                "Project %d of %d · %s · %s · %s · %s left" % (i+1,total,name,human(by),spd,eta), rb))
                 else:
                     mm=re.search(r"(\d+)%",ln)
                     if mm:
@@ -5176,25 +5189,38 @@ class App(ctk.CTk):
             self.wifi_dot.configure(text_color="#%02x%02x%02x" % (int(r*f),int(g*f),int(b*f)))
             self.after(60, self._wifi_pulse)
         except Exception: pass
+    def _speed_draw(self, cv, samples):
+        """Area chart of transfer speed (y) over overall progress (x) - the old copy-dialog look. Shared by
+        the WiFi receive panel and the USB import bar so both show the same graph."""
+        try: W=max(50, cv.winfo_width()); H=int(cv.cget("height"))
+        except Exception: return
+        cv.delete("all")
+        for gy in (0.25,0.5,0.75): cv.create_line(0, H*gy, W, H*gy, fill="#161a22")
+        if not samples: return
+        top=max(r for _,r in samples)*1.15 or 1.0
+        pts=[(4+f*(W-8), H-4-(r/top)*(H-14)) for f,r in samples]   # x = overall progress, grows left to right as the transfer completes
+        if len(pts)>=2:
+            poly=[(pts[0][0], H-4)]+pts+[(pts[-1][0], H-4)]
+            cv.create_polygon(*[c for xy in poly for c in xy], fill="#1d3f66", outline="")
+            cv.create_line(*[c for xy in pts for c in xy], fill=AC, width=2, smooth=True)
     def _wifi_graph_add(self, frac, rate):
-        """Append a (progress, speed) sample and redraw the area chart."""
+        """Append a (progress, speed) sample and redraw the WiFi area chart."""
         sm=self.wifi_samples; now=time.time()
         # sample by time, not by progress: a raw-frames project arrives as thousands of 0.9 MB files
         if not sm or now-self._wifi_last_sample>=0.3 or frac-sm[-1][0]>=0.01:
             sm.append((frac, rate)); self._wifi_last_sample=now
         else: sm[-1]=(frac, rate)
-        cv=self.wifi_graph
-        try: W=max(50, cv.winfo_width()); H=int(cv.cget("height"))
-        except Exception: return
-        cv.delete("all")
-        for gy in (0.25,0.5,0.75): cv.create_line(0, H*gy, W, H*gy, fill="#161a22")   # always visible now - nothing paints over the unfilled side
-        top=max(r for _,r in sm)*1.15 or 1.0
-        pts=[(4+f*(W-8), H-4-(r/top)*(H-14)) for f,r in sm]   # x = overall progress, like the old Windows copy dialog - grows left to right as the transfer completes
-        if len(pts)>=2:
-            poly=[(pts[0][0], H-4)]+pts+[(pts[-1][0], H-4)]
-            cv.create_polygon(*[c for xy in poly for c in xy], fill="#1d3f66", outline="")
-            cv.create_line(*[c for xy in pts for c in xy], fill=AC, width=2, smooth=True)
+        self._speed_draw(self.wifi_graph, sm)
         self._wifi_peak=max(r for _,r in sm)          # shown in the stats row, not over the curve
+    def _imp_graph_add(self, frac, rate):
+        """Same speed graph for the USB import bar."""
+        sm=getattr(self, "_imp_samples", None)
+        if sm is None: sm=self._imp_samples=[]
+        now=time.time()
+        if not sm or now-getattr(self,"_imp_last",0.0)>=0.3 or frac-sm[-1][0]>=0.01:
+            sm.append((frac, rate)); self._imp_last=now
+        else: sm[-1]=(frac, rate)
+        self._speed_draw(self.imp_graph, sm)
     def _wifi_set_code(self, code):
         for tl,ch in zip(self.wifi_tiles, code): tl.configure(text=ch)
     def _wifi_new_code(self):
@@ -6015,7 +6041,7 @@ class App(ctk.CTk):
         try:
             if self.progress.cget("mode")=="indeterminate": self.progress.stop(); self.progress.configure(mode="determinate")
         except Exception: pass
-        self.progress.set(0); self.progress.grid_remove()
+        self.progress.set(0); self.progress.grid_remove(); self.imp_graph.grid_remove()
         if cancelled: self.progline.configure(text="Cancelled."); self.set_banner("Import cancelled.", WARN)
         elif failed:
             self.progline.configure(text="Done with errors: "+", ".join(failed))
@@ -6157,7 +6183,7 @@ class App(ctk.CTk):
                             self.files_box.insert("end","  %-5s %9s   %s/%s\n"%("CLOUD" if (fn=="fuse.ply" or fn.endswith("_cloud.ply")) else "MESH", human(sz), node, fn))
                         self.files_box.configure(state="disabled")
                 elif kind=="prog":
-                    frac,line=rest
+                    frac=rest[0]; line=rest[1]; rate=rest[2] if len(rest)>2 else None
                     if "Converting" in line:                       # conversion has no % - animate instead of sitting at 99%
                         if self.progress.cget("mode")!="indeterminate":
                             self.progress.configure(mode="indeterminate"); self.progress.start()
@@ -6166,6 +6192,9 @@ class App(ctk.CTk):
                             self.progress.stop(); self.progress.configure(mode="determinate")
                         self.progress.set(frac)
                     self.progline.configure(text=line)
+                    if rate is not None:
+                        try: self._imp_graph_add(frac, rate)   # draw the speed graph (same as WiFi) from the rsync rate
+                        except Exception: pass
                 elif kind=="done": self._finish(rest[0],rest[1], no_models=rest[2] if len(rest)>2 else [])
                 elif kind=="cancelled": self._finish(rest[0],rest[1], cancelled=True, no_models=rest[2] if len(rest)>2 else [])
                 elif kind=="zipped":
