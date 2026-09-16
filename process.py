@@ -199,6 +199,20 @@ def main():
         if a.smooth_times > 0:
             try: trimesh.smoothing.filter_humphrey(m, iterations=int(a.smooth_times))
             except Exception: pass
+            # Humphrey/Laplacian smoothing is unstable on these open-boundary scan meshes: it drags a few
+            # percent of vertices far off the surface, spawning long sliver triangles that render as
+            # "shredded" garbage (measured max edge 97 vs a 0.27 median on a real scan; even 1 pass does it,
+            # and pinning the boundary does not stop it). The slivers are a runaway artifact, not surface, so
+            # drop any face with an edge far above the median. Guard so a mesh with no slivers is untouched.
+            try:
+                V = np.asarray(m.vertices); F = np.asarray(m.faces)
+                if len(F):
+                    emax = np.linalg.norm(V[F[:, [0, 1, 2]]] - V[F[:, [1, 2, 0]]], axis=2).max(axis=1)
+                    keep = emax < float(np.median(emax)) * 8.0
+                    if 0 < keep.sum() < len(F):
+                        m = trimesh.Trimesh(V, F[keep], process=False); m.remove_unreferenced_vertices()
+                        emit("desliver", dropped=int(len(F) - int(keep.sum())), faces=len(m.faces))
+            except Exception: pass
         if 0 < a.simplify_pct < 100:
             import fast_simplification
             v, f = fast_simplification.simplify(np.asarray(m.vertices, np.float32), np.asarray(m.faces, np.int32), target_reduction=1.0 - a.simplify_pct / 100.0)
