@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.105-pre"
+APP = "PointYoink"; VERSION = "0.9.106-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2977,6 +2977,44 @@ class App(ctk.CTk):
         try: nodes=self._proc_nodes(name)
         except Exception: return
         self._warm_enqueue([(name, n) for n in nodes], front=True)
+    def _warm_imported(self, names):
+        """After a mid-session import, render the new projects' scan thumbnails (still + strip + 300k mesh)
+        so their scan strip isn't blue and opening them is instant - the splash preloader only runs at boot."""
+        jobs=[]
+        for name in names:
+            try:
+                for node in self._proc_nodes(name): jobs.append((name, node))
+            except Exception: pass
+        if jobs: threading.Thread(target=self._warm_imported_worker, args=(jobs,), daemon=True).start()
+    def _warm_imported_worker(self, jobs):
+        import shade as _sh
+        faces=LIVE_QUALITY_FACES.get(self.cfg.get("live_quality","medium"), 300000)
+        env=dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
+        touched=set()
+        for name,node in jobs:
+            try:
+                mesh=self._mesh_for_node(name, node)
+                if not mesh or mesh.startswith(PROJECTS): continue
+                verkey=(self._proc_current(name, node) or (None,))[0]
+                while getattr(self, "_shade_running", False): time.sleep(0.3)   # yield to the user's own clicks
+                still=os.path.join(THUMBS, "%s__%s__%s__shaded.png" % (name, node, verkey or "v"))
+                if not (os.path.exists(still) and os.path.getmtime(still)>=os.path.getmtime(mesh) and os.path.getsize(still)>1024):
+                    self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, still, "--size", "900x600"], timeout=120, env=env)
+                film=os.path.join(THUMBS, "%s__%s__%s__film.png" % (name, node, verkey or "v"))
+                if not (os.path.exists(film) and os.path.getmtime(film)>=os.path.getmtime(mesh) and os.path.getsize(film)>1024):
+                    self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, film, "--size", "300x220"], timeout=120, env=env)
+                nkey=_sh._mesh_key(mesh, faces, None); npz=os.path.join(_sh.MESH_CACHE, nkey+"_n.npz") if nkey else None
+                if not (npz and os.path.exists(npz)):
+                    self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, "--warm", str(faces)], timeout=180, env=env)
+                touched.add(name)
+            except Exception as e: log_error("warm-imported", e)
+        for name in touched:                                  # if one of these is open, refresh its strip to swap blue -> grey
+            self.q.put(("call", lambda n=name: self._refresh_after_warm(n)))
+    def _refresh_after_warm(self, name):
+        if self.selected==name:
+            self.gallery_cache.pop(name, None)   # force a re-render so the strip picks up the new grey thumbnails
+            try: self.select_project(name)
+            except Exception as e: log_error("refresh-after-warm", e)
     def _start_prewarm(self):
         """Queue every local project's previews to warm in the background, once per session. Silent — the
         on-disk cache persists, so this fills gaps; the open project (front of the queue) warms first."""
@@ -3151,8 +3189,7 @@ class App(ctk.CTk):
         self.pulling=True; self.cancel=False; self._pull_list=sel; self._export_fails=[]
         self._imp_samples=[]; self._imp_last=0.0   # fresh speed graph for this import
         self.import_btn.grid_remove(); self.cancel_btn.grid(row=0,column=3)
-        self.progress.grid(row=1,column=0, columnspan=3, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=3, sticky="w", padx=(20,0), pady=(0,10))
-        self._import_popup()   # WiFi-style transfer window with the speed graph + stats
+        self._import_popup()   # the transfer popup owns the progress; the bottom bar stays clean unless you Run in background
         dest=self.dest.get() or DEFAULT_DEST; mo=self.models_only.get(); cleanup=self.cleanup.get(); clean_opts=self._clean_options() if cleanup else None; self._persist()
         fmts=[]
         if self.exp_stl.get(): fmts.append("stl")
@@ -5218,7 +5255,10 @@ class App(ctk.CTk):
         top=getattr(self, "_imp_top", None)
         if top is not None:
             try:
-                if top.winfo_exists(): top.deiconify(); top.lift(); return
+                if top.winfo_exists():
+                    top.deiconify(); top.lift()
+                    self.progress.grid_remove(); self.progline.grid_remove()   # popup owns progress again; clear the bottom-bar copy
+                    return
             except Exception: pass
         self._imp_samples=[]; self._imp_last=0.0
         top=tk.Toplevel(self); top.title("Importing"); top.configure(bg=BG)
@@ -5238,10 +5278,19 @@ class App(ctk.CTk):
             ctk.CTkLabel(col, text=cap, text_color=MUT, font=ctk.CTkFont(size=10)).pack(pady=(0,8)); self.imp_stats[key]=v
         br=ctk.CTkFrame(card, fg_color="transparent"); br.pack(side="bottom", pady=(8,16))
         ctk.CTkButton(br, text="Run in background", width=150, corner_radius=16, fg_color=CARD2, hover_color=STROKE,
-                      text_color=TX, command=lambda: top.withdraw()).pack(side="left", padx=6)
+                      text_color=TX, command=self._import_background).pack(side="left", padx=6)
         ctk.CTkButton(br, text="Cancel", width=110, corner_radius=16, fg_color=CARD2, hover_color=STROKE,
                       text_color=TX, command=self.on_cancel).pack(side="left", padx=6)
-        top.protocol("WM_DELETE_WINDOW", lambda: top.withdraw())   # closing hides it; the import keeps running (status bar shows progress)
+        top.protocol("WM_DELETE_WINDOW", self._import_background)   # closing hides it; the import keeps running (bottom bar shows progress)
+    def _import_background(self):
+        """Hide the popup and move the progress to the thin bottom bar so the import keeps running quietly."""
+        top=getattr(self, "_imp_top", None)
+        try:
+            if top is not None: top.withdraw()
+        except Exception: pass
+        if self.pulling:
+            self.progress.grid(row=1,column=0, columnspan=3, sticky="ew", pady=(8,0))
+            self.progline.grid(row=2,column=0, columnspan=3, sticky="w", padx=(20,0), pady=(0,10))
     def _close_import_popup(self):
         top=getattr(self, "_imp_top", None); self._imp_top=None
         if top is not None:
@@ -6093,13 +6142,14 @@ class App(ctk.CTk):
                 for n,v in self.pull_sel.items(): v.set(n in failed)
                 self.on_pull(); return
         else:
-            for n in getattr(self, "_pull_list", []):
-                if n not in failed:
-                    p=self._proj(n) or {}
-                    self.records.setdefault(n, {}).update(
-                        imported_to=os.path.join(dest, n), imported_at=int(time.time()),
-                        sig={"edit_time":p.get("edit_time"), "nodes":p.get("nodes"), "meshes":p.get("meshes")})
+            done=[n for n in getattr(self, "_pull_list", []) if n not in failed]
+            for n in done:
+                p=self._proj(n) or {}
+                self.records.setdefault(n, {}).update(
+                    imported_to=os.path.join(dest, n), imported_at=int(time.time()),
+                    sig={"edit_time":p.get("edit_time"), "nodes":p.get("nodes"), "meshes":p.get("meshes")})
             self._persist()
+            self._warm_imported(done)   # render the just-imported scans' thumbnails so the strip isn't blue on first open
             ef=getattr(self, "_export_fails", [])
             if no_models:      # "models only" found nothing built yet - the .revo/metadata still copied, but nothing to show for it
                 names=", ".join(self.disp(n) for n in no_models)
