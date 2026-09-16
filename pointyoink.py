@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.64-pre"
+APP = "PointYoink"; VERSION = "0.9.65-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1503,11 +1503,12 @@ class App(ctk.CTk):
         # standard-view nav (Fusion-style): snap the 3D view to Home / Top / Front / Back / Left / Right,
         # so the model is never lost off-screen; drag still gives free rotation to any angle.
         self.view_nav=ctk.CTkFrame(bigwrap, fg_color="#0d1017", corner_radius=6, border_width=1, border_color=STROKE)
-        for lab, az, el, tip in (("⌂",-35,30,"Home view (isometric)"), ("Top",0,90,"Top-down"),
+        for lab, az, el, tip in (("⌂ Fit",None,None,"Fit the model in view: home angle, zoom and pan reset"), ("Top",0,90,"Top-down"),
                                  ("Front",0,0,"Front"), ("Back",180,0,"Back"), ("Left",-90,0,"Left side"), ("Right",90,0,"Right side")):
-            b=ctk.CTkButton(self.view_nav, text=lab, width=(30 if lab=="⌂" else 42), height=22, corner_radius=4,
+            cmd=self._reset_view if az is None else (lambda a=az,e=el: self._set_view(a,e))
+            b=ctk.CTkButton(self.view_nav, text=lab, width=(50 if az is None else 42), height=22, corner_radius=4,
                             fg_color="transparent", hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11),
-                            command=lambda a=az,e=el: self._set_view(a,e))
+                            command=cmd)
             b.pack(side="left", padx=1, pady=1); self._tip(b, tip)
         # nothing selected: an empty state sits over the box (inset so the rounded border stays visible); select_project hides it
         self.big_empty=self._empty_state(bigwrap, "preview"); self.big_empty.grid(row=0,column=0, sticky="nsew", padx=6, pady=6)

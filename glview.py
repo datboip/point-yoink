@@ -67,7 +67,7 @@ class GLView(OpenGLFrame):
         try: self.winfo_id()
         except Exception: pass
         self.failed = False; self.ready = False; self.wire = False
-        self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 0.82, [0.0, 0.0]
+        self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 1.10, [0.0, 0.0]
         self.rot = self._default_rot()         # free rotation: a 4x4 the drag turns about the screen axes, no limits
         self._drag = None; self._gen = 0; self._pending = None; self._n = 0; self._vbo = None
         self._nw = 0; self._src = None; self._wire_gen = None    # set again by _upload; must exist before the first upload (Wireframe clicked early)
@@ -291,7 +291,7 @@ class GLView(OpenGLFrame):
         if self.wire: self._wire_data()
         self.draw()
     def reset(self, draw=True):
-        self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 0.82, [0.0, 0.0]; self.rot = self._default_rot()
+        self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 1.10, [0.0, 0.0]; self.rot = self._default_rot()
         if draw: self.draw()
     def set_view(self, azim, elev, draw=True):
         """Snap to a standard view (Top/Front/Right/…) - azimuth about up, elevation above the floor."""

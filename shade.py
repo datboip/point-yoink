@@ -76,7 +76,7 @@ def view_to_world(p, tf):
     p[..., 2] += tf["zshift"]
     return (p @ tf["R"]) * tf["scale"] + tf["mean"]
 
-def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0, zoom=0.71, pan=(0.0, 0.0), grid=True, gizmo=True):
+def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0, zoom=0.95, pan=(0.0, 0.0), grid=True, gizmo=True):
     """Draw the mesh with flat shading (painter's algorithm) on a grid floor. Returns a PIL image.
     zoom scales the view, pan shifts it in screen fractions; both are what the live viewer drives."""
     from PIL import Image, ImageDraw
