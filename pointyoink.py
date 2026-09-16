@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.111-pre"
+APP = "PointYoink"; VERSION = "0.9.112-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -6202,13 +6202,11 @@ class App(ctk.CTk):
         except Exception: pass
         self.progress.set(0); self.progress.grid_remove(); self._close_import_popup()
         if cancelled: self.progline.configure(text="Cancelled."); self.set_banner("Import cancelled.", WARN)
-        elif failed:
-            self.progline.configure(text="Done with errors: "+", ".join(failed))
-            if self._confirm("Some imports failed", "Some projects failed:\n"+"\n".join(failed)+"\n\nRetry those?"):
-                for n,v in self.pull_sel.items(): v.set(n in failed)
-                self.on_pull(); return
         else:
-            done=[n for n in getattr(self, "_pull_list", []) if n not in failed]
+            # record + warm every project that actually imported, even if others in the batch failed
+            # (this used to run only in the all-success path, so a partly-failed batch left its successes
+            # unrecorded, un-warmed, and unable to show as "imported" or detect future changes)
+            done=[n for n in getattr(self, "_pull_list", []) if n not in failed and os.path.isdir(os.path.join(dest, n))]
             for n in done:
                 p=self._proj(n) or {}
                 self.records.setdefault(n, {}).update(
@@ -6217,7 +6215,13 @@ class App(ctk.CTk):
             self._persist()
             self._warm_imported(done)   # render the just-imported scans' thumbnails so the strip isn't blue on first open
             ef=getattr(self, "_export_fails", [])
-            if no_models:      # "models only" found nothing built yet - the .revo/metadata still copied, but nothing to show for it
+            if failed:
+                self.progline.configure(text="Done with errors: "+", ".join(failed))
+                self.set_banner("%d project%s imported, %d failed - see Help > Log." % (len(done), "" if len(done)==1 else "s", len(failed)), WARN)
+                if self._confirm("Some imports failed", "%d imported. These failed:\n%s\n\nRetry the failed ones?" % (len(done), "\n".join(failed))):
+                    for n,v in self.pull_sel.items(): v.set(n in failed)
+                    self.on_pull(); return
+            elif no_models:    # "models only" found nothing built yet - the .revo/metadata still copied, but nothing to show for it
                 names=", ".join(self.disp(n) for n in no_models)
                 self.progline.configure(text="Imported, but no models yet: "+names)
                 self.set_banner("%s %s no built model on the scanner yet - build it there, or import the full project instead."
@@ -6229,7 +6233,6 @@ class App(ctk.CTk):
             else:
                 self.progline.configure(text="Done."); self.set_banner("Import complete.", OK)
             self.after(6000, lambda: self.progline.winfo_exists() and self.progline.grid_remove())
-            done=[n for n in getattr(self, "_pull_list", []) if n not in failed and os.path.isdir(os.path.join(dest, n))]
             self._select_after_list=done[0] if done else None        # then jump to Projects and show what just arrived
             self.projects_sig=None; self.gallery_cache={}; self.listed=False; self.start_listing()   # new projects appear
             za=getattr(self, "_zip_after", None)
