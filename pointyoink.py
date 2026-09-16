@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.117-pre"
+APP = "PointYoink"; VERSION = "0.9.118-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2314,9 +2314,13 @@ class App(ctk.CTk):
         if not rec.get("imported_at"): return False
         sig=rec.get("sig"); p=self._proj(name)
         if not sig or not p: return False
+        # edit_time only advances on a real edit, so ">" is right there; counts use "!=" so a scan swapped
+        # or removed on the device (same-ish count, different content) is still flagged, not just additions.
+        # (A same-count, same-edit_time in-place mesh replacement can't be detected without a content hash,
+        # which the recorded sig doesn't carry - accepted limitation.)
         return ((p.get("edit_time") or 0) > (sig.get("edit_time") or 0)
-                or (p.get("nodes") or 0) > (sig.get("nodes") or 0)
-                or (p.get("meshes") or 0) > (sig.get("meshes") or 0))
+                or (p.get("nodes") or 0) != (sig.get("nodes") or 0)
+                or (p.get("meshes") or 0) != (sig.get("meshes") or 0))
     def rename_project(self, name):
         d=ctk.CTkInputDialog(title="Rename project",
                              text="Friendly name for:\n%s\n\n(the original ID is kept as the folder name /\nreference - clear the box to reset)"%name)
@@ -3490,8 +3494,8 @@ class App(ctk.CTk):
                 cache=os.path.join(THUMBS, "view"); os.makedirs(cache, exist_ok=True)
                 node=os.path.basename(os.path.dirname(src))   # .../data/<node>/fuse_mesh.ply - key on the scan, not just the project, or different scans collide on name_fuse_mesh.ply
                 path=os.path.join(cache, "%s__%s_fuse_mesh.ply" % (name, node))
-                if not os.path.exists(path) or os.path.getsize(path)!=os.path.getsize(src):
-                    self.q.put(("loader_msg", token, "Copying the 3D model from the scanner…"))
+                if not os.path.exists(path) or os.path.getsize(path)!=os.path.getsize(src) or os.path.getmtime(path)<os.path.getmtime(src):
+                    self.q.put(("loader_msg", token, "Copying the 3D model from the scanner…"))   # size AND mtime: a rebuilt mesh of the same byte length must still refresh the copy
                     shutil.copyfile(src, path)
             except Exception as e:
                 log_error("view-copy", e); self.q.put(("view_done", token, None)); return
@@ -3679,8 +3683,8 @@ class App(ctk.CTk):
             try:
                 os.makedirs(outdir, exist_ok=True)
                 path=os.path.join(outdir, name+"_fuse_mesh.ply")
-                if not os.path.exists(path) or os.path.getsize(path)!=os.path.getsize(src):
-                    self.q.put(("loader_msg", token, "Copying the 3D model from the scanner…"))
+                if not os.path.exists(path) or os.path.getsize(path)!=os.path.getsize(src) or os.path.getmtime(path)<os.path.getmtime(src):
+                    self.q.put(("loader_msg", token, "Copying the 3D model from the scanner…"))   # size AND mtime: a rebuilt mesh of the same byte length must still refresh the copy
                     shutil.copyfile(src, path)
             except Exception as e:
                 log_error("base-copy", e); done(("err", "copy failed", node, None, name)); return
@@ -6082,8 +6086,9 @@ class App(ctk.CTk):
         dest=self.dest.get() or DEFAULT_DEST
         try: sizes=self._estimate_sizes(sel, dest)
         except Exception: sizes=None
-        mode=self._ask_zip_format(sizes)
+        mode,scope=self._ask_zip_format(sizes)
         if not mode: return
+        self._zip_scope=scope
         missing=[n for n in sel if not os.path.isdir(os.path.join(dest,n))]
         if missing:
             if self._confirm("Import first?",
@@ -6094,28 +6099,40 @@ class App(ctk.CTk):
             sel=[n for n in sel if n not in missing]
             if not sel:
                 self.set_banner("Nothing to zip.", MUT); return
-        self._start_zip(sel, dest, mode)
+        self._start_zip(sel, dest, mode, scope)
     def _ask_zip_format(self, sizes=None):
-        """Choose what goes in the zip. Returns 'stl'/'obj'/'glb'/'models'/'all' or None."""
+        """Choose what goes in the zip. Returns (mode, scope): mode in stl/obj/glb/models/all (or None if
+        cancelled), scope in 'current'/'all'. Scope only affects the model modes; 'Everything' is the full
+        archive regardless."""
         t=ctk.CTkToplevel(self); t.title("Export ZIP"); t.configure(fg_color=BG); t.resizable(False,False)
         try: t.transient(self); t.attributes("-topmost",True)
         except Exception: pass
-        w,h=470,410
+        w,h=470,470
         try:
             self.update_idletasks()
             x=self.winfo_rootx()+(self.winfo_width()-w)//2; y=self.winfo_rooty()+(self.winfo_height()-h)//3
             t.geometry("%dx%d+%d+%d"%(w,h,x,y))
         except Exception: pass
         res={"v":None}
+        scope=ctk.StringVar(value="current")
         card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=10, pady=10)
         ctk.CTkLabel(card, text="Export ZIP", font=ctk.CTkFont(family=WORDMARK, size=15,weight="bold"), text_color=TX).pack(anchor="w", padx=18, pady=(16,2))
         ctk.CTkLabel(card, text="What should go in the zip? Files are added flat with clean names.",
-                     text_color=MUT, font=ctk.CTkFont(size=12), wraplength=410, justify="left").pack(anchor="w", padx=18, pady=(0,10))
+                     text_color=MUT, font=ctk.CTkFont(size=12), wraplength=410, justify="left").pack(anchor="w", padx=18, pady=(0,8))
+        # version scope: the model modes ship the version you picked per scan by default, or every version
+        sr=ctk.CTkFrame(card, fg_color="transparent"); sr.pack(fill="x", padx=16, pady=(0,8))
+        ctk.CTkLabel(sr, text="Versions:", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left", padx=(0,8))
+        _seg=ctk.CTkSegmentedButton(sr, values=["Current","All versions"],
+                               command=lambda v: scope.set("current" if v=="Current" else "all"),
+                               fg_color=CARD2, selected_color=AC, selected_hover_color=AC_H,
+                               unselected_color=CARD2, text_color=TX, height=28)
+        _seg.set("Current"); _seg.pack(side="left")
+        ctk.CTkLabel(sr, text="which version of each scan", text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left", padx=8)
         def pick(v): res["v"]=v; t.destroy()
         opts=[("STL only","stl","for 3D printing"),("OBJ only","obj","for editing"),
               ("GLB only","glb","for the web / editing"),
               ("All models","models","every PLY, STL, OBJ, GLB"),
-              ("Everything","all","models, previews, metadata")]
+              ("Everything","all","full archive: every version, previews, metadata")]
         for label,val,hint in opts:
             row=ctk.CTkFrame(card, fg_color="transparent"); row.pack(fill="x", padx=16, pady=3)
             ctk.CTkButton(row, text=label, width=120, height=32, corner_radius=16, fg_color=CARD2,
@@ -6135,7 +6152,7 @@ class App(ctk.CTk):
         finally:
             try: t.grab_release()
             except Exception: pass
-        return res["v"]
+        return res["v"], scope.get()
     def _mesh_cloud_sources(self, name, dest):
         """(mesh_plys, cloud_plys) for a project: local flat > local nested > device nested."""
         local=os.path.join(dest, name)
@@ -6177,17 +6194,26 @@ class App(ctk.CTk):
             else:
                 est["all"]+=int(ply_bytes*1.03)+256*1024   # models + a little for previews/metadata
         return est
-    def _start_zip(self, sel, dest, mode):
+    def _start_zip(self, sel, dest, mode, scope="current"):
         self.pulling=True
         self.zip_btn.configure(state="disabled")
         self.progress.grid(row=1,column=0, columnspan=4, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=4, sticky="w", padx=(20,0), pady=(0,10))
-        threading.Thread(target=self._zip_worker, args=(sel,dest,mode), daemon=True).start()
+        threading.Thread(target=self._zip_worker, args=(sel,dest,mode,scope), daemon=True).start()
     def _project_meshes(self, base, name):
         """Mesh .ply files for an imported project (flat layout, else nested mirror)."""
         flat=[p for p in glob.glob(os.path.join(base, name+"_*.ply")) if not p.endswith("_cloud.ply") and not p.endswith(".tmp.ply")]
         if flat: return sorted(flat)
         return sorted(glob.glob(os.path.join(base, "data", "*", "fuse_mesh.ply")))
-    def _zip_worker(self, sel, dest, mode):
+    def _scope_meshes(self, base, name, scope):
+        """Mesh plys to export, honoring the version scope: 'current' = only the version picked per scan
+        (what the UI shows), 'all' = every version file on disk. Falls back to all if nothing resolves."""
+        if scope!="current": return self._project_meshes(base, name)
+        out=[]
+        for node in self._proc_nodes(name):
+            cur=self._proc_current(name, node)
+            if cur and cur[2] and os.path.exists(cur[2]): out.append(cur[2])
+        return sorted(set(out)) or self._project_meshes(base, name)
+    def _zip_worker(self, sel, dest, mode, scope="current"):
         import zipfile
         # everything is inside the try, incl. makedirs: a bad destination must post a zipfail and clear
         # the busy state, not throw out of the thread and leave the ZIP button stuck disabled.
@@ -6203,7 +6229,7 @@ class App(ctk.CTk):
             for name in sel:
                 base=os.path.join(dest, name)
                 if mode in ("stl","obj","glb"):
-                    for ply in self._project_meshes(base, name):
+                    for ply in self._scope_meshes(base, name, scope):
                         # name flat & unique: <name>_<node>.<ext>
                         node=os.path.basename(os.path.dirname(ply)) if os.sep+"data"+os.sep in ply else os.path.basename(ply)[:-4]
                         stem=node if node.startswith(name) else "%s_%s"%(name,node)
@@ -6214,6 +6240,17 @@ class App(ctk.CTk):
                             self.q.put(("prog", 0.0, "Converting %s to %s…"%(name, mode.upper())))
                             if not self._convert_subprocess(ply, target): zfails+=1; continue
                         files.append((target, os.path.basename(target)))
+                elif mode=="models" and scope=="current":
+                    # only the version picked per scan: its ply, any same-stem converted file, and point clouds
+                    keep={os.path.splitext(os.path.basename(p))[0] for p in self._scope_meshes(base, name, "current")}
+                    for f in glob.glob(os.path.join(base,"*")):
+                        if f.endswith(".tmp.ply") or not f.lower().endswith((".ply",".stl",".obj",".glb")): continue
+                        st=os.path.splitext(os.path.basename(f))[0]
+                        if st in keep or f.endswith("_cloud.ply"): files.append((f, os.path.basename(f)))
+                    for p in self._scope_meshes(base, name, "current"):      # nested device-mirror layout
+                        if os.sep+"data"+os.sep in p:
+                            node=os.path.basename(os.path.dirname(p)); stem,ext=os.path.splitext(os.path.basename(p))
+                            files.append((p, "%s_%s_%s%s" % (name, node, stem, ext)))
                 elif mode=="models":
                     for f in glob.glob(os.path.join(base,"*")):
                         if f.lower().endswith((".ply",".stl",".obj",".glb")) and not f.endswith(".tmp.ply"): files.append((f, os.path.basename(f)))
@@ -6285,7 +6322,8 @@ class App(ctk.CTk):
             if za:
                 self._zip_after=None
                 mode=getattr(self,"_zip_mode","models"); self._zip_mode=None
-                self._start_zip([n for n in za if os.path.isdir(os.path.join(dest,n))], dest, mode); return
+                scope=getattr(self,"_zip_scope","current")
+                self._start_zip([n for n in za if os.path.isdir(os.path.join(dest,n))], dest, mode, scope); return
             if self.auto_open.get(): self.open_folder()
 
     # ---- queue ----
