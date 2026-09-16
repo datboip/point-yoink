@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.118-pre"
+APP = "PointYoink"; VERSION = "0.9.119-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1185,8 +1185,8 @@ class App(ctk.CTk):
                     cv.create_image(lx, ly, image=self.imgs["splash"], anchor="center")
                 except Exception as e: log_error("splash-logo", e)
             cv.create_text(W//2, int(H*0.555), text=APP, fill=TX, font=(WORDMARK, 30, "bold"))
-            cv.create_text(W//2, int(H*0.635), text="Y O I N K   Y O U R   S C A N S   O F F ,   O N   L I N U X",
-                           fill=MUT, font=(WORDMARK, 8))
+            cv.create_text(W//2, int(H*0.635), text="Y O I N K .   C L E A N .   K E E P .",
+                           fill=MUT, font=(WORDMARK, 9))
             px0, py, pw, ph = W//2-125, int(H*0.80), 250, 5
             cv.create_rectangle(px0, py, px0+pw, py+ph, fill="#0c0f15", outline="")
             self._sp_fill=cv.create_rectangle(px0, py, px0+1, py+ph, fill=AC, outline="")
