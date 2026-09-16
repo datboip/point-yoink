@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.97-pre"
+APP = "PointYoink"; VERSION = "0.9.98-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -5592,6 +5592,20 @@ class App(ctk.CTk):
         """Re-render the capture grid from what's already loaded (refresh the on-PC badges after a pull/copy) without re-reading the device."""
         try: self.render_shots((getattr(self,"_shots_items",[]), getattr(self,"_recs",[])))
         except Exception as e: log_error("shots-soft", e)
+    def _del_capture(self, nm):
+        """Remove a capture's copies FROM THIS PC — the pulled file in captures/ and the cached thumbnail —
+        to the trash (recoverable). The scanner's original is NOT touched; if it's still on the device it
+        reappears on the next read (and shows the 'on device' badge)."""
+        capdir=os.path.join(self.dest.get() or DEFAULT_DEST, "captures")
+        gone=False
+        for t in (os.path.join(capdir, nm), os.path.join(THUMBS, "shots", nm)):
+            if os.path.exists(t):
+                try: subprocess.run(["gio","trash",t], check=False, timeout=10); gone=True
+                except Exception as e: log_error("trash-capture", e)
+        self._shots_items=[(n,p) for (n,p) in getattr(self,"_shots_items",[]) if n!=nm]   # drop it from the current view now
+        self._recs=[(n,p,s) for (n,p,s) in getattr(self,"_recs",[]) if n!=nm]
+        self.refresh_screenshots_soft()
+        self.set_banner(("Removed %s from this PC (in the trash)" % nm[:24]) if gone else ("%s wasn't saved on this PC" % nm[:24]), MUT)
     def _shot_popout(self, path):
         """Full-size pop-out viewer for a capture: fits the image to the window, ← / → to step through the
         rest, Esc to close. Uses the local cached copies, so it works whether or not the scanner is attached."""
@@ -5671,6 +5685,10 @@ class App(ctk.CTk):
             onpc=os.path.exists(os.path.join(capdir, nm))
             ctk.CTkLabel(cell, text=("✓ on PC" if onpc else "on device"), text_color=(OK if onpc else MUT),
                          fg_color=("#173a2a" if onpc else CHIP), corner_radius=6, font=ctk.CTkFont(size=9), height=16).pack(pady=(0,8), ipadx=5)
+        def addx(cell, nm):   # a ✕ in the corner, matching the version-chip delete: removes the PC copies to trash
+            x=ctk.CTkButton(cell, text="✕", width=22, height=22, corner_radius=6, fg_color="#0a0c10", hover_color="#3a2530",
+                            text_color=MUT, font=ctk.CTkFont(size=11), command=lambda n=nm: self._del_capture(n))
+            x.place(relx=1.0, rely=0.0, x=-4, y=4, anchor="ne"); self._tip(x, "Remove this capture's copy from this PC (to trash). The scanner's original is not touched.")
         if images:
             section("SCREENSHOTS", len(images), 6); base+=1
             for idx,(nm,path) in enumerate(images):
@@ -5679,7 +5697,7 @@ class App(ctk.CTk):
                 lbl=ctk.CTkLabel(cell, text="loading…", text_color=DIM, width=250, height=150); lbl.pack(padx=8, pady=(8,2), fill="both", expand=True)
                 lbl.bind("<Button-1>", lambda e,p=path: self._shot_popout(p)); labels[path]=lbl
                 ctk.CTkLabel(cell, text=nm[:24], text_color=MUT, font=ctk.CTkFont(size=10)).pack(pady=(0,2))
-                badge(cell, nm)
+                badge(cell, nm); addx(cell, nm)
             base+=ceil4(len(images))
         if recs:
             section("RECORDINGS", len(recs), 14 if images else 6); base+=1
@@ -5689,7 +5707,7 @@ class App(ctk.CTk):
                 ico=ctk.CTkLabel(cell, text="▶", text_color=AC, font=ctk.CTkFont(size=38)); ico.pack(padx=6, pady=(16,2))
                 ctk.CTkLabel(cell, text=nm[:20], text_color=TX, font=ctk.CTkFont(size=9)).pack()
                 ctk.CTkLabel(cell, text="video · "+human(sz)+" · click to play", text_color=MUT, font=ctk.CTkFont(size=9)).pack(pady=(0,4))
-                badge(cell, nm)
+                badge(cell, nm); addx(cell, nm)
                 for w in (cell, ico): w.bind("<Button-1>", lambda e,p=path,n=nm: self._play_recording(p, n))
             base+=ceil4(len(recs))
         def work():
