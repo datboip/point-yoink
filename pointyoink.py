@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.115-pre"
+APP = "PointYoink"; VERSION = "0.9.116-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2696,7 +2696,7 @@ class App(ctk.CTk):
             p=os.path.join(THUMBS, "%s__%s__%s__film.png" % (name, node, verkey or "v"))
             if not (os.path.exists(p) and os.path.getsize(p)>1024): return None
             mesh=self._mesh_for_node(name, node)
-            if mesh and not mesh.startswith(PROJECTS) and os.path.getmtime(p) < os.path.getmtime(mesh): return None   # mesh edited since: stale
+            if mesh and os.path.getmtime(p) < os.path.getmtime(mesh): return None   # mesh edited since (local OR device): stale
             return p
         except Exception:
             return None
@@ -2709,8 +2709,14 @@ class App(ctk.CTk):
                 src=mesh
                 if mesh.startswith(PROJECTS):                  # device mount is slow: reuse the local view-cache copy if present
                     cached=os.path.join(THUMBS, "view", ("%s__%s__%s"%(name,node,verkey or "v"))+"_fuse_mesh.ply")   # match the name _shade_thread writes (key = name__node__verkey), or this never hit
-                    if os.path.exists(cached): src=cached
-                if os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(src) and os.path.getsize(out)>1024:
+                    if os.path.exists(cached):
+                        if os.path.getmtime(cached) < os.path.getmtime(mesh):   # device mesh edited since we copied it: refresh the local copy so the thumb isn't stale
+                            try: shutil.copyfile(mesh, cached)
+                            except Exception: pass
+                        src=cached
+                # freshness is judged against the mesh itself (the source of truth), not the local copy whose
+                # mtime is just copy-time, so the reader (which checks the mesh) and this writer agree.
+                if os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh) and os.path.getsize(out)>1024:
                     self.q.put(("film_thumb", name, node, out)); continue
                 env=dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
                 r=self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), src, out, "--size", "300x220"], timeout=300, env=env)
@@ -3884,7 +3890,8 @@ class App(ctk.CTk):
             elif cur and self._auto_mesh_preview(): self._card_thumb(name, node, cur[2], tl)      # no scanner picture: optional mesh render only
             top=ctk.CTkFrame(card, fg_color="transparent"); top.grid(row=0,column=1, sticky="ew", pady=(12,0))
             ctk.CTkLabel(top, text=self._scan_label(name, node), font=ctk.CTkFont(size=14, weight="bold"), text_color=TX).pack(side="left")
-            ctk.CTkLabel(top, text=("scan %d of %d" % (i+1, len([n for n in nodes if n!="combined"])) if node!="combined" else "all aligned scans in one model"), text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=10)
+            _order=[n for n in nodes if n!="combined"]   # index into the real scans, not the raw enumerate i (which would count a combined node)
+            ctk.CTkLabel(top, text=("scan %d of %d" % (_order.index(node)+1, len(_order)) if node!="combined" else "all aligned scans in one model"), text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=10)
             if node=="combined": status="%d version%s · built from the scans you lined up" % (len(vs), "" if len(vs)==1 else "s")
             else: status=("no 3D model yet · raw data on this PC" if raw else "no 3D model yet · no raw data on this PC") if not vs else ("%d version%s · raw data on this PC" % (len(vs), "" if len(vs)==1 else "s") if raw else "%d version%s · no raw data on this PC" % (len(vs), "" if len(vs)==1 else "s"))
             ctk.CTkLabel(top, text=status, text_color=(WARN if not vs else MUT), font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
