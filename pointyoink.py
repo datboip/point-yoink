@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.119-pre"
+APP = "PointYoink"; VERSION = "0.9.120-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -455,12 +455,16 @@ def list_projects(progress=None):
                     except Exception: info["edit_time"]=None
             except Exception: pass
         tp = os.path.join(THUMBS, name + "__thumb.png")
-        if not os.path.exists(tp):
-            try:
-                for node in sorted(os.listdir(os.path.join(pdir,"data"))):
-                    prev=os.path.join(pdir,"data",node,"preview.png")
-                    if os.path.exists(prev): os.makedirs(THUMBS, exist_ok=True); shutil.copyfile(prev, tp); break
-            except Exception: pass
+        try:
+            src=None
+            for node in sorted(os.listdir(os.path.join(pdir,"data"))):
+                prev=os.path.join(pdir,"data",node,"preview.png")
+                if os.path.exists(prev): src=prev; break
+            # refresh when the source preview is newer too (an in-place replace under the same name), not
+            # only when the cached thumb is missing - else a replaced project keeps its old list preview
+            if src and (not os.path.exists(tp) or os.path.getmtime(tp)<os.path.getmtime(src)):
+                os.makedirs(THUMBS, exist_ok=True); shutil.copyfile(src, tp)
+        except Exception: pass
         if os.path.exists(tp): info["thumb"]=tp
         out.append(info)
     return out
@@ -515,7 +519,11 @@ def list_local_projects(dest):
         mesh_nodes=set(node_of(x) for x in flat) | set(os.path.basename(os.path.dirname(x)) for x in nested)
         # meshes the SCANNER made (One-tap Edit / Mesh there): the plain <name>_<node>.ply or data/<node>/fuse_mesh.ply, not our _pcfused/_clean builds
         dev_meshed=set(node_of(x) for x in flat if not (x.endswith("_pcfused.ply") or x.endswith("_clean.ply"))) | set(os.path.basename(os.path.dirname(x)) for x in nested)
-        nodes=mesh_nodes | set(os.path.basename(d) for d in glob.glob(os.path.join(pdir, "data", "*")) if os.path.isdir(d))
+        # count the same scans the film strip tiles (gather_gallery): a raw scan with only a scanner
+        # preview (name_<node>.png) is still a scan you can select and build, so the header "N scans" must
+        # include it, or the count disagrees with the tiles ("1 scan" over 5 tiles).
+        preview_nodes=set(node_of(p) for p in glob.glob(os.path.join(pdir, name+"_*.png")))
+        nodes=mesh_nodes | preview_nodes | set(os.path.basename(d) for d in glob.glob(os.path.join(pdir, "data", "*")) if os.path.isdir(d))
         if not (flat or nested or clouds or os.path.exists(os.path.join(pdir, name+".revo"))): continue
         nodes.discard("combined")
         info={"name":name, "local":True, "meshes":len(mesh_nodes - {"combined"}), "clouds":len(clouds), "nodes":len(nodes) or None, "date":None, "thumb":None, "edit_time":None,
@@ -528,10 +536,12 @@ def list_local_projects(dest):
             try: info["date"]=time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(pdir)))
             except Exception: pass
         tp=os.path.join(THUMBS, name+"__thumb.png")
-        if not os.path.exists(tp):
-            for src in sorted(glob.glob(os.path.join(pdir, name+"_*.png"))) + sorted(glob.glob(os.path.join(pdir, "data", "*", "preview.png"))):
-                try: os.makedirs(THUMBS, exist_ok=True); shutil.copyfile(src, tp); break
-                except Exception: pass
+        srcs=sorted(glob.glob(os.path.join(pdir, name+"_*.png"))) + sorted(glob.glob(os.path.join(pdir, "data", "*", "preview.png")))
+        src=srcs[0] if srcs else None
+        # refresh when the source is newer too (in-place replace), not only when the thumb is missing
+        if src and (not os.path.exists(tp) or os.path.getmtime(tp)<os.path.getmtime(src)):
+            try: os.makedirs(THUMBS, exist_ok=True); shutil.copyfile(src, tp)
+            except Exception: pass
         if os.path.exists(tp): info["thumb"]=tp
         out.append(info)
     return out
@@ -2493,15 +2503,35 @@ class App(ctk.CTk):
 
     # ---- list ----
     def _list_thumb(self, name, fallback=None):
-        """Best thumbnail for a project row: a cached shaded render of its model (combined first, else the
-        newest scan render) so the list matches the big preview; falls back to the scanner's flat preview."""
+        """Best thumbnail for a project row: the render the big preview would show (its largest model's
+        node at the CURRENT version), then the combined render, then the newest render that is still backed
+        by a current version. Never a switched-away/deleted version's stale render; falls back to the flat
+        scanner preview."""
         try:
             cands=[c for c in glob.glob(os.path.join(THUMBS, glob.escape(name)+"__*__shaded.png")) if os.path.getsize(c)>1024]
             if cands:
-                # the combined render is name__combined__<verkey>__shaded.png - match by prefix (the old exact
-                # name__combined__shaded.png never existed once verkeys were added, so this always fell to newest)
-                comb=next((c for c in cands if os.path.basename(c).startswith(name+"__combined__")), None)
-                return comb or max(cands, key=os.path.getmtime)
+                def fresh(path, node):
+                    mesh=self._mesh_for_node(name, node)
+                    try: return not mesh or os.path.getmtime(path)>=os.path.getmtime(mesh)
+                    except Exception: return True
+                # 1) exactly what the hero preview renders: largest mesh's node at its current version
+                hero=self._find_mesh(name); node=self._node_of(name, hero) if hero else None
+                if node:
+                    verkey=(self._proc_current(name, node) or (None,))[0]
+                    want=os.path.join(THUMBS, "%s__%s__%s__shaded.png" % (name, node, verkey or "v"))
+                    if os.path.exists(want) and os.path.getsize(want)>1024 and fresh(want, node):
+                        return want
+                # 2) the whole-project combined render, if one is current
+                comb=next((c for c in cands if os.path.basename(c).startswith(name+"__combined__")
+                           and fresh(c, "combined")), None)
+                if comb: return comb
+                # 3) newest render still backed by a current version (orphans of deleted/old versions pruned)
+                valid={}
+                for nd in self._proc_nodes(name):
+                    vk=(self._proc_current(name, nd) or (None,))[0]
+                    valid["%s__%s__%s__shaded.png" % (name, nd, vk or "v")]=nd
+                live=[c for c in cands if os.path.basename(c) in valid and fresh(c, valid[os.path.basename(c)])]
+                if live: return max(live, key=os.path.getmtime)
         except Exception as e:
             log_error("list-thumb", e)
         return fallback
@@ -3036,19 +3066,24 @@ class App(ctk.CTk):
         self._warm_enqueue([(name, n) for n in nodes], front=True)
     def _warm_imported(self, names):
         """After a mid-session import, render the new projects' scan thumbnails (still + strip + 300k mesh)
-        so their scan strip isn't blue and opening them is instant - the splash preloader only runs at boot."""
+        so their scan strip isn't blue and opening them is instant - the splash preloader only runs at boot.
+        Shown as a visible 'Preparing previews' stage in the app status, so import completion doesn't just
+        silently flip blue tiles to grey after the project has already opened."""
         jobs=[]
         for name in names:
             try:
                 for node in self._proc_nodes(name): jobs.append((name, node))
             except Exception: pass
-        if jobs: threading.Thread(target=self._warm_imported_worker, args=(jobs,), daemon=True).start()
+        if jobs:
+            self.set_status("Preparing previews…  0 / %d" % len(jobs))
+            threading.Thread(target=self._warm_imported_worker, args=(jobs,), daemon=True).start()
     def _warm_imported_worker(self, jobs):
         import shade as _sh
         faces=LIVE_QUALITY_FACES.get(self.cfg.get("live_quality","medium"), 300000)
         env=dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
-        touched=set()
-        for name,node in jobs:
+        touched=set(); total=len(jobs)
+        for i,(name,node) in enumerate(jobs, 1):
+            self.q.put(("call", lambda i=i: self.set_status("Preparing previews…  %d / %d" % (i, total))))
             try:
                 mesh=self._mesh_for_node(name, node)
                 if not mesh or mesh.startswith(PROJECTS): continue
@@ -3067,6 +3102,7 @@ class App(ctk.CTk):
             except Exception as e: log_error("warm-imported", e)
         for name in touched:                                  # if one of these is open, refresh its strip to swap blue -> grey
             self.q.put(("call", lambda n=name: self._refresh_after_warm(n)))
+        self.q.put(("call", lambda: self.set_status("Previews ready." if touched else "Ready")))
     def _refresh_after_warm(self, name):
         if self.selected==name:
             self.gallery_cache.pop(name, None)   # force a re-render so the strip picks up the new grey thumbnails
@@ -4510,14 +4546,21 @@ class App(ctk.CTk):
         """Two linked 3D views; pick any scan and version for each side."""
         nodes=self._proc_nodes(name); choices=[]
         for nd in nodes:
-            for key,label,path in self._proc_versions(name, nd): choices.append(("%s · %s" % (self._scan_label(name, nd), label), path))
+            for key,label,path in self._proc_versions(name, nd): choices.append(["%s · %s" % (self._scan_label(name, nd), label), path, nd])
         if len(choices)<2: self._alert("Compare", "Nothing to compare yet: this project has fewer than two model versions."); return
+        # two scans can share a label (auto index clash or a duplicate custom name); without this, the
+        # option strings collide, dict(choices) keeps one path, and picking the other loads the wrong model.
+        # Append the node id to any colliding entry so every dropdown row maps to exactly one model.
+        _seen={}
+        for c in choices: _seen[c[0]]=_seen.get(c[0],0)+1
+        for c in choices:
+            if _seen[c[0]]>1: c[0]="%s  (%s)" % (c[0], c[2])
         t=self._top("Compare · %s" % self.disp(name), 1180, 760, key="compare")
         if t is None: return
         card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
         card.grid_columnconfigure((0,1), weight=1); card.grid_rowconfigure(1, weight=1)
         menu=dict(fg_color="#0d0f14", button_color=CARD2, button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=8)
-        lookup=dict(choices); labels=[c[0] for c in choices]
+        lookup={c[0]: c[1] for c in choices}; labels=[c[0] for c in choices]
         cur=self._film_sel if self._film_sel in nodes else nodes[0]
         left0=next((l for l in labels if l.startswith(self._scan_label(name, cur)+" ·")), labels[0])
         right0=next((l for l in labels if l.startswith("Combined ·")), None) or next((l for l in labels if l!=left0), labels[-1])
@@ -4621,15 +4664,22 @@ class App(ctk.CTk):
         st={"base": rec.get("_base") if rec.get("_base") in nodes else nodes[0], "moving": None, "pairs": [], "pending": None, "result": None, "busy": False}
         st["moving"]=next((n for n in nodes if n!=st["base"]), None)
         lab=lambda n: self._scan_label(name, n)
+        # two scans can share a label (auto index clash or a duplicate custom name). The dropdowns key on
+        # the label, so without this a duplicate makes both rows resolve to the FIRST matching scan and the
+        # other can't be picked. Append the node id to any colliding label so each row maps to one scan.
+        _lc={}
+        for n in nodes: _lc[lab(n)]=_lc.get(lab(n),0)+1
+        dlab=lambda n: ("%s  (%s)" % (lab(n), n)) if _lc.get(lab(n),0)>1 else lab(n)
+        node_by_dlab={dlab(n): n for n in nodes}
         card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
         card.grid_columnconfigure((0,1), weight=1); card.grid_rowconfigure(2, weight=1); card.grid_rowconfigure(3, weight=1)
         menu=dict(fg_color="#0d0f14", button_color=CARD2, button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=8)
         bar=ctk.CTkFrame(card, fg_color="transparent"); bar.grid(row=0,column=0, columnspan=2, sticky="ew", padx=14, pady=(12,4))
         ctk.CTkLabel(bar, text="Base scan", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
-        bsel=ctk.StringVar(value=lab(st["base"])); msel=ctk.StringVar(value=lab(st["moving"]) if st["moving"] else "")
-        bmenu=ctk.CTkOptionMenu(bar, values=[lab(n) for n in nodes], variable=bsel, width=130, command=lambda _: pick_base(), **menu); bmenu.pack(side="left", padx=(8,18))
+        bsel=ctk.StringVar(value=dlab(st["base"])); msel=ctk.StringVar(value=dlab(st["moving"]) if st["moving"] else "")
+        bmenu=ctk.CTkOptionMenu(bar, values=[dlab(n) for n in nodes], variable=bsel, width=130, command=lambda _: pick_base(), **menu); bmenu.pack(side="left", padx=(8,18))
         ctk.CTkLabel(bar, text="Scan to line up", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
-        mmenu=ctk.CTkOptionMenu(bar, values=[lab(n) for n in nodes if n!=st["base"]], variable=msel, width=130, command=lambda _: pick_moving(), **menu); mmenu.pack(side="left", padx=(8,18))
+        mmenu=ctk.CTkOptionMenu(bar, values=[dlab(n) for n in nodes if n!=st["base"]], variable=msel, width=130, command=lambda _: pick_moving(), **menu); mmenu.pack(side="left", padx=(8,18))
         chips=ctk.CTkLabel(bar, text="", text_color=OK, font=ctk.CTkFont(size=12)); chips.pack(side="left", padx=6)
         hint=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=12), justify="left", wraplength=1100, anchor="w"); hint.grid(row=1,column=0, columnspan=2, sticky="ew", padx=16, pady=(0,6))
         # two pick views on top (base | moving), the merged result wide below (the user's chosen layout)
@@ -4698,16 +4748,16 @@ class App(ctk.CTk):
                                 "Point picking needs the graphics-card 3D view (Settings). Auto still works when the scans overlap a lot.")
             pairs_lbl.configure(text="%d pair%s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s")); able(alignb, len(st["pairs"])>=3)
         def pick_base():
-            newb=next(n for n in nodes if lab(n)==bsel.get())
-            if newb==st["base"]: return
+            newb=node_by_dlab.get(bsel.get())
+            if newb is None or newb==st["base"]: return
             others=[n for n in nodes if n in rec and isinstance(rec[n], dict) and rec[n].get("base")!=newb]
-            if others and not self._confirm("Change the base scan?", "Scans already lined up were lined up to %s. Changing the base drops those." % lab(st["base"])): bsel.set(lab(st["base"])); return
+            if others and not self._confirm("Change the base scan?", "Scans already lined up were lined up to %s. Changing the base drops those." % lab(st["base"])): bsel.set(dlab(st["base"])); return
             for n in others: rec.pop(n, None)
             st["base"]=newb; rec["_base"]=newb; self._persist()
-            mmenu.configure(values=[lab(n) for n in nodes if n!=newb]); st["moving"]=next((n for n in nodes if n!=newb), None); msel.set(lab(st["moving"]) if st["moving"] else "")
+            mmenu.configure(values=[dlab(n) for n in nodes if n!=newb]); st["moving"]=next((n for n in nodes if n!=newb), None); msel.set(dlab(st["moving"]) if st["moving"] else "")
             load_views(); refresh_chips()
         def pick_moving():
-            st["moving"]=next(n for n in nodes if lab(n)==msel.get()); load_views()
+            st["moving"]=node_by_dlab.get(msel.get()); load_views()
         def on_pick(which, world, view):
             try: _on_pick(which, world, view)
             except Exception as e: log_error("align pick", e); status.configure(text="Could not place that point (see Help > Log).", text_color=WARN)
@@ -5650,8 +5700,15 @@ class App(ctk.CTk):
             foot.configure(text=note+"  Drag to turn, scroll to zoom.")
         if mesh_path and os.path.exists(mesh_path): show_mesh(mesh_path, ""); return
         if frames_dir and calib and glob.glob(os.path.join(frames_dir, "*.dph")) and os.path.exists(calib) and _has_open3d_cache is True:
-            os.makedirs(THUMBS, exist_ok=True); draft=os.path.join(THUMBS, "%s__draft.ply" % (key or os.path.basename(frames_dir)))
-            if os.path.exists(draft): show_mesh(draft, "Quick draft (every 3rd frame, 1 mm): the real build is finer."); return
+            # fallback key must be unique per scan: frames_dir is <node>/cache, so basename is always
+            # "cache" and every scan would collide on cache__draft.ply. Use the last two path parts
+            # (<node>_cache) instead. And only reuse a cached draft that is newer than its frames.
+            os.makedirs(THUMBS, exist_ok=True)
+            dkey=key or ("_".join([p for p in os.path.normpath(frames_dir).split(os.sep) if p][-2:]) or "draft")
+            draft=os.path.join(THUMBS, "%s__draft.ply" % dkey)
+            try: fresh_draft=os.path.exists(draft) and os.path.getmtime(draft)>=os.path.getmtime(frames_dir)
+            except Exception: fresh_draft=os.path.exists(draft)
+            if fresh_draft: show_mesh(draft, "Quick draft (every 3rd frame, 1 mm): the real build is finer."); return
             busy=ctk.CTkLabel(box, text="Building a quick draft so you can turn it…", text_color=MUT, font=ctk.CTkFont(size=13), fg_color="#0a0c10"); busy.grid(row=0,column=0, sticky="nsew")
             def work():
                 ok=False
