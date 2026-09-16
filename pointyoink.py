@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.79-pre"
+APP = "PointYoink"; VERSION = "0.9.80-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2628,9 +2628,33 @@ class App(ctk.CTk):
     def _fit_scrollbar_later(self, frame, orient="vertical", ms=80):
         try: self.after(ms, lambda: self._fit_scrollbar(frame, orient))
         except Exception: pass
+    def _fresh_shaded_out(self, name, node):
+        """Path to this scan's cached shaded/wire PNG if present and newer than its mesh, else None.
+        Mirrors the freshness test in _request_shaded so a click can show the still with no blue flash."""
+        try:
+            mesh=self._mesh_for_node(name, node)
+            if not mesh or not os.path.exists(mesh): return None
+            verkey=(self._proc_current(name, node) or (None,))[0]
+            key="%s__%s__%s"%(name, node, verkey or "v")
+            out=os.path.join(THUMBS, key+("__shaded.png" if self.shade_mode=="solid" else "__wire.png"))
+            if os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh) and os.path.getsize(out)>1024:
+                return out
+        except Exception: pass
+        return None
     def _pick_scan(self, name, node, path):
         self._film_sel=node; self._mark_scan(node)
-        self._set_big_image(path); self._maybe_schedule_shaded(name, node, 350)
+        # Show the cached grey shaded still IMMEDIATELY when it exists, instead of first flashing the
+        # scanner's blue preview.png (raw point cloud on black) and swapping the grey in 350 ms later.
+        # The scanner preview stays as the fallback for scans with no fused mesh / no cached render yet.
+        if self._auto_mesh_preview() and self._fresh_shaded_out(name, node):
+            job=getattr(self, "_shade_job", None)
+            if job:
+                try: self.after_cancel(job)
+                except Exception: pass
+                self._shade_job=None
+            self._request_shaded(name, node)     # fresh cache: shows grey now, no render, no blue
+        else:
+            self._set_big_image(path); self._maybe_schedule_shaded(name, node, 350)
         if self.page=="projects": self._schedule_panel_refresh()
     def _mark_scan(self, node):
         for nd,cell in self._film_cells.items():
