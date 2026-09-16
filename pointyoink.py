@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.77-pre"
+APP = "PointYoink"; VERSION = "0.9.78-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -995,6 +995,7 @@ class App(ctk.CTk):
         self.grid_columnconfigure(0, weight=1); self.grid_rowconfigure(2, weight=1, minsize=300)
         self.search=ctk.StringVar(); self.shade_mode="solid"; self._film_sel=None; self._film_cells={}; self._film_imgs={}
         self._shade_lock=threading.Lock(); self._shade_want=None; self._shade_running=False; self._shade_key=None
+        self._warm_lock=threading.Lock(); self._warm_q=[]; self._warm_running=False   # background preview-cache warmer (open project first)
         self._shade_failed=set(); self._mesh_stats={}
         self._header(); self._statusbar(); self._body(); self._build_options(); self._actions(); self._bottombar()
         self.search.trace_add("write", lambda *a: self._search_changed())
@@ -2500,6 +2501,7 @@ class App(ctk.CTk):
         self._fill_header(p, name, counts)
         self.proj_empty.grid_remove(); self.projbar.grid(); self.film.grid()
         self.update_summary()   # bottom status shows the open project on the Projects page
+        if p.get("local"): self._warm_project(name)   # warm THIS project's scan previews first, so clicking between its scans is instant
         self.renders_lbl.configure(text=""); self.renders_lbl.place(relx=1.0, rely=0.0, x=-12, y=10, anchor="ne")
         self.view_nav.place(relx=0.0, rely=0.0, x=8, y=8, anchor="nw"); self.view_nav.lift()
         if p.get("meshes") or p.get("nodes"): self.tools.grid()   # Process on PC works on unfused scans too
@@ -2813,15 +2815,29 @@ class App(ctk.CTk):
                 self.q.put(("shaded", key, mode, out))
             except Exception as e:
                 log_error("shaded-preview "+key, e); self.q.put(("shaded", key, mode, None))
+    def _warm_enqueue(self, jobs, front=False):
+        """Queue (name,node) preview renders for the background warmer. front=True jumps the queue —
+        used for the project you just opened, so its scans warm before the rest of the library."""
+        if not jobs: return
+        with self._warm_lock:
+            if front:
+                for j in reversed(jobs): self._warm_q.insert(0, j)
+            else:
+                seen=set(self._warm_q)
+                self._warm_q.extend(j for j in jobs if j not in seen)
+            start = not self._warm_running
+            if start: self._warm_running=True
+        if start: threading.Thread(target=self._warm_worker, daemon=True).start()
+    def _warm_project(self, name):
+        """Warm the OPEN project's scan previews first, so clicking Scan 1 / Scan 2 / Combined is instant."""
+        try: nodes=self._proc_nodes(name)
+        except Exception: return
+        self._warm_enqueue([(name, n) for n in nodes], front=True)
     def _start_prewarm(self):
-        """After the window is up, quietly render any MISSING scan previews into the on-disk cache so
-        clicking a scan is instant. Runs once per session; the cache persists (~/.cache/pointyoink/thumbs),
-        so later runs skip almost everything. Yields to the user's own interactive render."""
+        """Queue every local project's previews to warm in the background, once per session. Silent — the
+        on-disk cache persists, so this fills gaps; the open project (front of the queue) warms first."""
         if getattr(self, "_prewarm_started", False): return
         self._prewarm_started=True
-        threading.Thread(target=self._prewarm_thread, daemon=True).start()
-    def _prewarm_thread(self):
-        import time as _t
         dest=self.dest.get() or DEFAULT_DEST
         try: names=[p["name"] for p in (getattr(self, "all_projects", None) or self.projects or [])]
         except Exception: names=[]
@@ -2831,23 +2847,26 @@ class App(ctk.CTk):
             try:
                 for node in self._proc_nodes(name): jobs.append((name, node))
             except Exception: pass
-        for name, node in jobs:
+        self._warm_enqueue(jobs)
+    def _warm_worker(self):
+        import time as _t
+        while True:
+            with self._warm_lock:
+                if not self._warm_q: self._warm_running=False; return
+                name, node = self._warm_q.pop(0)
             try:
                 mesh=self._mesh_for_node(name, node)
                 if not mesh or mesh.startswith(PROJECTS): continue           # no fused mesh, or it's on the scanner mount
                 verkey=(self._proc_current(name, node) or (None,))[0]
-                key="%s__%s__%s" % (name, node, verkey or "v")
-                out=os.path.join(THUMBS, key+"__shaded.png")
+                out=os.path.join(THUMBS, "%s__%s__%s__shaded.png" % (name, node, verkey or "v"))
                 if os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh) and os.path.getsize(out)>1024:
-                    continue                                                 # already cached and fresh — the whole point
-                while getattr(self, "_shade_running", False): _t.sleep(0.4) # let the user's own click take the machine
-                self.q.put(("prewarm_msg", "Caching previews…"))
+                    continue                                                 # already cached and fresh
+                while getattr(self, "_shade_running", False): _t.sleep(0.3) # let the user's own click take the machine
                 env=dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
                 self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, out, "--size", "900x600"], timeout=600, env=env)
             except Exception as e:
-                log_error("prewarm", e)
-            _t.sleep(0.15)                                                   # gentle: don't hog the CPU
-        self.q.put(("prewarm_msg", ""))
+                log_error("warm", e)
+            _t.sleep(0.08)
     def _preview_busy(self, text):
         """Show the spinner overlay with a step name (call again to change the text)."""
         try:
