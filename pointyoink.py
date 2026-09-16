@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.95-pre"
+APP = "PointYoink"; VERSION = "0.9.96-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1614,8 +1614,9 @@ class App(ctk.CTk):
         sctop=ctk.CTkFrame(sc, fg_color="transparent"); sctop.grid(row=0,column=0, sticky="ew", padx=10, pady=(10,4))
         self.shots_lbl=ctk.CTkLabel(sctop, text="Screenshots & recordings on the device", text_color=MUT,
                                     font=ctk.CTkFont(size=12)); self.shots_lbl.pack(side="left")
-        ctk.CTkButton(sctop, text="⤓ Pull all", width=96, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
-                      hover_color=CARD2, text_color=TX, command=self.pull_screenshots).pack(side="right", padx=4)
+        _pab=ctk.CTkButton(sctop, text="⤓ Pull all", width=96, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
+                      hover_color=CARD2, text_color=TX, command=self.pull_screenshots); _pab.pack(side="right", padx=4)
+        self._tip(_pab, "Copy every screenshot & recording off the scanner into your save folder's “captures” subfolder (Open folder shows where).")
         ctk.CTkButton(sctop, text="↻ Refresh", width=96, height=30, corner_radius=8, fg_color=CARD2,
                       hover_color=STROKE, text_color=TX, command=self.refresh_screenshots).pack(side="right", padx=4)
         self.shots=ctk.CTkScrollableFrame(sc, fg_color="#0a0c10", corner_radius=10); self._autohide(self.shots)
@@ -1835,8 +1836,8 @@ class App(ctk.CTk):
         if m in ("Projects","Local"): self._apply_page()
         elif m=="Process": self._proc_refresh()
         if m=="Projects" and self.tabs.get()=="Files" and not self._folder_loaded: self._folder_loaded=True; self.refresh_folder()
-        if m=="Captures" and mountpoint_seen() and not getattr(self,"_shots_loaded",False) and not getattr(self,"_shots_busy",False):
-            self.after(60, self.refresh_screenshots)   # land on Captures with the scanner mounted -> read its screenshots/recordings automatically (never sit on "No captures yet" while connected), with the banner showing "Reading screenshots…"
+        if m=="Captures" and not getattr(self,"_shots_loaded",False) and not getattr(self,"_shots_busy",False):
+            self.after(60, self.refresh_screenshots)   # land on Captures -> read device captures if connected, else show the locally-cached ones; never sit on a dead "No captures yet"
         self.update_summary()   # refresh the bottom bar for the tab we switched to (clears a stale "Editing <project>" on Captures/Live)
     def _page_filter(self, projs):
         if self.page=="projects": return [p for p in projs if p.get("local") or self.is_imported(p["name"])]
@@ -5531,11 +5532,20 @@ class App(ctk.CTk):
         self._shots_busy=True; self.hold_banner("Reading screenshots off the device…", AC)
         self._start_thread(self._shots_worker, name="shots")
     def _shots_worker(self):
+        cache=os.path.join(THUMBS, "shots")
         try:
             if not quick_mounted(probe=True, timeout=2):
-                self.q.put(("shots_unmounted", None)); return
+                # scanner not connected: still show the screenshots we've already cached locally (so pulled/seen
+                # captures stay viewable offline) instead of a dead "connect USB" screen
+                offline=[]
+                try:
+                    for nm in sorted((f for f in os.listdir(cache) if f.lower().endswith((".png",".jpg",".jpeg"))), reverse=True):
+                        p=os.path.join(cache, nm)
+                        if os.path.isfile(p): offline.append((nm, p))
+                except Exception: pass
+                self.q.put(("shots_offline", (offline, [])) if offline else ("shots_unmounted", None)); return
             items=list_screenshots(); local=[]
-            cache=os.path.join(THUMBS, "shots"); os.makedirs(cache, exist_ok=True)
+            os.makedirs(cache, exist_ok=True)
             for i,(nm,path) in enumerate(items):
                 dst=os.path.join(cache, nm)
                 try:
@@ -5552,6 +5562,36 @@ class App(ctk.CTk):
             self.q.put(("shots", (local, recs)))
         except Exception as e:
             log_error("shots", e); self.q.put(("shots_failed", str(e)))
+    def _shot_popout(self, path):
+        """Full-size pop-out viewer for a capture: fits the image to the window, ← / → to step through the
+        rest, Esc to close. Uses the local cached copies, so it works whether or not the scanner is attached."""
+        shots=[p for _,p in getattr(self, "_shots_items", [])] or [path]
+        try: top=self._top("Capture viewer", 1120, 860, key="shot")
+        except Exception as e: log_error("popout-open", e); return
+        body=ctk.CTkFrame(top, fg_color="#0a0c10"); body.pack(fill="both", expand=True)
+        img_lbl=ctk.CTkLabel(body, text="", fg_color="#0a0c10"); img_lbl.pack(fill="both", expand=True, padx=10, pady=10)
+        bar=ctk.CTkFrame(top, fg_color="transparent"); bar.pack(fill="x", pady=(0,8))
+        cap=ctk.CTkLabel(bar, text="", text_color=MUT, font=ctk.CTkFont(size=11)); cap.pack(side="left", padx=14)
+        st={"i": shots.index(path) if path in shots else 0}
+        def show():
+            p=shots[st["i"]]
+            try:
+                im=Image.open(p).convert("RGB")
+                W=max(400, top.winfo_width()-40); H=max(300, top.winfo_height()-110)
+                r=min(W/im.width, H/im.height); im=im.resize((max(1,int(im.width*r)), max(1,int(im.height*r))))
+                self.imgs["popout"]=ctk.CTkImage(light_image=im, dark_image=im, size=im.size)
+                img_lbl.configure(image=self.imgs["popout"], text="")
+                cap.configure(text="%s     %d / %d     (← →  to step · Esc to close)" % (os.path.basename(p), st["i"]+1, len(shots)))
+            except Exception as e:
+                img_lbl.configure(image=None, text="Couldn't open this image (see Help > Log)"); log_error("popout-show", e)
+        def nav(d): st["i"]=(st["i"]+d)%len(shots); show()
+        ctk.CTkButton(bar, text="Open file", width=90, height=28, corner_radius=8, fg_color="transparent", border_width=1,
+                      border_color=STROKE, hover_color=CARD2, text_color=TX,
+                      command=lambda: subprocess.Popen(["xdg-open", shots[st["i"]]])).pack(side="right", padx=(0,14))
+        ctk.CTkButton(bar, text="→", width=44, height=28, corner_radius=8, fg_color=CARD2, hover_color=STROKE, command=lambda: nav(1)).pack(side="right", padx=4)
+        ctk.CTkButton(bar, text="←", width=44, height=28, corner_radius=8, fg_color=CARD2, hover_color=STROKE, command=lambda: nav(-1)).pack(side="right", padx=4)
+        top.bind("<Left>", lambda e: nav(-1)); top.bind("<Right>", lambda e: nav(1)); top.bind("<Escape>", lambda e: top.destroy())
+        top.after(80, show)
     def render_shots(self, data):
         """Screenshots live on the device's slow MTP transport: every thumbnail is a full file read
         over that link (and Tk only actually reads the pixels when the image is first drawn, so this
@@ -5588,9 +5628,9 @@ class App(ctk.CTk):
             for idx,(nm,path) in enumerate(images):
                 r,c=divmod(idx,4)
                 cell=ctk.CTkFrame(self.shots, fg_color=CARD2, corner_radius=10); cell.grid(row=base+r,column=c, padx=6, pady=6, sticky="nsew")
-                lbl=ctk.CTkLabel(cell, text="loading…", text_color=DIM, width=150, height=110); lbl.pack(padx=6, pady=(6,2))
-                lbl.bind("<Button-1>", lambda e,p=path: self._enlarge(p)); labels[path]=lbl
-                ctk.CTkLabel(cell, text=nm[:20], text_color=MUT, font=ctk.CTkFont(size=9)).pack(pady=(0,6))
+                lbl=ctk.CTkLabel(cell, text="loading…", text_color=DIM, width=250, height=150); lbl.pack(padx=8, pady=(8,2), fill="both", expand=True)
+                lbl.bind("<Button-1>", lambda e,p=path: self._shot_popout(p)); labels[path]=lbl
+                ctk.CTkLabel(cell, text=nm[:24], text_color=MUT, font=ctk.CTkFont(size=10)).pack(pady=(0,8))
             base+=ceil4(len(images))
         if recs:
             section("RECORDINGS", len(recs), 14 if images else 6); base+=1
@@ -5605,7 +5645,7 @@ class App(ctk.CTk):
             for nm,path in images:
                 if gen!=self._shots_gen: return                # a newer refresh replaced this one: stop early
                 try:
-                    im=Image.open(path).convert("RGB"); r=150/im.width; im=im.resize((150,int(im.height*r)))
+                    im=Image.open(path).convert("RGB"); r=250/im.width; im=im.resize((250,int(im.height*r)))
                 except Exception: im=None
                 def put(nm=nm, path=path, im=im):
                     if gen!=self._shots_gen: return
@@ -6025,8 +6065,12 @@ class App(ctk.CTk):
                     self._shots_busy=False; self._shots_loaded=True; self._dev_hold=0.0   # loaded once (don't re-read the slow mount on every Captures visit); release the "Reading…" hold
                     self.render_shots(rest[0]); self.set_status("")
                     n=len(rest[0]); self.set_banner(("Connected · %d capture%s on the scanner" % (n, "" if n==1 else "s")) if n else "Connected · no screenshots or recordings on the scanner", OK)
+                elif kind=="shots_offline":
+                    self._shots_busy=False; self._shots_loaded=True; self._dev_hold=0.0
+                    data=rest[0]; self.render_shots(data); self.set_status("")
+                    n=len(data[0]); self.set_banner("Showing %d saved capture%s · scanner not connected" % (n, "" if n==1 else "s"), MUT)
                 elif kind=="shots_unmounted":
-                    self._shots_busy=False; self.set_status(""); self.set_banner("Screenshots come over USB: plug in, tap File Transfer, click USB.", WARN)
+                    self._shots_busy=False; self.set_status(""); self.set_banner("No saved captures yet · connect the scanner over USB (tap File Transfer) to read its screenshots.", WARN)
                 elif kind=="shots_failed":
                     self._shots_busy=False; self.set_status(""); self.set_banner("Couldn't read screenshots - see Help > Log.", WARN)
                 elif kind=="shots_progress":
