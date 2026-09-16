@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.107-pre"
+APP = "PointYoink"; VERSION = "0.9.108-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -5248,25 +5248,29 @@ class App(ctk.CTk):
             self.after(60, self._wifi_pulse)
         except Exception: pass
     def _speed_draw(self, cv, samples):
-        """Area chart of transfer speed (y) over overall progress (x) - the old copy-dialog look. Shared by
-        the WiFi receive panel and the USB import bar so both show the same graph."""
+        """Area chart of transfer speed over TIME (x = sample order), like a network monitor. Shared by the
+        WiFi panel and the USB import popup. Time-based, not progress-based: a slow full-project import barely
+        advances in % for ages, so a progress x-axis piled every point at the far left (a flat line)."""
         try: W=max(50, cv.winfo_width()); H=int(cv.cget("height"))
         except Exception: return
         cv.delete("all")
         for gy in (0.25,0.5,0.75): cv.create_line(0, H*gy, W, H*gy, fill="#161a22")
         if not samples: return
-        top=max(r for _,r in samples)*1.15 or 1.0
-        pts=[(4+f*(W-8), H-4-(r/top)*(H-14)) for f,r in samples]   # x = overall progress, grows left to right as the transfer completes
+        rates=[r for _,r in samples]; top=(max(rates) or 1.0)*1.15; N=len(rates)
+        if N==1:
+            pts=[(W-4, H-4-(rates[0]/top)*(H-14))]
+        else:
+            pts=[(4+(i/(N-1))*(W-8), H-4-(r/top)*(H-14)) for i,r in enumerate(rates)]   # x = time order, newest on the right
         if len(pts)>=2:
             poly=[(pts[0][0], H-4)]+pts+[(pts[-1][0], H-4)]
             cv.create_polygon(*[c for xy in poly for c in xy], fill="#1d3f66", outline="")
             cv.create_line(*[c for xy in pts for c in xy], fill=AC, width=2, smooth=True)
     def _wifi_graph_add(self, frac, rate):
-        """Append a (progress, speed) sample and redraw the WiFi area chart."""
+        """Add a speed sample (time-based) and redraw the WiFi area chart."""
         sm=self.wifi_samples; now=time.time()
-        # sample by time, not by progress: a raw-frames project arrives as thousands of 0.9 MB files
-        if not sm or now-self._wifi_last_sample>=0.3 or frac-sm[-1][0]>=0.01:
+        if not sm or now-self._wifi_last_sample>=0.25:
             sm.append((frac, rate)); self._wifi_last_sample=now
+            if len(sm)>240: del sm[0]                  # rolling ~1 min window so it scrolls, not squashes
         else: sm[-1]=(frac, rate)
         self._speed_draw(self.wifi_graph, sm)
         self._wifi_peak=max(r for _,r in sm)          # shown in the stats row, not over the curve
@@ -5298,11 +5302,13 @@ class App(ctk.CTk):
             col=ctk.CTkFrame(stats, fg_color="#0d0f14", corner_radius=10); col.grid(row=r, column=c, sticky="nsew", padx=3, pady=3)
             v=ctk.CTkLabel(col, text="-", text_color=TX, font=ctk.CTkFont(size=14, weight="bold")); v.pack(pady=(8,0))
             ctk.CTkLabel(col, text=cap, text_color=MUT, font=ctk.CTkFont(size=10)).pack(pady=(0,8)); self.imp_stats[key]=v
-        br=ctk.CTkFrame(card, fg_color="transparent"); br.pack(side="bottom", pady=(8,16))
-        ctk.CTkButton(br, text="Run in background", width=150, corner_radius=16, fg_color=CARD2, hover_color=STROKE,
-                      text_color=TX, command=self._import_background).pack(side="left", padx=6)
-        ctk.CTkButton(br, text="Cancel", width=110, corner_radius=16, fg_color=CARD2, hover_color=STROKE,
-                      text_color=TX, command=self.on_cancel).pack(side="left", padx=6)
+        br=ctk.CTkFrame(card, fg_color="transparent"); br.pack(side="bottom", pady=(10,18))
+        ctk.CTkButton(br, text="Run in background", width=160, height=36, corner_radius=8, fg_color="transparent",
+                      border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX,
+                      font=ctk.CTkFont(size=12), command=self._import_background).pack(side="left", padx=6)
+        ctk.CTkButton(br, text="Cancel", width=120, height=36, corner_radius=8, fg_color="#3a2530",
+                      hover_color=DANGER, text_color=TX, font=ctk.CTkFont(size=12),
+                      command=self.on_cancel).pack(side="left", padx=6)
         top.protocol("WM_DELETE_WINDOW", self._import_background)   # closing hides it; the import keeps running (bottom bar shows progress)
     def _import_background(self):
         """Hide the popup and move the progress to the thin bottom bar so the import keeps running quietly."""
@@ -5329,8 +5335,9 @@ class App(ctk.CTk):
         sm=getattr(self, "_imp_samples", None)
         if sm is None: sm=self._imp_samples=[]
         now=time.time()
-        if not sm or now-getattr(self,"_imp_last",0.0)>=0.3 or frac-sm[-1][0]>=0.01:
+        if not sm or now-getattr(self,"_imp_last",0.0)>=0.25:
             sm.append((frac, rate)); self._imp_last=now
+            if len(sm)>240: del sm[0]                  # rolling ~1 min window so it scrolls over time
         else: sm[-1]=(frac, rate)
         self._speed_draw(cv, sm)
         try:
