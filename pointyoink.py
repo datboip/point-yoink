@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.61-pre"
+APP = "PointYoink"; VERSION = "0.9.62-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2978,11 +2978,20 @@ class App(ctk.CTk):
             log_line("clean %s failed (rc=%s): %s" % (os.path.basename(src), r.returncode, ((r.stdout or "")+(r.stderr or ""))[-400:]))
         except Exception as e: log_error("clean "+os.path.basename(src), e)
         return False
+    def _convert_subprocess(self, src, out):
+        """Convert a mesh to another format in a memory-capped child (process.py with no ops just loads
+        and re-exports), so a huge scan cannot exhaust the app's own memory during import/ZIP conversion."""
+        try:
+            env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "10")
+            r=self._run_child([_sys.executable, os.path.join(HERE, "process.py"), src, out], timeout=1800, env=env)
+            if r.returncode==0 and os.path.exists(out) and os.path.getsize(out)>0: return True
+            log_line("convert %s -> %s failed (rc=%s): %s" % (os.path.basename(src), os.path.basename(out), r.returncode, ((r.stdout or "")+(r.stderr or ""))[-400:]))
+        except Exception as e: log_error("convert "+os.path.basename(src), e)
+        return False
 
     def _process_meshes(self, plys, name, fmts, cleanup, i, total, clean_opts=None):
         """Optionally clean each mesh into <stem>_clean.ply (the imported original is kept), then export
         the requested formats from the cleaned copy when there is one. Failures land in self._export_fails."""
-        import trimesh
         for ply in plys:
             if self.cancel: return
             src=ply
@@ -2992,15 +3001,11 @@ class App(ctk.CTk):
                 if self._clean_subprocess(ply, out, clean_opts): src=out
                 else: self._export_fails.append(os.path.basename(out))
             if not fmts: continue
-            try: m=trimesh.load(src, force="mesh")
-            except Exception as e:
-                log_error("load "+os.path.basename(src), e); self._export_fails.append(os.path.basename(src)); continue
             for ext in fmts:
                 if self.cancel: return
                 self.q.put(("prog", (i+1)/total, "Converting %s to %s"%(name, ext.upper())))
-                try: m.export(src[:-4]+"."+ext)
-                except Exception as e:
-                    log_error("convert %s -> %s"%(os.path.basename(src), ext), e)
+                # convert in a memory-capped child, not in-process: a huge scan mustn't exhaust the app
+                if not self._convert_subprocess(src, src[:-4]+"."+ext):
                     self._export_fails.append(os.path.basename(src)[:-4]+"."+ext)
 
     def _import_full(self, name, dest, i, total):
@@ -3811,6 +3816,7 @@ class App(ctk.CTk):
         self._ensure_clean_vars()
         t=self._top("Prepare · %s" % self._scan_label(name, node), 960, 780, key="prepare")
         if t is None: return
+        t.resizable(False, False)     # lock it: long option text / the After render must not make the window jump sizes
         src=cur[2]; final=os.path.join(os.path.dirname(src), "%s_%s_clean.ply" % (name, node)); tmp=final[:-4]+".tmp.ply"
         card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
         ctk.CTkLabel(card, text="Starting from the version “%s” · %s" % (cur[1], human(os.path.getsize(src))), text_color=MUT, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=18, pady=(14,6))
@@ -3820,13 +3826,13 @@ class App(ctk.CTk):
             cbx=ctk.CTkCheckBox(r, text=title, variable=var, width=24, checkbox_width=18, checkbox_height=18, corner_radius=5, border_color=STROKE, fg_color=AC, hover_color=AC,
                                 text_color=TX, font=ctk.CTkFont(size=12, weight="bold")); cbx.pack(side="left", padx=(12,10), pady=7)
             self._tip(cbx, tip)
-            ctk.CTkLabel(r, text=before, text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left")
+            ctk.CTkLabel(r, text=before, text_color=MUT, font=ctk.CTkFont(size=11), wraplength=720, justify="left").pack(side="left", fill="x", expand=(entry is None))
             if entry is not None:
                 e=ctk.CTkEntry(r, textvariable=entry, width=46, height=24, corner_radius=6, fg_color="#0d0f14", border_color=STROKE, text_color=TX, justify="center"); e.pack(side="left", padx=6)
                 ctk.CTkLabel(r, text=after, text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left")
         row(self.clean_do_iso, "Remove floating pieces", "drop pieces smaller than", self.clean_iso, "% of the biggest one",
             "Loose bits that are not part of the object. The scanner's Isolation rate; its default is 15%.")
-        row(self.clean_do_base, "Remove base", "cuts off the biggest flat surface (table, turntable, floor). Now skips itself if that would take a big chunk of the part, but a hand-placed Remove base on the scan is safer", None, "",
+        row(self.clean_do_base, "Remove base", "cuts off the biggest flat surface (table/turntable); skips itself if it would take a big chunk of the part", None, "",
             "Automatic, off by default. For a cut you place by hand, use Remove base on the scan instead.")
         row(self.clean_do_smooth, "Smooth surface", "", self.clean_smooth, "passes (the scanner uses 3)",
             "Evens out scan ripple. More passes soften small detail.")
@@ -3997,8 +4003,8 @@ class App(ctk.CTk):
                 try:
                     os.makedirs(ddir, exist_ok=True)
                     if fmt=="ply": shutil.copyfile(src, out)
-                    else:
-                        import trimesh; trimesh.load(src, force="mesh").export(out)
+                    elif not self._convert_subprocess(src, out):   # capped child: a huge model can't take the app down
+                        raise RuntimeError("could not convert to %s - see Help > Log" % fmt.upper())
                 except Exception as e: err=e; log_error("export", e)
                 def done():
                     if not t.winfo_exists(): return
@@ -4860,7 +4866,13 @@ class App(ctk.CTk):
             if not projects:
                 threading.Thread(target=shutil.rmtree, args=(rx.stage,), kwargs={"ignore_errors": True}, daemon=True).start()
                 self.set_banner("The scanner finished but sent no project.", WARN); self.set_status(""); return
-            self.set_banner("Received %s over WiFi - choose what to keep." % ", ".join(projects), OK); self.set_status("")
+            incomplete=info.get("incomplete") or []
+            if incomplete:   # the scanner said done, but some files are missing parts: warn, don't pretend it's clean
+                self.set_banner("WiFi finished but %d file%s came in incomplete (missing parts) - share again for a clean copy." % (len(incomplete), "" if len(incomplete)==1 else "s"), WARN)
+                log_line("wifi incomplete files: %s" % ", ".join(incomplete[:20]))
+            else:
+                self.set_banner("Received %s over WiFi - choose what to keep." % ", ".join(projects), OK)
+            self.set_status("")
             self._wifi_picker(rx.stage, projects)
     def _wifi_recover(self):
         """A transfer that finished but was never imported (app closed, picker lost) is still in
@@ -5331,15 +5343,17 @@ class App(ctk.CTk):
         return sorted(glob.glob(os.path.join(base, "data", "*", "fuse_mesh.ply")))
     def _zip_worker(self, sel, dest, mode):
         import zipfile
-        os.makedirs(dest, exist_ok=True)
-        tag={"stl":"stl","obj":"obj","glb":"glb","models":"models","all":"full"}.get(mode,mode)
-        if len(sel)==1:
-            zpath=os.path.join(dest, "%s_%s.zip"%(sel[0], tag))
-        else:
-            zpath=os.path.join(dest, "pointyoink-%s-%s.zip"%(tag, time.strftime("%Y%m%d-%H%M%S")))
-        # build the file list (src, arcname). flat for models/format modes; nested for 'all'
+        # everything is inside the try, incl. makedirs: a bad destination must post a zipfail and clear
+        # the busy state, not throw out of the thread and leave the ZIP button stuck disabled.
         files=[]; zfails=0
         try:
+            os.makedirs(dest, exist_ok=True)
+            tag={"stl":"stl","obj":"obj","glb":"glb","models":"models","all":"full"}.get(mode,mode)
+            if len(sel)==1:
+                zpath=os.path.join(dest, "%s_%s.zip"%(sel[0], tag))
+            else:
+                zpath=os.path.join(dest, "pointyoink-%s-%s.zip"%(tag, time.strftime("%Y%m%d-%H%M%S")))
+            # build the file list (src, arcname). flat for models/format modes; nested for 'all'
             for name in sel:
                 base=os.path.join(dest, name)
                 if mode in ("stl","obj","glb"):
@@ -5348,11 +5362,11 @@ class App(ctk.CTk):
                         node=os.path.basename(os.path.dirname(ply)) if os.sep+"data"+os.sep in ply else os.path.basename(ply)[:-4]
                         stem=node if node.startswith(name) else "%s_%s"%(name,node)
                         target=os.path.join(os.path.dirname(ply), stem+"."+mode)
-                        if not os.path.exists(target):
+                        # re-convert when the target is missing OR older than its source PLY, so a changed
+                        # model is never shipped as a stale export; convert in a memory-capped child.
+                        if not os.path.exists(target) or os.path.getmtime(target) < os.path.getmtime(ply):
                             self.q.put(("prog", 0.0, "Converting %s to %s…"%(name, mode.upper())))
-                            try:
-                                import trimesh; trimesh.load(ply, force="mesh").export(target)
-                            except Exception as e: zfails+=1; log_error("zip-convert "+os.path.basename(ply), e); continue
+                            if not self._convert_subprocess(ply, target): zfails+=1; continue
                         files.append((target, os.path.basename(target)))
                 elif mode=="models":
                     for f in glob.glob(os.path.join(base,"*")):

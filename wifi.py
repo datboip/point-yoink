@@ -81,7 +81,7 @@ class Receiver:
         self.dest = dest; self.stage = os.path.join(dest, STAGE); self.code = code or random_code()
         self.on_event = on_event or (lambda k, i: None); self.name = name or socket.gethostname()
         self.httpd = None; self.udp = None; self._on = False
-        self.files = {}; self.bytes = 0; self.total = 0; self.t0 = None; self.seen = set(); self._lock = threading.Lock()
+        self.files = {}; self.parts = {}; self.bytes = 0; self.total = 0; self.t0 = None; self.seen = set(); self._lock = threading.Lock()
         self.peer = None; self.bad = 0; self.locked = False
         self._hist = []                    # (time, bytes) for the instantaneous rate
     def _emit(self, kind, **info):
@@ -131,10 +131,21 @@ class Receiver:
         self._emit("badcode", ip=peer, locked=lock)
     def _connected(self):
         self.t0 = self.t0 or time.time(); self._emit("connected")
+    def _incomplete(self):
+        """Files the scanner started but did not finish: a part is missing, so the file on disk is
+        truncated or has a hole. The scanner says 'done' regardless, so we must check ourselves."""
+        bad = []
+        with self._lock:
+            for rel, got in self.files.items():
+                want = self.parts.get(rel, 1)
+                if len(got) != want or got != set(range(1, want + 1)):
+                    bad.append(rel)
+        return sorted(bad)
     def _closed(self):
         try: projects = sorted(d for d in os.listdir(self.stage) if os.path.isdir(os.path.join(self.stage, d)))
         except Exception: projects = []
-        self._emit("done", projects=projects)
+        incomplete = self._incomplete()
+        self._emit("done", projects=projects, incomplete=incomplete)
     def _file(self, h, body):
         rel = h.get("path", "").replace("\\", "/").strip("/")
         if not rel or ".." in rel.split("/"): return
@@ -148,6 +159,7 @@ class Receiver:
             with open(out, "wb" if (fresh or not os.path.exists(out)) else "r+b") as f:
                 f.seek((idx - 1) * PART); f.write(body)
             self.files.setdefault(rel, set()).add(idx); self.bytes += len(body)
+            self.parts[rel] = int(h.get("partnum") or self.parts.get(rel) or 1)   # total parts the scanner will send for this file
             self.total = int(h.get("totalsize") or self.total or 0)
             now = time.time(); avg = self.bytes / max(0.1, now - (self.t0 or now))
             self._hist.append((now, self.bytes)); self._hist = [x for x in self._hist if now - x[0] <= 1.0]
