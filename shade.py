@@ -145,6 +145,54 @@ def load_oriented_tf(path, max_faces=MAX_FACES, tf=None):
     if key is not None: _cache_put(key, vv, f, tf)
     return vv, f, tf
 
+def load_oriented_nrm(path, max_faces=MAX_FACES, tf=None):
+    """load_oriented_tf + per-vertex normals, cached together. The interactive viewer recomputed the
+    normals (a trimesh pass) on EVERY open; here they are cached in a normals .npz keyed exactly like the
+    mesh, so warming this at the interactive detail level makes the first open a pure cache read.
+    Returns (view-space vertices, faces, transform, normals)."""
+    key = _mesh_key(path, max_faces, tf)
+    if key is not None:
+        got = _ncache_get(key + "_n")
+        if got is not None: return got
+    vv, f, tf2 = load_oriented_tf(path, max_faces, tf)
+    import trimesh
+    n = np.asarray(trimesh.Trimesh(vv, f, process=False).vertex_normals, dtype=np.float32)
+    if key is not None: _ncache_put(key + "_n", vv, f, tf2, n)
+    return vv, f, tf2, n
+
+def _ncache_get(key):
+    m = _MEM.get(key)
+    if m is not None:
+        _MEM.move_to_end(key); CACHE_STATS["mem"] += 1
+        vv, f, tf, n = m; return vv.copy(), f.copy(), dict(tf), n.copy()
+    cpath = os.path.join(MESH_CACHE, key + ".npz")
+    try:
+        if os.path.exists(cpath):
+            d = np.load(cpath, allow_pickle=False)
+            vv = d["v"].astype(np.float32); f = d["f"].astype(np.int32); n = d["n"].astype(np.float32)
+            tf = {"mean": np.asarray(d["mean"], np.float64), "scale": float(d["scale"][0]),
+                  "R": np.asarray(d["R"], np.float64), "zshift": float(d["zshift"][0])}
+            _MEM[key] = (vv.copy(), f.copy(), dict(tf), n.copy()); _MEM.move_to_end(key)
+            while len(_MEM) > _MEM_MAX: _MEM.popitem(last=False)
+            CACHE_STATS["disk"] += 1; return vv, f, tf, n
+    except Exception:
+        pass
+    return None
+
+def _ncache_put(key, vv, f, tf, n):
+    _MEM[key] = (vv.copy(), f.copy(), dict(tf), n.copy()); _MEM.move_to_end(key)
+    while len(_MEM) > _MEM_MAX: _MEM.popitem(last=False)
+    try:
+        os.makedirs(MESH_CACHE, exist_ok=True)
+        cpath = os.path.join(MESH_CACHE, key + ".npz"); tmp = cpath + ".tmp.%d" % os.getpid()
+        with open(tmp, "wb") as fh:
+            np.savez(fh, v=vv.astype(np.float32), f=f.astype(np.int32), n=n.astype(np.float32),
+                     mean=np.asarray(tf["mean"], np.float64), scale=np.array([float(tf["scale"])], np.float64),
+                     R=np.asarray(tf["R"], np.float64), zshift=np.array([float(tf["zshift"])], np.float64))
+        os.replace(tmp, cpath)
+    except Exception:
+        pass
+
 def world_to_view(p, tf):
     p = np.asarray(p, dtype=np.float64)
     out = ((p - tf["mean"]) / tf["scale"]) @ tf["R"].T
@@ -215,9 +263,14 @@ def ensure_preview(mesh_path, cache_dir, key, wire=False, size=(900, 600), thumb
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(); ap.add_argument("mesh"); ap.add_argument("out")
+    ap = argparse.ArgumentParser(); ap.add_argument("mesh"); ap.add_argument("out", nargs="?")
     ap.add_argument("--wire", action="store_true"); ap.add_argument("--size", default="900x600")
-    a = ap.parse_args(); W, H = (int(x) for x in a.size.split("x"))
+    ap.add_argument("--warm", type=int, default=0, help="prepare+cache the mesh AND its normals at this face count (interactive detail), no render")
+    a = ap.parse_args()
+    if a.warm:                                       # splash warmer: build the exact entry the interactive viewer reads (verts+faces+transform+normals)
+        t0 = time.time(); v, f, tf, n = load_oriented_nrm(a.mesh, a.warm)
+        print("warm %s: %d faces + normals in %.1fs %s" % (a.mesh, len(f), time.time() - t0, CACHE_STATS)); sys.exit(0)
+    W, H = (int(x) for x in a.size.split("x"))
     t0 = time.time(); v, f = load_oriented(a.mesh); t1 = time.time()
     _tmp = a.out + ".tmp.%d" % os.getpid()          # atomic write: two renderers (foreground + warmer) can
     render(v, f, size=(W, H), wire=a.wire).save(_tmp, format="PNG"); os.replace(_tmp, a.out)   # format explicit: _tmp's extension isn't .png; target the same PNG; never leave a half-written one

@@ -136,11 +136,9 @@ class GLView(OpenGLFrame):
         self._gen += 1; gen = self._gen; self._n = 0
         def work():
             try:
-                v, f, tf = shade.load_oriented_tf(path, max_faces)
+                v, f, tf, nrm = shade.load_oriented_nrm(path, max_faces)   # verts+faces+transform+normals, all cached — the splash warms this exact entry
                 if gen != self._gen: return                       # a newer load superseded this one: stop early
                 self.tf = tf
-                import trimesh
-                nrm = np.asarray(trimesh.Trimesh(v, f, process=False).vertex_normals, dtype=np.float32)
                 if gen != self._gen: return
                 # wireframe on the full mesh is a solid blob: it is drawn from a decimated copy, made lazily
                 # (see _wire_data) so the solid view shows sooner

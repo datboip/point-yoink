@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.88-pre"
+APP = "PointYoink"; VERSION = "0.9.89-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1274,8 +1274,10 @@ class App(ctk.CTk):
         if not jobs: self.after(150, self._close_splash); return
         threading.Thread(target=self._splash_preload_worker, args=(jobs,), daemon=True).start()
     def _splash_preload_worker(self, jobs):
-        import time as _t
+        import time as _t, shade as _sh
         deadline=_t.time()+25; total=len(jobs)
+        faces=LIVE_QUALITY_FACES.get(self.cfg.get("live_quality","medium"), 300000)   # the detail the interactive 3D view will actually request
+        env=dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
         for i,(name,node) in enumerate(jobs, 1):
             if _t.time()>deadline: break
             try:
@@ -1284,8 +1286,13 @@ class App(ctk.CTk):
                     verkey=(self._proc_current(name, node) or (None,))[0]
                     out=os.path.join(THUMBS, "%s__%s__%s__shaded.png" % (name, node, verkey or "v"))
                     if not (os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh) and os.path.getsize(out)>1024):
-                        env=dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
-                        self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, out, "--size", "900x600"], timeout=120, env=env)
+                        self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, out, "--size", "900x600"], timeout=120, env=env)   # the still preview PNG (40k)
+                    # warm the EXACT entry the interactive viewer reads (detail faces + normals), independent of the PNG,
+                    # so the first 3D open is a pure cache read - not another parse+simplify+normals pass (Codex 2026-09-16)
+                    nkey=_sh._mesh_key(mesh, faces, None)
+                    npz=os.path.join(_sh.MESH_CACHE, nkey+"_n.npz") if nkey else None
+                    if not (npz and os.path.exists(npz)):
+                        self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, "--warm", str(faces)], timeout=180, env=env)
             except Exception as e: log_error("preload", e)
             self.q.put(("splash_preload", i, total))
         self.q.put(("splash_preload_done",))
@@ -5858,7 +5865,7 @@ class App(ctk.CTk):
                 elif kind=="refresh_probe":
                     self._refresh_probe_done(*rest)
                 elif kind=="projects":
-                    self.listing=False; self.listed=True; self.listed_src=self._listing_src
+                    self.listing=False; self.listed=True; self.listed_src=self._listing_src; self.set_status("")   # clear "Refreshing projects…" — done, or it lingers as a fake perpetual-loading label
                     if not getattr(self, "_first_listed", False):
                         self._first_listed=True
                         if self.listed_src=="local" and any(p.get("local") for p in rest[0]): self._set_mode("Local")   # no scanner: start on what is on this PC
