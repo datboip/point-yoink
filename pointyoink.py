@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.68-pre"
+APP = "PointYoink"; VERSION = "0.9.69-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3060,7 +3060,7 @@ class App(ctk.CTk):
     def _find_mesh(self, name):
         """Largest mesh for a project: prefer the local flat copy, then a full-import mirror, then the device."""
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
-        flat=[p for p in glob.glob(os.path.join(local, name+"_*.ply")) if not p.endswith("_cloud.ply")]
+        flat=[p for p in glob.glob(os.path.join(local, name+"_*.ply")) if not p.endswith("_cloud.ply") and not p.endswith(".tmp.ply")]
         if flat:
             try: return max(flat, key=os.path.getsize)
             except Exception: return flat[0]
@@ -3857,6 +3857,65 @@ class App(ctk.CTk):
         return ("Size %.0f × %.0f × %.0f mm (as measured by the scanner)\n%s triangles · %d piece%s · %s open edge%s · %s" % (
             ext[0], ext[1], ext[2], human_count(info.get("faces",0)), info.get("pieces",0), "" if info.get("pieces")==1 else "s",
             human_count(info.get("open_edges",0)), "" if info.get("open_edges")==1 else "s", closed))
+    # ---- prepared-version history: each Save keeps the previous prepared copy so it can be restored ----
+    def _prep_history(self, name, node):
+        return self.records.get(name,{}).get("prep_history",{}).get(node,[])
+    def _prep_record(self, name, node, opts, prev_archive, size):
+        hist=self.records.setdefault(name,{}).setdefault("prep_history",{}).setdefault(node,[])
+        if not hist and prev_archive:      # a prepared copy existed before history tracking: seed it as version 1
+            hist.append({"when":"earlier","settings":{},"current":False,"archive":prev_archive,"size":None}); prev_archive=None
+        for h in hist:
+            if h.get("current"): h["current"]=False; h["archive"]=prev_archive
+        hist.append({"when":time.strftime("%Y-%m-%d %H:%M"),"settings":opts or {},"current":True,"archive":None,"size":size})
+    def _prep_restore(self, name, node, idx):
+        hist=self._prep_history(name, node)
+        if idx<0 or idx>=len(hist) or hist[idx].get("current"): return
+        entry=hist[idx]; arch=entry.get("archive")
+        if not arch or not os.path.exists(arch): self.set_banner("That version's file is no longer on disk.", WARN); return
+        final=os.path.join(self.dest.get() or DEFAULT_DEST, name, "%s_%s_clean.ply" % (name, node))
+        try:
+            vdir=os.path.join(os.path.dirname(final), ".versions"); os.makedirs(vdir, exist_ok=True)
+            cur_arch=None
+            if os.path.exists(final):
+                cur_arch=os.path.join(vdir, "%s_clean_%s.ply" % (node, time.strftime("%Y%m%d-%H%M%S"))); shutil.copy2(final, cur_arch)
+            shutil.copy2(arch, final)
+        except Exception as e: log_error("prep restore", e); self.set_banner("Could not restore that version (see Help > Log).", WARN); return
+        for h in hist:
+            if h.get("current"): h["current"]=False; h["archive"]=cur_arch
+        entry["current"]=True; entry["archive"]=None
+        self._persist(); self._mesh_stats={}; self.gallery_cache.pop(name, None)
+        self._proc_set_current(name, node, "clean")
+        self.set_banner("Restored a previous prepared version of %s." % self._scan_label(name, node), OK)
+    def _prep_history_dialog(self, name, node):
+        hist=self._prep_history(name, node)
+        if not hist:
+            self._alert("Past versions", "No saved prepared versions yet for %s.\nPrepare it and Save prepared version to start a history." % self._scan_label(name, node)); return
+        t=self._top("Past versions · %s" % self._scan_label(name, node), 560, min(720, 170+66*len(hist)), key="prephist")
+        if t is None: return
+        ctk.CTkLabel(t, text="Prepared versions of %s" % self._scan_label(name, node), font=ctk.CTkFont(size=15, weight="bold"), text_color=TX).pack(anchor="w", padx=20, pady=(16,2))
+        ctk.CTkLabel(t, text="Every Save prepared version keeps the previous one here. Restore swaps it back in (the current one is kept too).", text_color=MUT, font=ctk.CTkFont(size=11), wraplength=500, justify="left").pack(anchor="w", padx=20, pady=(0,8))
+        box=ctk.CTkScrollableFrame(t, fg_color=CARD, corner_radius=12); box.pack(fill="both", expand=True, padx=16, pady=(0,12))
+        def summ(s):
+            s=s or {}; b=[]
+            if s.get("do_iso"): b.append("isolate %s%%" % s.get("iso"))
+            if s.get("do_base"): b.append("remove base")
+            if s.get("do_smooth"): b.append("smooth %s" % s.get("smooth"))
+            if s.get("holes"): b.append("fill holes")
+            if s.get("do_keep") and (s.get("keep") or 100)<100: b.append("keep %s%% tris" % s.get("keep"))
+            return ", ".join(b) or ("earlier prepared copy" if not s else "no changes")
+        for i in range(len(hist)-1, -1, -1):
+            h=hist[i]; cur=h.get("current")
+            row=ctk.CTkFrame(box, fg_color=CARD2, corner_radius=10); row.pack(fill="x", padx=6, pady=4)
+            col=ctk.CTkFrame(row, fg_color="transparent"); col.pack(side="left", fill="x", expand=True, padx=12, pady=8)
+            ctk.CTkLabel(col, text="Version %d%s · %s" % (i+1, "  (current)" if cur else "", h.get("when","")), text_color=(OK if cur else TX), font=ctk.CTkFont(size=12, weight="bold"), anchor="w").pack(anchor="w")
+            ctk.CTkLabel(col, text="%s%s" % (summ(h.get("settings")), (" · "+human(h["size"])) if h.get("size") else ""), text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=360).pack(anchor="w")
+            if cur:
+                ctk.CTkLabel(row, text="in use", text_color=OK, font=ctk.CTkFont(size=11)).pack(side="right", padx=14)
+            else:
+                avail=bool(h.get("archive") and os.path.exists(h.get("archive")))
+                ctk.CTkButton(row, text="Restore" if avail else "file gone", width=94, height=28, corner_radius=14, fg_color=(AC if avail else CARD2), hover_color=AC_H,
+                              text_color=("#04121f" if avail else DIM), state=("normal" if avail else "disabled"),
+                              command=(lambda idx=i: (self._dialogs.pop("prephist", None), t.destroy(), self._prep_restore(name, node, idx)))).pack(side="right", padx=14)
     def _prepare_dialog(self, name, node):
         """The four named clean-up actions, run on a copy, shown before and after, then Keep or Discard."""
         cur=self._proc_current(name, node)
@@ -3866,6 +3925,7 @@ class App(ctk.CTk):
         if t is None: return
         t.resizable(False, False)     # lock it: long option text / the After render must not make the window jump sizes
         src=cur[2]; final=os.path.join(os.path.dirname(src), "%s_%s_clean.ply" % (name, node)); tmp=final[:-4]+".tmp.ply"
+        pstate={"opts": None}     # the settings that produced the current tmp, recorded into history on Save
         card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
         ctk.CTkLabel(card, text="Starting from the version “%s” · %s" % (cur[1], human(os.path.getsize(src))), text_color=MUT, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=18, pady=(14,6))
         opts=ctk.CTkFrame(card, fg_color="transparent"); opts.pack(fill="x", padx=12)
@@ -3927,16 +3987,26 @@ class App(ctk.CTk):
             self._dialogs.pop("prepare", None); t.destroy()
         t.protocol("WM_DELETE_WINDOW", close)
         def keep():
-            try: os.replace(tmp, final)
+            prev_archive=None
+            try:
+                if os.path.exists(final):
+                    # keep the copy we're about to overwrite, so a re-Prepare doesn't silently lose it
+                    vdir=os.path.join(os.path.dirname(final), ".versions"); os.makedirs(vdir, exist_ok=True)
+                    prev_archive=os.path.join(vdir, "%s_clean_%s.ply" % (node, time.strftime("%Y%m%d-%H%M%S")))
+                    try: shutil.copy2(final, prev_archive)
+                    except Exception: prev_archive=None
+                os.replace(tmp, final)
             except Exception as e: log_error("prepare keep", e); status.configure(text="Could not save the prepared version (see Help > Log).", text_color=WARN); return
+            self._prep_record(name, node, pstate["opts"], prev_archive, os.path.getsize(final))
             self._persist(); self._mesh_stats={}; self.gallery_cache.pop(name, None); self.projects_sig=None
-            self.set_banner("%s prepared: saved as a new version, the original is kept." % self._scan_label(name, node), OK)
+            n=len(self._prep_history(name, node))
+            self.set_banner("%s: saved prepared version %d. Earlier versions kept (Past versions… to restore)." % (self._scan_label(name, node), n), OK)
             self._proc_set_current(name, node, "clean"); close()
         def discard(): close(); self.set_banner("Discarded. Nothing was changed.", MUT)
         def run():
             if not (self.clean_do_iso.get() or self.clean_do_smooth.get() or self.clean_holes.get() or self.clean_do_keep.get() or self.clean_do_base.get()):
                 status.configure(text="Tick at least one action.", text_color=WARN); return
-            clean_opts=self._clean_options(); self._persist(); able(runb, False); keepb.pack_forget(); discb.pack_forget()
+            clean_opts=self._clean_options(); pstate["opts"]=clean_opts; self._persist(); able(runb, False); keepb.pack_forget(); discb.pack_forget()
             loads[1].configure(text="Working…"); loads[1].grid(); loads[1].lift(); t0=time.time()
             status.configure(text="Working on a copy… (a big model takes a minute)", text_color=MUT)
             def tick():
@@ -3958,6 +4028,9 @@ class App(ctk.CTk):
             threading.Thread(target=work, daemon=True).start()
         runb=ctk.CTkButton(btns, text="Preview changes", width=150, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=run); runb.pack(side="left", padx=6)
         ctk.CTkButton(btns, text="Close", width=90, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=close).pack(side="left", padx=6)
+        if self._prep_history(name, node):
+            ctk.CTkButton(btns, text="⤺ Past versions…", width=150, height=34, corner_radius=17, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX,
+                          command=lambda: self._prep_history_dialog(name, node)).pack(side="left", padx=6)
         keepb=ctk.CTkButton(btns, text="Save prepared version", width=190, height=34, corner_radius=17, fg_color=OK, hover_color="#35b57c", text_color="#04121f", command=keep)
         discb=ctk.CTkButton(btns, text="Discard", width=100, height=34, corner_radius=17, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=discard)
     def _link_views(self, views):
@@ -5341,7 +5414,7 @@ class App(ctk.CTk):
     def _mesh_cloud_sources(self, name, dest):
         """(mesh_plys, cloud_plys) for a project: local flat > local nested > device nested."""
         local=os.path.join(dest, name)
-        m=[p for p in glob.glob(os.path.join(local, name+"_*.ply")) if not p.endswith("_cloud.ply")]
+        m=[p for p in glob.glob(os.path.join(local, name+"_*.ply")) if not p.endswith("_cloud.ply") and not p.endswith(".tmp.ply")]
         c=glob.glob(os.path.join(local, name+"_*_cloud.ply"))
         if not m:
             m=glob.glob(os.path.join(local, "data","*","fuse_mesh.ply")) or glob.glob(os.path.join(PROJECTS, name, "data","*","fuse_mesh.ply"))
@@ -5386,7 +5459,7 @@ class App(ctk.CTk):
         threading.Thread(target=self._zip_worker, args=(sel,dest,mode), daemon=True).start()
     def _project_meshes(self, base, name):
         """Mesh .ply files for an imported project (flat layout, else nested mirror)."""
-        flat=[p for p in glob.glob(os.path.join(base, name+"_*.ply")) if not p.endswith("_cloud.ply")]
+        flat=[p for p in glob.glob(os.path.join(base, name+"_*.ply")) if not p.endswith("_cloud.ply") and not p.endswith(".tmp.ply")]
         if flat: return sorted(flat)
         return sorted(glob.glob(os.path.join(base, "data", "*", "fuse_mesh.ply")))
     def _zip_worker(self, sel, dest, mode):
@@ -5418,16 +5491,18 @@ class App(ctk.CTk):
                         files.append((target, os.path.basename(target)))
                 elif mode=="models":
                     for f in glob.glob(os.path.join(base,"*")):
-                        if f.lower().endswith((".ply",".stl",".obj",".glb")): files.append((f, os.path.basename(f)))
+                        if f.lower().endswith((".ply",".stl",".obj",".glb")) and not f.endswith(".tmp.ply"): files.append((f, os.path.basename(f)))
                     for f in glob.glob(os.path.join(base,"data","*","*")):
                         # nested scans all have the same file names (fuse_mesh.ply): make each entry unique
-                        if f.lower().endswith((".ply",".stl",".obj",".glb")):
+                        if f.lower().endswith((".ply",".stl",".obj",".glb")) and not f.endswith(".tmp.ply"):
                             node=os.path.basename(os.path.dirname(f)); stem,ext=os.path.splitext(os.path.basename(f))
                             files.append((f, "%s_%s_%s%s" % (name, node, stem, ext)))
                 else:  # all
                     for root,dirs,fs in os.walk(base):
                         dirs[:]=[d for d in dirs if d!="cache"]
-                        for f in fs: fp=os.path.join(root,f); files.append((fp, os.path.join(name, os.path.relpath(fp, base))))
+                        for f in fs:
+                            if f.endswith(".tmp.ply"): continue      # never ship a half-written Prepare temp file
+                            fp=os.path.join(root,f); files.append((fp, os.path.join(name, os.path.relpath(fp, base))))
             if not files:
                 self.q.put(("zipfail", ("%d conversion(s) failed, nothing to zip - see Help > Log" % zfails) if zfails
                             else "no matching files (try importing with that format first)")); return
