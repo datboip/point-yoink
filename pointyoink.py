@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.104-pre"
+APP = "PointYoink"; VERSION = "0.9.105-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1925,8 +1925,7 @@ class App(ctk.CTk):
         self.summary=ctk.CTkLabel(self._barleft, text="No projects selected", text_color=TX, anchor="w", font=ctk.CTkFont(size=13))
         self.summary.pack(side="left")
         self.progress=ctk.CTkProgressBar(a, height=6, corner_radius=3, progress_color=AC); self.progress.set(0)
-        self.imp_graph=tk.Canvas(a, height=60, bg="#0d0f14", highlightthickness=0)   # USB import speed graph (same look as WiFi); shown only during a pull
-        self._imp_samples=[]; self._imp_last=0.0
+        self._imp_samples=[]; self._imp_last=0.0; self._imp_top=None   # USB import transfer popup (WiFi-style)
         self.progline=ctk.CTkLabel(a, text="", text_color=MUT, anchor="w", font=ctk.CTkFont(size=11))
         def outlined(text, cmd, w=130):
             return ctk.CTkButton(a, text=text, width=w, height=40, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
@@ -3153,7 +3152,7 @@ class App(ctk.CTk):
         self._imp_samples=[]; self._imp_last=0.0   # fresh speed graph for this import
         self.import_btn.grid_remove(); self.cancel_btn.grid(row=0,column=3)
         self.progress.grid(row=1,column=0, columnspan=3, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=3, sticky="w", padx=(20,0), pady=(0,10))
-        self.imp_graph.grid(row=3,column=0, columnspan=4, sticky="ew", padx=20, pady=(0,10))   # the WiFi-style speed graph
+        self._import_popup()   # WiFi-style transfer window with the speed graph + stats
         dest=self.dest.get() or DEFAULT_DEST; mo=self.models_only.get(); cleanup=self.cleanup.get(); clean_opts=self._clean_options() if cleanup else None; self._persist()
         fmts=[]
         if self.exp_stl.get(): fmts.append("stl")
@@ -5212,15 +5211,60 @@ class App(ctk.CTk):
         else: sm[-1]=(frac, rate)
         self._speed_draw(self.wifi_graph, sm)
         self._wifi_peak=max(r for _,r in sm)          # shown in the stats row, not over the curve
+    def _import_popup(self):
+        """A transfer window for USB import, mirroring the WiFi receive dialog: project name, the speed
+        graph, and received/scans/speed/time-left tiles. Closing it (or Run in background) just hides the
+        window; the import keeps going with the thin bar in the status area."""
+        top=getattr(self, "_imp_top", None)
+        if top is not None:
+            try:
+                if top.winfo_exists(): top.deiconify(); top.lift(); return
+            except Exception: pass
+        self._imp_samples=[]; self._imp_last=0.0
+        top=tk.Toplevel(self); top.title("Importing"); top.configure(bg=BG)
+        try: top.transient(self.winfo_toplevel())
+        except Exception: pass
+        top.geometry("520x430"); self._imp_top=top
+        card=ctk.CTkFrame(top, fg_color=CARD, corner_radius=16); card.pack(fill="both", expand=True, padx=16, pady=16)
+        self.imp_title=ctk.CTkLabel(card, text="Importing…", text_color=TX, font=ctk.CTkFont(size=15, weight="bold")); self.imp_title.pack(pady=(16,2))
+        self.imp_sub=ctk.CTkLabel(card, text="Copying off the scanner…", text_color=MUT, font=ctk.CTkFont(size=11)); self.imp_sub.pack()
+        self.imp_graph=tk.Canvas(card, height=110, bg="#0d0f14", highlightthickness=0); self.imp_graph.pack(fill="x", padx=24, pady=(14,6))
+        stats=ctk.CTkFrame(card, fg_color="transparent"); stats.pack(fill="x", padx=24)
+        stats.grid_columnconfigure(0, weight=3); stats.grid_columnconfigure(1, weight=1)
+        self.imp_stats={}
+        for key,cap,r,c in (("got","received",0,0),("scans","scans",0,1),("rate","speed",1,0),("eta","time left",1,1)):
+            col=ctk.CTkFrame(stats, fg_color="#0d0f14", corner_radius=10); col.grid(row=r, column=c, sticky="nsew", padx=3, pady=3)
+            v=ctk.CTkLabel(col, text="-", text_color=TX, font=ctk.CTkFont(size=14, weight="bold")); v.pack(pady=(8,0))
+            ctk.CTkLabel(col, text=cap, text_color=MUT, font=ctk.CTkFont(size=10)).pack(pady=(0,8)); self.imp_stats[key]=v
+        br=ctk.CTkFrame(card, fg_color="transparent"); br.pack(side="bottom", pady=(8,16))
+        ctk.CTkButton(br, text="Run in background", width=150, corner_radius=16, fg_color=CARD2, hover_color=STROKE,
+                      text_color=TX, command=lambda: top.withdraw()).pack(side="left", padx=6)
+        ctk.CTkButton(br, text="Cancel", width=110, corner_radius=16, fg_color=CARD2, hover_color=STROKE,
+                      text_color=TX, command=self.on_cancel).pack(side="left", padx=6)
+        top.protocol("WM_DELETE_WINDOW", lambda: top.withdraw())   # closing hides it; the import keeps running (status bar shows progress)
+    def _close_import_popup(self):
+        top=getattr(self, "_imp_top", None); self._imp_top=None
+        if top is not None:
+            try: top.destroy()
+            except Exception: pass
     def _imp_graph_add(self, frac, rate):
-        """Same speed graph for the USB import bar."""
+        """Feed the USB import speed graph + stats popup."""
+        cv=getattr(self, "imp_graph", None)
+        if cv is None:
+            return
+        try:
+            if not cv.winfo_exists(): return
+        except Exception: return
         sm=getattr(self, "_imp_samples", None)
         if sm is None: sm=self._imp_samples=[]
         now=time.time()
         if not sm or now-getattr(self,"_imp_last",0.0)>=0.3 or frac-sm[-1][0]>=0.01:
             sm.append((frac, rate)); self._imp_last=now
         else: sm[-1]=(frac, rate)
-        self._speed_draw(self.imp_graph, sm)
+        self._speed_draw(cv, sm)
+        try:
+            self.imp_stats["rate"].configure(text=human(rate)+"/s")
+        except Exception: pass
     def _wifi_set_code(self, code):
         for tl,ch in zip(self.wifi_tiles, code): tl.configure(text=ch)
     def _wifi_new_code(self):
@@ -6041,7 +6085,7 @@ class App(ctk.CTk):
         try:
             if self.progress.cget("mode")=="indeterminate": self.progress.stop(); self.progress.configure(mode="determinate")
         except Exception: pass
-        self.progress.set(0); self.progress.grid_remove(); self.imp_graph.grid_remove()
+        self.progress.set(0); self.progress.grid_remove(); self._close_import_popup()
         if cancelled: self.progline.configure(text="Cancelled."); self.set_banner("Import cancelled.", WARN)
         elif failed:
             self.progline.configure(text="Done with errors: "+", ".join(failed))
@@ -6194,6 +6238,16 @@ class App(ctk.CTk):
                     self.progline.configure(text=line)
                     if rate is not None:
                         try: self._imp_graph_add(frac, rate)   # draw the speed graph (same as WiFi) from the rsync rate
+                        except Exception: pass
+                    if getattr(self, "_imp_top", None):        # fill the transfer popup's subtitle + stat tiles
+                        try:
+                            self.imp_sub.configure(text=line)
+                            mg=re.search(r"·\s*([\d.]+\s*[KMGT]?B)\b", line)
+                            if mg: self.imp_stats["got"].configure(text=mg.group(1))
+                            ms=re.search(r"scan\s*(\d+/\d+)", line)
+                            if ms: self.imp_stats["scans"].configure(text=ms.group(1))
+                            me=re.search(r"(\d+:\d+)\s*left", line)
+                            if me: self.imp_stats["eta"].configure(text=me.group(1))
                         except Exception: pass
                 elif kind=="done": self._finish(rest[0],rest[1], no_models=rest[2] if len(rest)>2 else [])
                 elif kind=="cancelled": self._finish(rest[0],rest[1], cancelled=True, no_models=rest[2] if len(rest)>2 else [])
