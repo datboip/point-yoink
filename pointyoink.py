@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.85-pre"
+APP = "PointYoink"; VERSION = "0.9.86-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1521,7 +1521,7 @@ class App(ctk.CTk):
         self.next_strip=ctk.CTkFrame(self.projbar, fg_color="#0f1a2b", corner_radius=12, border_width=1, border_color="#1f3a5f")   # NEXT: shown on the Projects page only
         self.tabs=TabStrip(centre, base=BG, size=13); self.tabs.grid(row=1,column=0, sticky="nsew")
         pv=self.tabs.add("3D preview"); fl=self.tabs.add("Files")
-        ctl=ctk.CTkFrame(self.tabs.bar, fg_color="transparent"); ctl.pack(side="right", pady=(0,4))
+        ctl=ctk.CTkFrame(self.tabs.bar, fg_color="transparent"); ctl.pack(side="right", pady=(0,4)); self._tab_ctl=ctl   # the 3D-only toolbar (View in 3D / Solid-Wireframe / Reset view); hidden for a flat 2D scanner preview
         self.view_btn=ctk.CTkButton(ctl, text="⟳  View in 3D", width=98, height=30, corner_radius=8, fg_color="transparent", border_width=1,
                                     border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=12), command=self.on_view_3d)
         self._tip(self.view_btn, "Open this scan in the interactive viewer: drag to rotate, scroll to zoom.")
@@ -2812,6 +2812,21 @@ class App(ctk.CTk):
             self._mv_key=None; self.mv.grid_remove(); self.big.grid(); self._preview_idle()
             self.big_hint.configure(text="Scanner preview · View in 3D loads the model only when you ask")
         except Exception: pass
+    def _show_3d_controls(self, on):
+        """Show the 3D-only chrome (Fit/Top/Front view nav, Solid/Wireframe, Reset view, View in 3D) only
+        when a real 3D model is on screen. A raw scan shows the flat scanner point cloud, where those
+        controls do nothing — hiding them is clearer than a separate 2D/3D tab."""
+        try:
+            if on: self.view_nav.place(relx=0.0, rely=0.0, x=8, y=8, anchor="nw"); self.view_nav.lift()
+            else: self.view_nav.place_forget()
+        except Exception: pass
+        try:
+            ctl=getattr(self, "_tab_ctl", None)
+            if ctl is not None:
+                if on:
+                    if not ctl.winfo_manager(): ctl.pack(side="right", pady=(0,4))
+                else: ctl.pack_forget()
+        except Exception: pass
     def _request_shaded(self, name, node=None):
         """Show the cached shaded render for this scan, or queue one. Never blocks the UI thread."""
         mesh=self._mesh_for_node(name, node) if node else self._find_mesh(name)
@@ -2822,8 +2837,10 @@ class App(ctk.CTk):
             self._mv_want=None; self._mv_key=None; self._cancel_mv_start()
             try: self.mv.grid_remove(); self.big.grid()
             except Exception: pass
-            self.big_hint.configure(text="No 3D model for this scan yet — it's raw data (no fused mesh). Build it on the Projects page, or One-tap Edit on the scanner."); self._preview_idle(); return
+            self._show_3d_controls(False)   # flat scanner cloud: no 3D nav / shading / reset to offer
+            self.big_hint.configure(text="This scan is still raw data — showing the scanner's point cloud. Press “Build model” to make the 3D model (a few seconds), or One-tap Edit on the scanner."); self._preview_idle(); return
         node=node or self._node_of(name, mesh)
+        self._show_3d_controls(True)        # a fused mesh exists for this scan: the 3D view and its controls apply
         if node and node!=self._film_sel: self._film_sel=node; self._mark_scan(node)
         # include the version in the cache key: each version's mesh differs, and a node-only key made the
         # scanner and prepared renders collide on one file, so switching back showed the stale one.
@@ -2850,9 +2867,9 @@ class App(ctk.CTk):
             if not st: threading.Thread(target=lambda: self.q.put(("mesh_stats", key, _ply_counts(mesh))), daemon=True).start()
             return
         if (key,mode) in self._shade_failed:
-            self.big_hint.configure(text="Scanner's own preview · could not draw the 3D model"); return
+            self._show_3d_controls(False); self.big_hint.configure(text="Scanner's own preview · could not draw the 3D model"); return
         if mesh.startswith(PROJECTS) and self.pulling:
-            self.big_hint.configure(text="Scanner preview · the 3D render waits for the import to finish"); return
+            self._show_3d_controls(False); self.big_hint.configure(text="Scanner preview · the 3D render waits for the import to finish"); return
         self._dim_preview(); self._preview_busy("Drawing the 3D model")   # spinner box carries the text; _preview_busy clears the bottom hint
         with self._shade_lock:
             self._shade_want=(key, mode, name, mesh, out); start=not self._shade_running; self._shade_running=True
@@ -3963,9 +3980,10 @@ class App(ctk.CTk):
             combined_exists=("combined" in nodes and node!="combined")
             primary="build" if (raw and not vs) else ("cut" if (vs and node!="combined" and node not in self._base_planes(name)) else (None if combined_exists else ("prepare" if (vs and not has_prep) else ("export" if vs else None))))
             def mk(kind, text, enabled, cmd, tip):
-                filled=(kind==primary and enabled)
+                if not enabled: return None   # only show what this scan can actually do: a raw scan (no model) shows Build, not greyed Remove base / Prepare / Export
+                filled=(kind==primary)
                 b=ctk.CTkButton(pp, text=text, height=32, corner_radius=8, fg_color=(AC if filled else "transparent"), hover_color=(AC_H if filled else CARD2), border_width=(0 if filled else 1), border_color=STROKE,
-                                text_color=("#04121f" if filled else (TX if enabled else MUT)), state=("normal" if enabled else "disabled"), anchor="w", command=cmd)
+                                text_color=("#04121f" if filled else TX), state="normal", anchor="w", command=cmd)
                 b.pack(fill="x", padx=6, pady=(6,0)); self._tip(b, tip); return b
             if node!="combined": mk("build", "⚙  Build model", bool(raw), lambda n=name,nd=node: self._proc_build(n, [nd]), "Build this scan's 3D model from its raw data, on this PC." if raw else "No raw data on this PC for this scan (share the project over WiFi as Full project).")
             if node!="combined": mk("cut", "✂  Remove base…", bool(vs), lambda nd=node: self.on_remove_base(nd), "Drag one line just above the table and apply. Saves a prepared version and remembers the cut for combining.")
