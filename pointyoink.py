@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.80-pre"
+APP = "PointYoink"; VERSION = "0.9.81-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2311,7 +2311,9 @@ class App(ctk.CTk):
         elif not mounted and self.listed_src=="device":
             self.listed=False; self.start_listing("local")   # scanner disappeared; fall back without poking MTP
         if st=="absent":
-            self.set_banner("Scanner not detected - plug in the USB-C cable, or use WiFi.", WARN)
+            # editing saved scans without a scanner is normal — don't cry wolf. Prompt only on the Import page.
+            if self.page=="import": self.set_banner("Scanner not detected - plug in the USB-C cable, or use WiFi.", WARN)
+            else: self.set_banner("Working on saved scans · connect the scanner over USB or WiFi to import more.", MUT)
             self.action_btn.configure(text="🔌  USB", state="normal"); self.auto_tried=False
         elif st=="adb":
             self.set_banner("MIRACO detected · Not connected - tap “File Transfer” on the scanner", WARN)
@@ -2323,10 +2325,12 @@ class App(ctk.CTk):
         elif mounted:
             self.action_btn.configure(text="🔌  Rescan", state="normal")
             if self.listed_src=="device" and self.listed:
-                self.set_banner("Connected - tick scans to import, click one to preview.", OK)
+                if self.page=="import": self.set_banner("Connected - tick scans to import, click one to preview.", OK)
+                else: self.set_banner("MIRACO connected - open the Import tab to bring its projects over.", OK)   # guide, don't leave them wondering
                 if self.projects: self.render_list(self.projects)   # refresh badges if files changed on disk (cheap no-op otherwise)
-            else:
-                self.set_banner("USB mount detected - click Rescan to read scanner projects.", AC)
+            elif not self.listing:
+                self.set_banner("Connected - reading scanner projects…", AC)
+                self.start_listing("device")          # auto-read on a detected mount instead of making the user click Rescan
     def start_listing(self, source=None):
         if self.listing: return
         dest=self.dest.get() or DEFAULT_DEST
