@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.66-pre"
+APP = "PointYoink"; VERSION = "0.9.67-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2707,7 +2707,10 @@ class App(ctk.CTk):
             self.big_hint.configure(text="No 3D model for this scan yet — it's raw data (no fused mesh). Build it on the Projects page, or One-tap Edit on the scanner."); self._preview_idle(); return
         node=node or self._node_of(name, mesh)
         if node and node!=self._film_sel: self._film_sel=node; self._mark_scan(node)
-        key="%s__%s"%(name, node) if node else name; mode=self.shade_mode
+        # include the version in the cache key: each version's mesh differs, and a node-only key made the
+        # scanner and prepared renders collide on one file, so switching back showed the stale one.
+        verkey=(self._proc_current(name, node) or (None,))[0] if node else None
+        key=("%s__%s__%s"%(name, node, verkey or "v")) if node else name; mode=self.shade_mode
         out=os.path.join(THUMBS, key+("__shaded.png" if mode=="solid" else "__wire.png"))
         self._shade_key=(key, mode)
         self._cancel_mv_start()
