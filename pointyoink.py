@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.98-pre"
+APP = "PointYoink"; VERSION = "0.9.99-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -5530,6 +5530,13 @@ class App(ctk.CTk):
     def refresh_screenshots(self):
         if getattr(self, "_shots_busy", False): return
         self._shots_busy=True; self.hold_banner("Reading screenshots off the device…", AC)
+        try:                                            # show a Reading state now, so the panel doesn't sit on "No captures yet" while it loads
+            self.shots.grid_remove()
+            for w in self.shots.winfo_children(): w.destroy()
+            ctk.CTkLabel(self.shots, text="Reading captures off the device…\nOver USB this can take a few seconds.",
+                         text_color=MUT, justify="left").grid(row=0, column=0, columnspan=4, padx=20, pady=20, sticky="w")
+            self.shots.grid()
+        except Exception: pass
         self._start_thread(self._shots_worker, name="shots")
     def _shots_worker(self):
         cache=os.path.join(THUMBS, "shots")
@@ -5563,16 +5570,17 @@ class App(ctk.CTk):
         except Exception as e:
             log_error("shots", e); self.q.put(("shots_failed", str(e)))
     def _play_recording(self, path, nm):
-        """Open a recording in the system video player. MTP is flaky for video playback, so if it's still on
-        the scanner mount, copy it into the captures folder first (in the background) and play the local copy."""
+        """Play a recording. MTP is flaky for video, so if it's still on the scanner mount, copy it into a
+        PLAYBACK CACHE (not captures/) first — playing is a preview, it must NOT flip the on-device/on-PC
+        badge; only Pull all saves to the PC."""
         try:
             if path.startswith(MOUNT) or path.startswith(PROJECTS):
-                dest=os.path.join(self.dest.get() or DEFAULT_DEST, "captures"); os.makedirs(dest, exist_ok=True)
-                local=os.path.join(dest, nm)
+                cache=os.path.join(THUMBS, "video"); os.makedirs(cache, exist_ok=True)
+                local=os.path.join(cache, nm)
                 try: fresh=os.path.exists(local) and os.path.getsize(local)==os.path.getsize(path)
                 except Exception: fresh=False
                 if fresh: subprocess.Popen(["xdg-open", local]); return
-                self.hold_banner("Copying %s off the scanner to play…" % nm[:24], AC)
+                self.hold_banner("Loading %s to play…" % nm[:24], AC)
                 threading.Thread(target=self._copy_and_play, args=(path, local, nm), daemon=True).start(); return
             subprocess.Popen(["xdg-open", path])
         except Exception as e:
@@ -5581,13 +5589,69 @@ class App(ctk.CTk):
         try:
             shutil.copyfile(src, local)
             def done():
-                self.set_banner("Playing %s" % nm[:24], OK); self._dev_hold=0.0
+                self._dev_hold=0.0                                  # release the top banner back to device state
+                self.set_status("Playing %s" % nm[:24]); self.after(4000, lambda: self.set_status(""))   # transient bottom-bar note that clears itself (was a stuck top banner)
                 try: subprocess.Popen(["xdg-open", local])
                 except Exception as e: log_error("xdg-open rec", e)
-                if getattr(self, "page", "")=="import" or getattr(self, "_cur_mode", "")=="Captures": self.refresh_screenshots_soft()
             self.q.put(("call", done))
         except Exception as e:
             log_error("copy-play", e); self.q.put(("call", lambda: self.set_banner("Couldn't copy that recording to play (see Help > Log).", WARN)))
+    def _video_thumb(self, src, nm):
+        """First frame of a recording as a cached JPG (ffmpeg). Returns the path or None."""
+        out=os.path.join(THUMBS, "video", os.path.splitext(nm)[0]+"__frame.jpg")
+        try:
+            if os.path.exists(out) and os.path.getsize(out)>512: return out
+            os.makedirs(os.path.dirname(out), exist_ok=True); tmp=out+".tmp.%d.jpg"%os.getpid()
+            r=subprocess.run(["ffmpeg","-y","-loglevel","error","-i",src,"-frames:v","1","-vf","scale=480:-1",tmp], capture_output=True, timeout=40)
+            if r.returncode==0 and os.path.exists(tmp) and os.path.getsize(tmp)>512: os.replace(tmp, out); return out
+        except Exception as e: log_error("video-thumb "+nm, e)
+        return None
+    def _video_meta(self, src):
+        """(duration_seconds, width, height) via ffprobe, or (None, None, None)."""
+        try:
+            r=subprocess.run(["ffprobe","-v","error","-select_streams","v:0","-show_entries",
+                              "stream=width,height:format=duration","-of","json",src], capture_output=True, text=True, timeout=20)
+            d=json.loads(r.stdout or "{}"); w=h=dur=None
+            if d.get("streams"): w=d["streams"][0].get("width"); h=d["streams"][0].get("height")
+            try: dur=float(d.get("format",{}).get("duration"))
+            except Exception: dur=None
+            return dur, w, h
+        except Exception: return None, None, None
+    def _video_popout(self, path, nm):
+        """A viewer for a recording: first frame + metadata (resolution, length, size, date), with Play."""
+        try: top=self._top("Recording", 1020, 780, key="shot")
+        except Exception as e: log_error("video-popout", e); return
+        body=ctk.CTkFrame(top, fg_color="#0a0c10"); body.pack(fill="both", expand=True)
+        img_lbl=ctk.CTkLabel(body, text="Reading the video…", text_color=MUT, fg_color="#0a0c10"); img_lbl.pack(fill="both", expand=True, padx=10, pady=10)
+        bar=ctk.CTkFrame(top, fg_color="transparent"); bar.pack(fill="x", pady=(0,8))
+        cap=ctk.CTkLabel(bar, text=nm, text_color=TX, font=ctk.CTkFont(size=12, weight="bold")); cap.pack(side="left", padx=(14,10))
+        meta=ctk.CTkLabel(bar, text="reading metadata…", text_color=MUT, font=ctk.CTkFont(size=11)); meta.pack(side="left")
+        ctk.CTkButton(bar, text="▶ Play", width=90, height=28, corner_radius=8, fg_color=CARD2, hover_color=STROKE,
+                      text_color=TX, command=lambda: self._play_recording(path, nm)).pack(side="right", padx=(0,14))
+        def load():
+            import datetime
+            thumb=self._video_thumb(path, nm); dur,w,h=self._video_meta(path)
+            def show():
+                if thumb and os.path.exists(thumb):
+                    try:
+                        im=Image.open(thumb).convert("RGB")
+                        W=max(400, top.winfo_width()-40); H=max(300, top.winfo_height()-110)
+                        r=min(W/im.width, H/im.height); im=im.resize((max(1,int(im.width*r)), max(1,int(im.height*r))))
+                        self.imgs["vpop"]=ctk.CTkImage(light_image=im, dark_image=im, size=im.size); img_lbl.configure(image=self.imgs["vpop"], text="")
+                    except Exception as e: img_lbl.configure(image=None, text="(no preview)"); log_error("vpop-show", e)
+                else: img_lbl.configure(image=None, text="No preview frame — press ▶ Play to open it")
+                parts=[]
+                if w and h: parts.append("%d × %d" % (w, h))
+                if dur: parts.append("%d:%02d" % (int(dur)//60, int(dur)%60))
+                try: parts.append(human(os.path.getsize(path)))
+                except Exception: pass
+                stem=os.path.splitext(nm)[0]
+                if len(stem)>=14 and stem[:14].isdigit():
+                    try: parts.append(datetime.datetime.strptime(stem[:14], "%m%d%Y%H%M%S").strftime("%Y-%m-%d %H:%M:%S"))
+                    except Exception: pass
+                meta.configure(text="  ·  ".join(parts) or "—")
+            self.q.put(("call", show))
+        threading.Thread(target=load, daemon=True).start()
     def refresh_screenshots_soft(self):
         """Re-render the capture grid from what's already loaded (refresh the on-PC badges after a pull/copy) without re-reading the device."""
         try: self.render_shots((getattr(self,"_shots_items",[]), getattr(self,"_recs",[])))
@@ -5596,6 +5660,8 @@ class App(ctk.CTk):
         """Remove a capture's copies FROM THIS PC — the pulled file in captures/ and the cached thumbnail —
         to the trash (recoverable). The scanner's original is NOT touched; if it's still on the device it
         reappears on the next read (and shows the 'on device' badge)."""
+        if not self._confirm("Remove capture", "Remove %s from this PC?\n\nIt goes to the trash (recoverable). The scanner's original is not touched." % nm):
+            return
         capdir=os.path.join(self.dest.get() or DEFAULT_DEST, "captures")
         gone=False
         for t in (os.path.join(capdir, nm), os.path.join(THUMBS, "shots", nm)):
@@ -5708,7 +5774,7 @@ class App(ctk.CTk):
                 ctk.CTkLabel(cell, text=nm[:20], text_color=TX, font=ctk.CTkFont(size=9)).pack()
                 ctk.CTkLabel(cell, text="video · "+human(sz)+" · click to play", text_color=MUT, font=ctk.CTkFont(size=9)).pack(pady=(0,4))
                 badge(cell, nm); addx(cell, nm)
-                for w in (cell, ico): w.bind("<Button-1>", lambda e,p=path,n=nm: self._play_recording(p, n))
+                for w in (cell, ico): w.bind("<Button-1>", lambda e,p=path,n=nm: self._video_popout(p, n))   # show first frame + metadata first, play on demand (don't copy the whole file on a click)
             base+=ceil4(len(recs))
         def work():
             for nm,path in images:
@@ -6139,7 +6205,15 @@ class App(ctk.CTk):
                     data=rest[0]; self.render_shots(data); self.set_status("")
                     n=len(data[0]); self.set_banner("Showing %d saved capture%s · scanner not connected" % (n, "" if n==1 else "s"), MUT)
                 elif kind=="shots_unmounted":
-                    self._shots_busy=False; self.set_status(""); self.set_banner("No saved captures yet · connect the scanner over USB (tap File Transfer) to read its screenshots.", WARN)
+                    self._shots_busy=False; self.set_status(""); self._dev_hold=0.0
+                    self.set_banner("No saved captures yet · connect the scanner over USB (tap File Transfer).", WARN)
+                    try:
+                        self.shots.grid_remove()
+                        for w in self.shots.winfo_children(): w.destroy()
+                        ctk.CTkLabel(self.shots, text="No captures on this PC yet.\nConnect the scanner over USB (tap File Transfer), then Refresh.",
+                                     text_color=MUT, justify="left").grid(row=0,column=0, columnspan=4, padx=20, pady=20, sticky="w")
+                        self.shots.grid()
+                    except Exception: pass
                 elif kind=="shots_failed":
                     self._shots_busy=False; self.set_status(""); self.set_banner("Couldn't read screenshots - see Help > Log.", WARN)
                 elif kind=="shots_progress":
