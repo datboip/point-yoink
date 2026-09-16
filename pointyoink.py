@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.81-pre"
+APP = "PointYoink"; VERSION = "0.9.82-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2329,8 +2329,13 @@ class App(ctk.CTk):
                 else: self.set_banner("MIRACO connected - open the Import tab to bring its projects over.", OK)   # guide, don't leave them wondering
                 if self.projects: self.render_list(self.projects)   # refresh badges if files changed on disk (cheap no-op otherwise)
             elif not self.listing:
-                self.set_banner("Connected - reading scanner projects…", AC)
-                self.start_listing("device")          # auto-read on a detected mount instead of making the user click Rescan
+                # MTP reads are slow, so only auto-read when the user is actually on the Import tab —
+                # never slow-scan the scanner while they're editing local scans on the Projects page.
+                if self.page=="import":
+                    self.set_banner("Connected - reading scanner projects…", AC)
+                    self.start_listing("device")
+                else:
+                    self.set_banner("MIRACO connected - open the Import tab to read its projects.", AC)
     def start_listing(self, source=None):
         if self.listing: return
         dest=self.dest.get() or DEFAULT_DEST
