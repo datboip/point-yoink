@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.102-pre"
+APP = "PointYoink"; VERSION = "0.9.103-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1378,7 +1378,8 @@ class App(ctk.CTk):
         self._pt=getattr(self,"_pt",0)+1
         try:
             if busy:
-                self.dot.configure(text_color=(AC if self._pt%2 else "#2b5c8a"))
+                if getattr(self, "_banner_color", None)!=WARN:   # don't let the busy pulse paint over a warning/error dot (e.g. "mount failed" must stay orange, not blue)
+                    self.dot.configure(text_color=(AC if self._pt%2 else "#2b5c8a"))
                 self._spin.configure(text=self._SPINNER[self._pt % len(self._SPINNER)], text_color=AC)
                 msg = self._status_msg or ("Connecting to the scanner…" if self._mounting else
                       "Reading projects off the scanner…" if self.listing else
@@ -2314,7 +2315,7 @@ class App(ctk.CTk):
     def browse(self):
         d=filedialog.askdirectory(initialdir=self.dest.get() or HOME)
         if d: self.dest.set(d)
-    def set_banner(self, text, color): self.banner.configure(text=text); self.dot.configure(text_color=color)
+    def set_banner(self, text, color): self.banner.configure(text=text); self.dot.configure(text_color=color); self._banner_color=color
     def hold_banner(self, text, color, secs=5.0):
         """Device / scanner / WiFi state owns the TOP MIRACO line (never the bottom bar). Holding it for a
         few seconds keeps the periodic USB probe from overwriting an active WiFi/network status; an ongoing
