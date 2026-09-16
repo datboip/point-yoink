@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.78-pre"
+APP = "PointYoink"; VERSION = "0.9.79-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2839,11 +2839,12 @@ class App(ctk.CTk):
         if getattr(self, "_prewarm_started", False): return
         self._prewarm_started=True
         dest=self.dest.get() or DEFAULT_DEST
-        try: names=[p["name"] for p in (getattr(self, "all_projects", None) or self.projects or [])]
+        # scan the local folder directly, NOT self.all_projects — that list reflects the current page
+        # (device projects on the Import page), which would leave the queue empty and warm nothing.
+        try: names=sorted(d for d in os.listdir(dest) if not d.startswith(".") and os.path.isdir(os.path.join(dest, d)))
         except Exception: names=[]
         jobs=[]
         for name in names:
-            if not os.path.isdir(os.path.join(dest, name)): continue        # local projects only (device meshes need the slow mount)
             try:
                 for node in self._proc_nodes(name): jobs.append((name, node))
             except Exception: pass
