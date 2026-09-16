@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.87-pre"
+APP = "PointYoink"; VERSION = "0.9.88-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1456,7 +1456,7 @@ class App(ctk.CTk):
     def on_refresh(self):
         self.listed=False; self.projects_sig=None; self.gallery_cache={}
         source="device" if (self.listed_src=="device" and mountpoint_seen()) else "local"
-        if source=="device": self.set_status("Refreshing the scanner project list…")
+        if source=="device": self.hold_banner("Refreshing the scanner project list…", AC)
         else: self.set_status("Refreshing projects on this PC…")
         self.start_listing(source)
 
@@ -2294,6 +2294,15 @@ class App(ctk.CTk):
         d=filedialog.askdirectory(initialdir=self.dest.get() or HOME)
         if d: self.dest.set(d)
     def set_banner(self, text, color): self.banner.configure(text=text); self.dot.configure(text_color=color)
+    def hold_banner(self, text, color, secs=5.0):
+        """Device / scanner / WiFi state owns the TOP MIRACO line (never the bottom bar). Holding it for a
+        few seconds keeps the periodic USB probe from overwriting an active WiFi/network status; an ongoing
+        operation keeps calling this so the hold refreshes, and when it stops the probe reclaims the line
+        within `secs` — self-healing, no per-endpoint cleanup needed."""
+        self._dev_hold=time.time()+secs; self.set_banner(text, color)
+    def _probe_banner(self, text, color):
+        """The probe's own banner write, suppressed while a device op is holding the line."""
+        if time.time() >= getattr(self, "_dev_hold", 0.0): self.set_banner(text, color)
     def select_all(self):
         for v in self.pull_sel.values(): v.set(True)
         self.update_summary()
@@ -2345,30 +2354,30 @@ class App(ctk.CTk):
             self.listed=False; self.start_listing("local")   # scanner disappeared; fall back without poking MTP
         if st=="absent":
             # editing saved scans without a scanner is normal — don't cry wolf. Prompt only on the Import page.
-            if self.page=="import": self.set_banner("Scanner not detected - plug in the USB-C cable, or use WiFi.", WARN)
-            else: self.set_banner("Working on saved scans · connect the scanner over USB or WiFi to import more.", MUT)
+            if self.page=="import": self._probe_banner("Scanner not detected - plug in the USB-C cable, or use WiFi.", WARN)
+            else: self._probe_banner("Working on saved scans · connect the scanner over USB or WiFi to import more.", MUT)
             self.action_btn.configure(text="🔌  USB", state="normal"); self.auto_tried=False
         elif st=="adb":
-            self.set_banner("MIRACO detected · Not connected - tap “File Transfer” on the scanner", WARN)
+            self._probe_banner("MIRACO detected · Not connected - tap “File Transfer” on the scanner", WARN)
             self.action_btn.configure(text="🔌  USB", state="normal"); self.auto_tried=False
         elif st=="mtp" and not mounted:
             self.action_btn.configure(text="🔌  USB", state="normal")
-            if self._mounting: self.set_banner("Connecting…", AC)
-            else: self.set_banner("MIRACO detected · click USB when you're ready to read it", AC)
+            if self._mounting: self._probe_banner("Connecting…", AC)
+            else: self._probe_banner("MIRACO detected · click USB when you're ready to read it", AC)
         elif mounted:
             self.action_btn.configure(text="🔌  Rescan", state="normal")
             if self.listed_src=="device" and self.listed:
-                if self.page=="import": self.set_banner("Connected - tick scans to import, click one to preview.", OK)
-                else: self.set_banner("MIRACO connected - open the Import tab to bring its projects over.", OK)   # guide, don't leave them wondering
+                if self.page=="import": self._probe_banner("Connected - tick scans to import, click one to preview.", OK)
+                else: self._probe_banner("MIRACO connected - open the Import tab to bring its projects over.", OK)   # guide, don't leave them wondering
                 if self.projects: self.render_list(self.projects)   # refresh badges if files changed on disk (cheap no-op otherwise)
             elif not self.listing:
                 # MTP reads are slow, so only auto-read when the user is actually on the Import tab —
                 # never slow-scan the scanner while they're editing local scans on the Projects page.
                 if self.page=="import":
-                    self.set_banner("Connected - reading scanner projects…", AC)
+                    self._probe_banner("Connected - reading scanner projects…", AC)
                     self.start_listing("device")
                 else:
-                    self.set_banner("MIRACO connected - open the Import tab to read its projects.", AC)
+                    self._probe_banner("MIRACO connected - open the Import tab to read its projects.", AC)
     def start_listing(self, source=None):
         if self.listing: return
         dest=self.dest.get() or DEFAULT_DEST
@@ -4773,7 +4782,7 @@ class App(ctk.CTk):
 
     # ---- live: pose + IMU over TCP 9999 (60-byte packets: 8-byte header + 13 float32) ----
     def live_find(self):
-        self.set_status("Looking for the scanner on your network…")
+        self.hold_banner("Looking for the scanner on your network…", AC)
         threading.Thread(target=self._live_find_worker, daemon=True).start()
     def _live_find_worker(self):
         import socket, concurrent.futures as cf
@@ -4862,7 +4871,7 @@ class App(ctk.CTk):
         if self._range_busy: return
         if self._range_on: self._range_disconnect(); return
         self._range_busy=True; self.range_btn.configure(state="disabled")
-        self.range_status.configure(text="Looking for the RANGE…", text_color=MUT); self.set_status("RANGE - connecting…")
+        self.range_status.configure(text="Looking for the RANGE…", text_color=MUT); self.hold_banner("RANGE — connecting…", AC)
         threading.Thread(target=self._range_connect_worker, daemon=True).start()
     def _range_connect_worker(self):
         try:
@@ -5060,7 +5069,7 @@ class App(ctk.CTk):
         self._wifi=rx; self._wifi_projects=None
         self.wifi_btn.configure(text="Stop", fg_color="#3a2530")
         self.set_banner("WiFi share open - on the MIRACO: Share to PC > Wi-Fi, enter code %s" % rx.code, AC)
-        self.set_status("WiFi: waiting for the scanner")
+        self.hold_banner("WiFi: waiting for the scanner", AC)
         self._wifi_dialog(rx)
     def _wifi_dialog(self, rx, restore=False):
         t=self._top("Share to PC over WiFi", 520, 400, key="wifi")
@@ -5193,7 +5202,7 @@ class App(ctk.CTk):
         ui=not self._wifi_bg      # while backgrounded the dialog widgets are gone: keep only status/banner/button
         if kind=="searching":
             if ui: self.wifi_state.configure(text="Scanner found at %s - enter the code on it." % info["ip"], text_color=OK)
-            self.set_status("WiFi: scanner found, waiting for the code")
+            self.hold_banner("WiFi: scanner found, waiting for the code", AC)
             try: self.wifi_hint.pack_forget()      # the firewall hint only matters while nothing has been heard
             except Exception: pass
         elif kind=="badcode":
@@ -5203,7 +5212,7 @@ class App(ctk.CTk):
             elif ui:
                 self.wifi_state.configure(text="Wrong code entered on the scanner - try again (%d attempts left)." % (5-rx.bad), text_color=WARN)
         elif kind=="connected":
-            self.set_status("WiFi: receiving…")
+            self.hold_banner("WiFi: receiving…", AC)
             if self._wifi_bg: self.wifi_btn.configure(text="📶  Receiving…", fg_color="#12303f")
             if ui:
                 self.wifi_state.configure(text="Code accepted  ·  receiving", text_color=OK)
@@ -5216,7 +5225,7 @@ class App(ctk.CTk):
             if now-getattr(self, "_wifi_last_draw", 0.0) < 0.08: return      # never let redraws pile up on the UI thread
             self._wifi_last_draw=now
             tot=info["total"]; frac=(info["bytes"]/tot) if tot else 0; rate=info["rate"]; avg=info.get("avg") or rate
-            self.set_status("WiFi: %.0f%%" % (100*frac))
+            self.hold_banner("WiFi: %.0f%%" % (100*frac), AC)
             if ui:
                 self._wifi_graph_add(frac, rate)
                 left=(tot-info["bytes"])/avg if (tot and avg>0) else None
@@ -5473,7 +5482,7 @@ class App(ctk.CTk):
     # ---- screenshots ----
     def refresh_screenshots(self):
         if getattr(self, "_shots_busy", False): return
-        self._shots_busy=True; self.set_status("Reading screenshots off the device…")
+        self._shots_busy=True; self.hold_banner("Reading screenshots off the device…", AC)
         self._start_thread(self._shots_worker, name="shots")
     def _shots_worker(self):
         try:
@@ -5557,7 +5566,7 @@ class App(ctk.CTk):
         if not imgs and not recs:
             self.set_banner("Nothing to pull - hit Refresh first.", MUT); return
         dest=os.path.join(self.dest.get() or DEFAULT_DEST, "captures"); os.makedirs(dest, exist_ok=True)
-        self.set_status("Pulling screenshots & recordings…")
+        self.hold_banner("Pulling screenshots & recordings…", AC)
         threading.Thread(target=self._pull_shots_worker, args=(list(imgs), list(recs), dest), daemon=True).start()
     def _pull_shots_worker(self, imgs, recs, dest):
         n=0
@@ -6005,7 +6014,7 @@ class App(ctk.CTk):
                         if self.selected: self._proc_render(self.selected)
                 elif kind=="live_found":
                     if rest[0]:
-                        self.live_ip.set(rest[0]); self.set_status("Scanner found at %s"%rest[0])
+                        self.live_ip.set(rest[0]); self.hold_banner("Scanner found at %s"%rest[0], OK)
                         self.set_banner("Scanner found at %s - hit Connect on the Live tab."%rest[0], OK)
                     else:
                         self.set_status(""); self.set_banner("No scanner answering on port 9999 on this network (is its WiFi on?).", WARN)
@@ -6019,7 +6028,7 @@ class App(ctk.CTk):
                     self._range_dev_name=dev.get("name","RANGE"); self._range_usb_path=dev["usb_path"]; self._range_fw=fw or "?"; self._range_has_col=bool(col)
                     self.range_btn.configure(text="■ Disconnect", fg_color="#3a2530", state="normal")
                     self.range_status.configure(text="%s connected  ·  usb %s  ·  firmware %s  ·  projector on%s" % (dev.get("name","RANGE"), dev["usb_path"], fw or "?", "" if col else "  ·  no color camera found"), text_color=OK)
-                    self.set_status("RANGE live"); self._range_layout(); self._range_draw()
+                    self.hold_banner("RANGE live", OK); self._range_layout(); self._range_draw()
                 elif kind=="range_calib":
                     rgb_intr,extr,rgb_dist=rest[0]
                     if self._range_on:
