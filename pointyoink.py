@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.76-pre"
+APP = "PointYoink"; VERSION = "0.9.77-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3119,9 +3119,19 @@ class App(ctk.CTk):
         try:
             for ln in proc.stdout:
                 if self.cancel: proc.terminate(); break
-                mm=re.search(r"(\d+)%",ln)
-                if mm:
-                    fp=int(mm.group(1)); self.q.put(("prog",(i*100+fp)/(total*100),"Project %d of %d - %s (%d%%)"%(i+1,total,name,fp)))
+                # rsync --info=progress2 line: "   1,234,567  45%   12.34MB/s    0:00:30"
+                # use ALL of it (bytes, speed, time-left), not just the % — a full-project copy over the
+                # slow MTP link sits at a low % for ages, so bytes/speed/ETA are what shows it's alive.
+                m=re.search(r"([\d,]+)\s+(\d+)%\s+(\S+)\s+(\d+:\d+:\d+)", ln)
+                if m:
+                    by=int(m.group(1).replace(",","")); fp=int(m.group(2)); spd=m.group(3); eta=m.group(4)
+                    if eta.startswith("0:"): eta=eta[2:]                # drop the zero-hour -> mm:ss
+                    self.q.put(("prog",(i*100+fp)/(total*100),
+                                "Project %d of %d · %s · %s · %s · %s left" % (i+1,total,name,human(by),spd,eta)))
+                else:
+                    mm=re.search(r"(\d+)%",ln)
+                    if mm:
+                        fp=int(mm.group(1)); self.q.put(("prog",(i*100+fp)/(total*100),"Project %d of %d · %s · %d%%"%(i+1,total,name,fp)))
             proc.wait()
             if proc.returncode not in (0,None) and not self.cancel: raise RuntimeError("rsync rc=%s"%proc.returncode)
         finally:
@@ -3131,6 +3141,10 @@ class App(ctk.CTk):
 
     def on_cancel(self):
         self.cancel=True
+        try:                                            # immediate feedback: the worker may take a moment to stop the current file
+            self.cancel_btn.configure(text="Cancelling…", state="disabled")
+            self.set_banner("Cancelling — stopping after the current file…", WARN)
+        except Exception: pass
         if self.proc:
             try: self.proc.terminate()
             except Exception: pass
@@ -5185,7 +5199,7 @@ class App(ctk.CTk):
             for n,label in names.items():
                 if label.strip(): self.records.setdefault(n, {})["label"]=label.strip()
             self.pulling=True; self.cancel=False; self._pull_list=list(keep); self._export_fails=[]
-            self.import_btn.grid_remove(); self.cancel_btn.grid(row=0,column=3)
+            self.import_btn.grid_remove(); self.cancel_btn.configure(text="Cancel", state="normal"); self.cancel_btn.grid(row=0,column=3, padx=(6,20), pady=(12,4), sticky="e")   # match the Import button's placement so it isn't crooked
             self.progress.grid(row=1,column=0, columnspan=3, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=3, sticky="w", padx=(20,0), pady=(0,10))
             cleanup=self.cleanup.get(); clean_opts=self._clean_options() if cleanup else None
             fmts=[e for e,v in (("stl",self.exp_stl),("obj",self.exp_obj),("glb",self.exp_glb)) if v.get()]
