@@ -205,7 +205,7 @@ def ensure_preview(mesh_path, cache_dir, key, wire=False, size=(900, 600), thumb
         if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(mesh_path): return out
         v, f = load_oriented(mesh_path)
         img = render(v, f, size=size, wire=wire)
-        _tmp = out + ".tmp.%d" % os.getpid(); img.save(_tmp); os.replace(_tmp, out)   # atomic write (see __main__)
+        _tmp = out + ".tmp.%d" % os.getpid(); img.save(_tmp, format="PNG"); os.replace(_tmp, out)   # format explicit: _tmp's extension isn't .png (atomic write, see __main__)
         if thumb and not wire:
             from PIL import Image
             t = img.resize(thumb, Image.LANCZOS); t.save(os.path.join(cache_dir, key + "__thumb.png"))
@@ -220,5 +220,5 @@ if __name__ == "__main__":
     a = ap.parse_args(); W, H = (int(x) for x in a.size.split("x"))
     t0 = time.time(); v, f = load_oriented(a.mesh); t1 = time.time()
     _tmp = a.out + ".tmp.%d" % os.getpid()          # atomic write: two renderers (foreground + warmer) can
-    render(v, f, size=(W, H), wire=a.wire).save(_tmp); os.replace(_tmp, a.out)   # target the same PNG; never leave a half-written one
+    render(v, f, size=(W, H), wire=a.wire).save(_tmp, format="PNG"); os.replace(_tmp, a.out)   # format explicit: _tmp's extension isn't .png; target the same PNG; never leave a half-written one
     print("%s: %d faces, load+decimate %.1fs, draw %.1fs" % (a.out, len(f), t1 - t0, time.time() - t1))
