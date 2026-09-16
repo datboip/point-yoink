@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.109-pre"
+APP = "PointYoink"; VERSION = "0.9.110-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2471,8 +2471,10 @@ class App(ctk.CTk):
         self._start_thread(work, name="list-projects")
     def on_mount(self):
         if self._mounting: return
+        self._user_mount=True                       # a click, not the background probe: worth guiding on failure
         st,_=usb_state()
-        if st!="mtp": self.set_banner("Tap “File Transfer” on the MIRACO first.", WARN); return
+        if st!="mtp":
+            self.set_banner("Tap “File Transfer” on the MIRACO first.", WARN); self.after(300, self._usb_help); return
         self._mounting=True; self._shots_loaded=False; self.set_banner("Connecting…", AC)
         def work():
             try: self.q.put(("mounted", *do_mount()))
@@ -2486,8 +2488,10 @@ class App(ctk.CTk):
         try:
             cands=[c for c in glob.glob(os.path.join(THUMBS, glob.escape(name)+"__*__shaded.png")) if os.path.getsize(c)>1024]
             if cands:
-                comb=os.path.join(THUMBS, name+"__combined__shaded.png")
-                return comb if comb in cands else max(cands, key=os.path.getmtime)
+                # the combined render is name__combined__<verkey>__shaded.png - match by prefix (the old exact
+                # name__combined__shaded.png never existed once verkeys were added, so this always fell to newest)
+                comb=next((c for c in cands if os.path.basename(c).startswith(name+"__combined__")), None)
+                return comb or max(cands, key=os.path.getmtime)
         except Exception as e:
             log_error("list-thumb", e)
         return fallback
@@ -2698,7 +2702,7 @@ class App(ctk.CTk):
             try:
                 src=mesh
                 if mesh.startswith(PROJECTS):                  # device mount is slow: reuse the local view-cache copy if present
-                    cached=os.path.join(THUMBS, "view", ("%s__%s"%(name,node))+"_fuse_mesh.ply")
+                    cached=os.path.join(THUMBS, "view", ("%s__%s__%s"%(name,node,verkey or "v"))+"_fuse_mesh.ply")   # match the name _shade_thread writes (key = name__node__verkey), or this never hit
                     if os.path.exists(cached): src=cached
                 if os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(src) and os.path.getsize(out)>1024:
                     self.q.put(("film_thumb", name, node, out)); continue
@@ -3455,7 +3459,8 @@ class App(ctk.CTk):
         if src.startswith(PROJECTS):
             try:
                 cache=os.path.join(THUMBS, "view"); os.makedirs(cache, exist_ok=True)
-                path=os.path.join(cache, name+"_fuse_mesh.ply")
+                node=os.path.basename(os.path.dirname(src))   # .../data/<node>/fuse_mesh.ply - key on the scan, not just the project, or different scans collide on name_fuse_mesh.ply
+                path=os.path.join(cache, "%s__%s_fuse_mesh.ply" % (name, node))
                 if not os.path.exists(path) or os.path.getsize(path)!=os.path.getsize(src):
                     self.q.put(("loader_msg", token, "Copying the 3D model from the scanner…"))
                     shutil.copyfile(src, path)
@@ -6263,10 +6268,13 @@ class App(ctk.CTk):
                 if kind=="mounted":
                     ok,msg=rest; self._mounting=False; self._device_mounted=ok
                     if ok:
-                        self.listed=False; self.projects_sig=None
+                        self.listed=False; self.projects_sig=None; self._user_mount=False
                         self.set_banner("Connected - reading scanner projects…", AC)
                         self.start_listing("device")
-                    else: self.set_banner("Couldn't connect: "+msg, WARN); log_line("mount failed: "+msg)
+                    else:
+                        self.set_banner("Couldn't connect: "+msg, WARN); log_line("mount failed: "+msg)
+                        if getattr(self, "_user_mount", False):   # they clicked Connect and it failed: show the walkthrough
+                            self._user_mount=False; self.after(400, self._usb_help)
                 elif kind=="refresh_probe":
                     self._refresh_probe_done(*rest)
                 elif kind=="listing_progress":
