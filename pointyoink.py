@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.114-pre"
+APP = "PointYoink"; VERSION = "0.9.115-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2842,7 +2842,11 @@ class App(ctk.CTk):
     def _node_of(self, name, path):
         base=os.path.basename(path)
         if base=="fuse_mesh.ply": return os.path.basename(os.path.dirname(path))
-        if base.startswith(name+"_") and base.endswith(".ply"): return base[len(name)+1:-4]
+        if base.startswith(name+"_") and base.endswith(".ply"):
+            n=base[len(name)+1:-4]
+            for suf in ("_pcfused","_clean","_cloud"):   # strip version/kind suffix so we return the real node id (matches node_of / _proc_nodes), not "<node>_pcfused"
+                if n.endswith(suf): n=n[:-len(suf)]
+            return n
         return None
     def _shade_mode_changed(self, v):
         self.shade_mode="wire" if v=="Wireframe" else "solid"
@@ -3278,6 +3282,8 @@ class App(ctk.CTk):
         for nd in nodes:
             if not os.path.isdir(nd): continue
             node=os.path.basename(nd)
+            if not os.path.exists(os.path.join(nd, "fuse_mesh.ply")):
+                continue   # finished-models: skip a scan with no built mesh entirely - don't leave a stray preview-only "scan" that shows blue and can't be built (its raw data wasn't imported)
             for fn,outn,kind in (("fuse_mesh.ply","%s_%s.ply"%(name,node),"mesh"),
                                  ("fuse.ply","%s_%s_cloud.ply"%(name,node),"cloud"),
                                  ("preview.png","%s_%s.png"%(name,node),"prev")):
@@ -3454,7 +3460,12 @@ class App(ctk.CTk):
     def on_view_3d(self):
         name=self.selected
         if not name: return
-        src=self._find_mesh(name)
+        # honor the scan + version the preview is showing (self._film_sel), so "View in 3D" opens THIS
+        # scan, not the largest/combined mesh. Fall back to the largest only when no scan is selected.
+        src=None
+        sel=getattr(self, "_film_sel", None)
+        if sel: src=self._mesh_for_node(name, sel)
+        if not src: src=self._find_mesh(name)
         if not src:
             self.set_banner("This project has no 3D model yet. Build one first.", WARN); return
         self.set_status("Loading 3D view: reading the model…")
@@ -3912,7 +3923,10 @@ class App(ctk.CTk):
             self._proc_rows[node]={"card":card, "bar":pb, "lbl":pl, "build":bb, "prepare":cb, "export":xb}
     def _card_thumb(self, name, node, path, label):
         """Small shaded render for a card without a scanner picture, cached under THUMBS, made in a thread."""
-        key="%s__%s__card" % (name, node); out=os.path.join(THUMBS, key+".png")
+        # include the version in the key, or a node with both a scanner and a prepared mesh renders one
+        # version and serves it for the other (same bug fixed for the shaded still/film).
+        verkey=(self._proc_current(name, node) or (None,))[0]
+        key="%s__%s__%s__card" % (name, node, verkey or "v"); out=os.path.join(THUMBS, key+".png")
         def put():
             try:
                 if label.winfo_exists(): self.imgs["proc_"+node]=cimg(out, 110); label.configure(image=self.imgs["proc_"+node])
