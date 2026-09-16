@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.91-pre"
+APP = "PointYoink"; VERSION = "0.9.92-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1275,6 +1275,8 @@ class App(ctk.CTk):
             try:
                 for node in self._proc_nodes(name): jobs.append((name, node))
             except Exception: pass
+        last=self.cfg.get("last_open")
+        if last: jobs.sort(key=lambda j: 0 if j[0]==last else 1)   # warm the project you'll most likely REOPEN first (stable sort keeps the rest newest-first)
         if not jobs: self.after(150, self._close_splash); return
         threading.Thread(target=self._splash_preload_worker, args=(jobs,), daemon=True).start()
     def _splash_preload_worker(self, jobs):
@@ -1291,6 +1293,9 @@ class App(ctk.CTk):
                     out=os.path.join(THUMBS, "%s__%s__%s__shaded.png" % (name, node, verkey or "v"))
                     if not (os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh) and os.path.getsize(out)>1024):
                         self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, out, "--size", "900x600"], timeout=120, env=env)   # the still preview PNG (40k)
+                    film=os.path.join(THUMBS, "%s__%s__%s__film.png" % (name, node, verkey or "v"))   # the little strip thumbnail — warm it too, or the scan strip flashes blue -> grey on open
+                    if not (os.path.exists(film) and os.path.getmtime(film)>=os.path.getmtime(mesh) and os.path.getsize(film)>1024):
+                        self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, film, "--size", "300x220"], timeout=120, env=env)
                     # warm the EXACT entry the interactive viewer reads (detail faces + normals), independent of the PNG,
                     # so the first 3D open is a pure cache read - not another parse+simplify+normals pass (Codex 2026-09-16)
                     nkey=_sh._mesh_key(mesh, faces, None)
@@ -2549,6 +2554,10 @@ class App(ctk.CTk):
             card.configure(fg_color=(SELB if n==name else ROW))
         p=next((x for x in self.projects if x["name"]==name), None)
         if not p: return
+        if p.get("local") and self.cfg.get("last_open")!=name:   # remember what to warm FIRST next launch (the project you keep reopening)
+            self.cfg["last_open"]=name
+            try: save_cfg(self.cfg)
+            except Exception: pass
         self.big_empty.grid_remove()
         self._film_sel=None; self._film_cells={}
         if p.get("thumb"): self._set_big_image(p["thumb"])
