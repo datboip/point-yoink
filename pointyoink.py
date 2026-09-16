@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.86-pre"
+APP = "PointYoink"; VERSION = "0.9.87-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2810,7 +2810,13 @@ class App(ctk.CTk):
             if job: self.after_cancel(job)
             self._shade_job=None; self._shade_want=None; self._cancel_mv_start()
             self._mv_key=None; self.mv.grid_remove(); self.big.grid(); self._preview_idle()
-            self.big_hint.configure(text="Scanner preview · View in 3D loads the model only when you ask")
+            has_mesh=bool(self._mesh_for_node(name, node) if node else self._find_mesh(name))
+            if has_mesh:
+                self._show_3d_controls(True)
+                self.big_hint.configure(text="Scanner preview · View in 3D loads the model only when you ask")
+            else:                                   # raw scan: don't promise a 3D view that can't exist
+                self._show_3d_controls(False); self.renders_lbl.configure(text="")
+                self.big_hint.configure(text="This scan is still raw data — showing the scanner's point cloud. Press “Build model” to make the 3D model.")
         except Exception: pass
     def _show_3d_controls(self, on):
         """Show the 3D-only chrome (Fit/Top/Front view nav, Solid/Wireframe, Reset view, View in 3D) only
@@ -2834,8 +2840,10 @@ class App(ctk.CTk):
             # genuinely no fused mesh (only raw frames). Clear the interactive target so clicking the
             # preview doesn't open the PREVIOUS scan's 3D view - that was the "says no model but then
             # loads" bug (2026-09-15).
-            self._mv_want=None; self._mv_key=None; self._cancel_mv_start()
+            self._mv_want=None; self._mv_key=None; self._shade_key=None; self._cancel_mv_start()   # reset _shade_key too, or a late mesh_stats for the PREVIOUS scan re-stamps its triangle count here
             try: self.mv.grid_remove(); self.big.grid()
+            except Exception: pass
+            try: self.renders_lbl.configure(text="")   # clear the "3D model · N triangles" overlay — a raw scan has no mesh, so it must not carry the previous scan's count
             except Exception: pass
             self._show_3d_controls(False)   # flat scanner cloud: no 3D nav / shading / reset to offer
             self.big_hint.configure(text="This scan is still raw data — showing the scanner's point cloud. Press “Build model” to make the 3D model (a few seconds), or One-tap Edit on the scanner."); self._preview_idle(); return
