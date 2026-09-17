@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.167-pre"
+APP = "PointYoink"; VERSION = "0.9.168-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1703,8 +1703,8 @@ class App(ctk.CTk):
         self.detail=ctk.CTkLabel(self.projbar, text="", text_color=TX, anchor="w", justify="left", font=ctk.CTkFont(size=12), wraplength=360)
         self.next_strip=ctk.CTkFrame(self.projbar, fg_color="#0f1a2b", corner_radius=12, border_width=1, border_color="#1f3a5f")   # NEXT: shown on the Projects page only
         self.tabs=TabStrip(centre, base=BG, size=13, command=self._on_preview_tab); self.tabs.grid(row=1,column=0, sticky="nsew")
-        pv=self.tabs.add("3D Preview"); self._edit_tab=self.tabs.add("✏ Edit"); fl=self.tabs.add("Files")
-        try: self.tabs.set_tab_visible("✏ Edit", False)   # hidden until a local project page shows it (Import can't edit)
+        pv=self.tabs.add("3D Preview"); self._edit_tab=self.tabs.add("Edit"); fl=self.tabs.add("Files")
+        try: self.tabs.set_tab_visible("Edit", False)   # hidden until a local project page shows it (Import can't edit)
         except Exception: pass
         self._preview_tab=pv   # the Edit tab reuses this same live-view frame (keeps the camera/object); it has no frame of its own
         ctl=ctk.CTkFrame(self.tabs.bar, fg_color="transparent"); ctl.pack(side="right", pady=(0,4)); self._tab_ctl=ctl   # the 3D-only toolbar (View in 3D / Solid-Wireframe / Reset view); hidden for a flat 2D scanner preview
@@ -2012,7 +2012,7 @@ class App(ctk.CTk):
         elif m in self.mode_frames: target=self.mode_frames[m]
         else: return
         self._cur_mode=m   # remember the visible tab so the bottom bar doesn't say "Editing <project>" on Captures/Live
-        try: self.tabs.set_tab_visible("✏ Edit", self.page=="projects", before="Files")   # can't edit scanner projects on the Import page
+        try: self.tabs.set_tab_visible("Edit", self.page=="projects", before="Files")   # can't edit scanner projects on the Import page
         except Exception: pass
         for k,f in self.mode_frames.items():
             if f is target: f.grid()
@@ -2913,7 +2913,7 @@ class App(ctk.CTk):
         if getattr(self, "_in_edit_mode", False):   # don't strand a new project in the previous one's Edit tab
             self._in_edit_mode=False; self._editmode_chrome(False)
             try:
-                if self.tabs.get()=="✏ Edit": self.tabs.set("3D Preview"); self._preview_tab.grid()
+                if self.tabs.get()=="Edit": self.tabs.set("3D Preview"); self._preview_tab.grid()
             except Exception: pass
         if p.get("thumb"): self._set_big_image(p["thumb"])
         else: self._big_src=None; self.big.configure(image=None, text="No preview for this project yet")
@@ -3198,17 +3198,17 @@ class App(ctk.CTk):
         except Exception: pass
         return True
     def _on_preview_tab(self, name):
-        """Sub-tab click: 3D preview | ✏ Edit | Files. Edit has no frame of its own - it reuses the live 3D
+        """Sub-tab click: 3D preview | Edit | Files. Edit has no frame of its own - it reuses the live 3D
         view (same camera, same object) and just turns on the point tools, so editing feels like the same
         thing you were looking at, not a separate place."""
-        if name=="✏ Edit":
+        if name=="Edit":
             try: self._edit_tab.grid_remove(); self._preview_tab.grid()   # hide the empty Edit frame, keep the live view
             except Exception: pass
             self._enter_edit_mode(); return
         # leaving the Edit tab: the shared guard prompts if there are unsaved edits (mesh OR points)
         if getattr(self, "_in_edit_mode", False):
             if not self._guard_unsaved_edits():        # cancel, or keep-in-progress: stay in the editor
-                try: self.tabs.set("✏ Edit"); self._edit_tab.grid_remove(); self._preview_tab.grid()
+                try: self.tabs.set("Edit"); self._edit_tab.grid_remove(); self._preview_tab.grid()
                 except Exception: pass
                 return
             try: self.pts_sw.set("Mesh"); self._request_shaded(self.selected, self._film_sel)   # discarded: back to the model
@@ -3442,7 +3442,7 @@ class App(ctk.CTk):
                     # plain Points view (from the 3D Preview toggle): just for comparing mesh vs capture, no tools
                     try: self.mv.on_points_change=None; self.mv.set_edit_tool(None); self._hide_edit_palette()
                     except Exception: pass
-                    self.big_hint.configure(text=("The raw captured points (open the ✏ Edit tab to clean them) · drag to rotate" if real_cloud
+                    self.big_hint.configure(text=("The raw captured points (open the Edit tab to clean them) · drag to rotate" if real_cloud
                                                   else "The model's own vertices (no separate cloud for this scan) · drag to rotate"))
             else:
                 self.big_hint.configure(text="Couldn't load the fused points (see Help > Log).")
@@ -3736,7 +3736,7 @@ class App(ctk.CTk):
         try: self.mv.set_edit_tool(None); self._hide_edit_palette()   # leave edit mode; we're switching to the rebuilt Mesh
         except Exception: pass
         try:
-            if self.tabs.get()=="✏ Edit": self.tabs.set("3D Preview"); self._preview_tab.grid()   # land on the finished model
+            if self.tabs.get()=="Edit": self.tabs.set("3D Preview"); self._preview_tab.grid()   # land on the finished model
         except Exception: pass
         self._proc_set_current(name, node, "edited")   # still here: switch the shown model to the rebuilt one
     def _reset_view(self, _=None):
