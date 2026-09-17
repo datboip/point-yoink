@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.123-pre"
+APP = "PointYoink"; VERSION = "0.9.124-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -470,33 +470,45 @@ def list_projects(progress=None):
     return out
 
 def list_screenshots():
-    """Device screenshots (Internal shared storage/Screenshots), newest first."""
-    out=[]
-    if not quick_mounted(probe=True, timeout=2): return out
-    try:
-        for f in sorted(os.listdir(SCREENSHOTS), reverse=True):
-            if f.lower().endswith((".png", ".jpg", ".jpeg")):
-                out.append((f, os.path.join(SCREENSHOTS, f)))
-    except Exception: pass
-    return out
+    """Device screenshots (Internal shared storage/Screenshots), newest first.
+    Retries: MTP listings intermittently throw, and a silent failure would drop real screenshots."""
+    if not quick_mounted(probe=True, timeout=2): return []
+    for attempt in range(3):
+        try:
+            return [(f, os.path.join(SCREENSHOTS, f)) for f in sorted(os.listdir(SCREENSHOTS), reverse=True)
+                    if f.lower().endswith((".png", ".jpg", ".jpeg"))]
+        except Exception:
+            time.sleep(0.4)
+    return []
 
 def list_recordings():
-    """Screen recordings (videos) anywhere on the device except the big Projects tree."""
-    out=[]; exts=(".mp4",".mkv",".webm",".mov",".avi",".m4v")
-    if not quick_mounted(probe=True, timeout=2): return out
+    """Screen recordings (videos) anywhere on the device except the big Projects tree.
+    MTP folder listings intermittently throw or come back empty, and a silent failure here made real
+    recordings look like "0 recordings on the device", so retry the whole scan a few times and only trust
+    a clean pass (no per-folder error)."""
+    exts=(".mp4",".mkv",".webm",".mov",".avi",".m4v")
+    if not quick_mounted(probe=True, timeout=2): return []
     root=os.path.join(MOUNT, "Internal shared storage")
-    try:
-        for entry in os.listdir(root):
+    out=[]
+    for attempt in range(3):
+        out=[]; clean=True
+        try:
+            entries=os.listdir(root)
+        except Exception:
+            clean=False; entries=[]
+        for entry in entries:
             if entry=="Projects": continue    # skip the huge scan tree
             sub=os.path.join(root, entry)
-            if os.path.isdir(sub):
-                try:
+            try:
+                if os.path.isdir(sub):
                     for f in sorted(os.listdir(sub), reverse=True):
                         if f.lower().endswith(exts): out.append((f, os.path.join(sub, f)))
-                except Exception: pass
-            elif entry.lower().endswith(exts):
-                out.append((entry, sub))
-    except Exception: pass
+                elif entry.lower().endswith(exts):
+                    out.append((entry, sub))
+            except Exception:
+                clean=False   # a subfolder listing hiccuped: retry the whole scan rather than drop it silently
+        if clean: break
+        time.sleep(0.4)
     return out
 
 SKIP_LOCAL = {"range", "wifi", "device-screenshots"}
