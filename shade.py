@@ -91,6 +91,55 @@ def load_oriented(path, max_faces=MAX_FACES):
     v, f, _ = load_oriented_tf(path, max_faces)
     return v, f
 
+def _compute_tf(v):
+    """Orient a scan (mesh vertices or a point cloud) so it sits level on the grid facing a deterministic
+    front. Uses only vertices, so a mesh and its point cloud get the SAME transform and overlay exactly.
+    Extracted verbatim from load_oriented_tf so both share one orientation."""
+    # normalise to ~0.85 (not 1.0) so the model sits inside the ~1.1 grid with a margin, not overhanging it
+    mean = v.mean(0); vc = v - mean; scale = float(np.abs(vc).max() + 1e-9) / 0.85; vc = vc / scale
+    # scans lie on a table: the axis of least spread is "up"
+    w, e = np.linalg.eigh(np.cov(vc.T)); up = e[:, 0]
+    if up[2] < 0: up = -up
+    a = np.cross(up, [0, 0, 1.0]); s = np.linalg.norm(a); R = np.eye(3)
+    if s > 1e-6:
+        a /= s; ang = np.arccos(np.clip(up[2], -1, 1))
+        K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
+        R = np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * K @ K
+    vr = vc @ R.T
+    # level now, but yaw is still whatever the scanner recorded: rotate about up (Z) so the longest
+    # horizontal axis lies along X, then pick a deterministic front, so Reset/home looks the same each time.
+    try:
+        _wv, _ev = np.linalg.eigh(np.cov(vr[:, :2].T))     # ascending; last col = longest in-plane axis
+        major = _ev[:, -1]; theta = np.arctan2(major[1], major[0])
+        cz, sz = np.cos(-theta), np.sin(-theta)
+        R = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]]) @ R
+        vr = vc @ R.T
+        if float(np.mean(vr[:, 0] ** 3)) > 0:              # 180-about-Z ambiguity: heavier end always same side
+            R = np.diag([-1.0, -1.0, 1.0]) @ R; vr = vc @ R.T
+    except Exception:
+        pass
+    zshift = float(vr[:, 2].min())
+    return {"mean": mean.astype(np.float64), "scale": scale, "R": R, "zshift": zshift}
+
+def load_points_tf(path, max_points=400000, tf=None):
+    """Load a point cloud's vertices into view space. Pass tf= (from the scan's mesh) to line the points up
+    exactly with that mesh; without tf it orients the points on their own. Returns (view-space points, tf)."""
+    import trimesh
+    try:
+        obj = trimesh.load(path)
+        v = np.asarray(getattr(obj, "vertices", np.zeros((0, 3))), dtype=np.float32)
+    except Exception:
+        v = np.zeros((0, 3), dtype=np.float32)
+    if len(v) == 0:                          # fell back through the mesh loader path
+        try:
+            m = trimesh.load(path, force="mesh"); v = np.asarray(m.vertices, dtype=np.float32)
+        except Exception: pass
+    if len(v) > max_points:
+        v = v[np.random.RandomState(0).choice(len(v), max_points, replace=False)]
+    if tf is None:
+        tf = _compute_tf(v) if len(v) else {"mean": np.zeros(3), "scale": 1.0, "R": np.eye(3), "zshift": 0.0}
+    return world_to_view(v, tf).astype(np.float32), tf
+
 def load_oriented_tf(path, max_faces=MAX_FACES, tf=None):
     """Like load_oriented but also returns the transform, so a point picked in the view can be mapped back
     to the scan's own millimetre coordinates (view_to_world). Pass tf= to orient a second mesh exactly like
@@ -113,34 +162,7 @@ def load_oriented_tf(path, max_faces=MAX_FACES, tf=None):
         except Exception:
             f = f[np.random.RandomState(0).choice(len(f), max_faces, replace=False)]   # crude fallback
     if tf is None:
-        # normalise to ~0.85 (not 1.0) so the model sits inside the ~1.1 grid with a margin, not overhanging it
-        mean = v.mean(0); vc = v - mean; scale = float(np.abs(vc).max() + 1e-9) / 0.85; vc = vc / scale
-        # scans lie on a table: the axis of least spread is "up"
-        w, e = np.linalg.eigh(np.cov(vc.T)); up = e[:, 0]
-        if up[2] < 0: up = -up
-        a = np.cross(up, [0, 0, 1.0]); s = np.linalg.norm(a); R = np.eye(3)
-        if s > 1e-6:
-            a /= s; ang = np.arccos(np.clip(up[2], -1, 1))
-            K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
-            R = np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * K @ K
-        vr = vc @ R.T
-        # The object is now level, but its yaw (spin about "up") is still whatever the scanner
-        # happened to record, so every scan starts facing a different way. Rotate about up (Z) so the
-        # longest horizontal axis lies along X, then pick a deterministic front from the along-X skew,
-        # so Reset / home looks the same for every model. R stays a rotation, so the view<->world
-        # round-trip (cut plane, combine) is unaffected.
-        try:
-            _wv, _ev = np.linalg.eigh(np.cov(vr[:, :2].T))     # ascending; last col = longest in-plane axis
-            major = _ev[:, -1]; theta = np.arctan2(major[1], major[0])
-            cz, sz = np.cos(-theta), np.sin(-theta)
-            R = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]]) @ R
-            vr = vc @ R.T
-            if float(np.mean(vr[:, 0] ** 3)) > 0:              # 180-about-Z ambiguity: heavier end always the same side
-                R = np.diag([-1.0, -1.0, 1.0]) @ R; vr = vc @ R.T
-        except Exception:
-            pass
-        zshift = float(vr[:, 2].min())
-        tf = {"mean": mean.astype(np.float64), "scale": scale, "R": R, "zshift": zshift}
+        tf = _compute_tf(v)
     vv = world_to_view(v, tf).astype(np.float32)
     if key is not None: _cache_put(key, vv, f, tf)
     return vv, f, tf

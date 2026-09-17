@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.125-pre"
+APP = "PointYoink"; VERSION = "0.9.126-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1575,6 +1575,13 @@ class App(ctk.CTk):
                                              fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE,
                                              text_color=TX, font=ctk.CTkFont(size=11))
         self.shade_sw.pack(side="right"); self.shade_sw.set("Solid")
+        # Mesh vs the scanner's fused point cloud - so you can see what the mesh was built from (e.g. whether
+        # One-tap Edit on the device sealed an opening the points show as open).
+        self.pts_sw=ctk.CTkSegmentedButton(ctl, values=["Mesh","Points"], command=self._view_mode_changed, height=30, corner_radius=8,
+                                           fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE,
+                                           text_color=TX, font=ctk.CTkFont(size=11))
+        self.pts_sw.pack(side="right", padx=(0,8)); self.pts_sw.set("Mesh")
+        self._tip(self.pts_sw, "Mesh = the built model. Points = the scanner's fused point cloud it was built from — check here if the mesh looks wrong (e.g. an opening got sealed).")
         self.reset_view_btn=ctk.CTkButton(ctl, text="⟲ Reset view", width=96, height=30, corner_radius=8, fg_color="transparent", border_width=1,
                                           border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=12), command=self._reset_view)
         self._tip(self.reset_view_btn, "Reset the 3D view to its default angle and zoom (or double-click the model).")
@@ -2906,6 +2913,42 @@ class App(ctk.CTk):
         # still image: re-render it now in the chosen mode. (Going through _maybe_schedule_shaded meant the
         # opt-in auto-preview gate could swallow the first toggle, so it "took two clicks" to switch.)
         if self.selected and self._film_sel: self._request_shaded(self.selected, self._film_sel)
+    def _view_mode_changed(self, v):
+        """Mesh <-> Fused points. Points loads the scanner's fused cloud (name_node_cloud.ply) into the
+        interactive view, oriented to overlay the mesh, so you can compare the built mesh with what the
+        scanner actually captured."""
+        name=self.selected; node=getattr(self, "_film_sel", None)
+        if not (name and node) or node=="combined":
+            try: self.pts_sw.set("Mesh")
+            except Exception: pass
+            return
+        if v!="Points":
+            self._request_shaded(name, node); return          # back to the mesh
+        cloud=os.path.join(self.dest.get() or DEFAULT_DEST, name, "%s_%s_cloud.ply" % (name, node))
+        if not os.path.exists(cloud):
+            self.set_banner("This scan has no fused point cloud on this PC (import the project again to get it).", MUT)
+            try: self.pts_sw.set("Mesh")
+            except Exception: pass
+            return
+        self._map_mv_under_still()                             # the GL view must be mapped to upload
+        tf=getattr(self.mv, "tf", None)                        # align the points to the mesh if it's loaded
+        self._mv_loading=True; self._preview_busy("Loading the fused points")
+        def ready(ok):
+            self._mv_loading=False; self._preview_idle()
+            if ok:
+                try: self.big.grid_remove(); self.mv.grid(); self.mv.lift()
+                except Exception: pass
+                for _w in (self.view_nav, self.renders_lbl, self.big_hint):
+                    try: _w.lift()
+                    except Exception: pass
+                try: self.renders_lbl.configure(text="Fused points · scanner")
+                except Exception: pass
+                self.big_hint.configure(text="Fused points — what the scanner captured · drag to rotate · switch to Mesh for the built model")
+            else:
+                self.big_hint.configure(text="Couldn't load the fused points (see Help > Log).")
+        try: self.mv.load_points(cloud, ready, tf=tf)
+        except Exception as e:
+            log_error("load-points", e); self._mv_loading=False; self._preview_idle()
     def _reset_view(self, _=None):
         """Reset the live 3D view to its default angle and zoom (same as double-clicking the model)."""
         try:
@@ -2985,6 +3028,8 @@ class App(ctk.CTk):
         except Exception: pass
     def _request_shaded(self, name, node=None):
         """Show the cached shaded render for this scan, or queue one. Never blocks the UI thread."""
+        try: self.pts_sw.set("Mesh")   # showing the mesh (or its still): the Points toggle reflects that
+        except Exception: pass
         mesh=self._mesh_for_node(name, node) if node else self._find_mesh(name)
         if not mesh:
             # genuinely no fused mesh (only raw frames). Clear the interactive target so clicking the

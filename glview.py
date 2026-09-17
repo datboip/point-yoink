@@ -71,6 +71,7 @@ class GLView(OpenGLFrame):
         self.rot = self._default_rot()         # free rotation: a 4x4 the drag turns about the screen axes, no limits
         self._drag = None; self._gen = 0; self._pending = None; self._n = 0; self._vbo = None
         self._nw = 0; self._src = None; self._wire_gen = None    # set again by _upload; must exist before the first upload (Wireframe clicked early)
+        self._pvbo = None; self._pts_n = 0; self._pending_pts = None   # point-cloud view (Fused points): separate, additive path; never touches the mesh draw
         self.animate = 0
         self.tf = None                         # orientation transform of the loaded mesh (shade.load_oriented_tf)
         self.markers = []                      # [(xyz in view coords, (r,g,b))] drawn as dots
@@ -96,7 +97,9 @@ class GLView(OpenGLFrame):
         except Exception: return False
     def _on_map(self, e=None):
         if not self.ready or self.failed: return
-        if self._pending is not None:
+        if self._pending_pts is not None:
+            p = self._pending_pts; self._pending_pts = None; self._upload_points(*p)
+        elif self._pending is not None:
             p = self._pending; self._pending = None; self._upload(*p)
         elif self._split_req is not None and self._split is None and getattr(self, "_src", None) is not None:
             self.set_split(*self._split_req)
@@ -126,8 +129,10 @@ class GLView(OpenGLFrame):
             GL.glMaterialfv(GL.GL_FRONT_AND_BACK, GL.GL_AMBIENT_AND_DIFFUSE, (0.74, 0.76, 0.80, 1.0))
             GL.glMaterialfv(GL.GL_FRONT_AND_BACK, GL.GL_SPECULAR, (0.18, 0.18, 0.18, 1.0)); GL.glMaterialf(GL.GL_FRONT_AND_BACK, GL.GL_SHININESS, 28.0)
             GL.glLightModeli(GL.GL_LIGHT_MODEL_TWO_SIDE, 1)
+            GL.glEnable(GL.GL_POINT_SMOOTH)   # round points for the Fused-points view
             self.ready = True
-            if self._pending is not None: self._upload(*self._pending); self._pending = None
+            if self._pending_pts is not None: self._upload_points(*self._pending_pts); self._pending_pts = None
+            elif self._pending is not None: self._upload(*self._pending); self._pending = None
         except Exception as e:
             self.failed = True; self._err = e
     # ---- loading ----
@@ -169,6 +174,7 @@ class GLView(OpenGLFrame):
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[1]); GL.glBufferData(GL.GL_ARRAY_BUFFER, n.nbytes, n, GL.GL_STATIC_DRAW)
             GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[2]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, f.nbytes, f, GL.GL_STATIC_DRAW)
             self._n = int(f.size); self._nw = 0; self._zmax = float(v[:, 2].max()); self._src = (v, f); self._wire_gen = None
+            self._pts_n = 0                                              # leaving points mode: don't draw stale points over the mesh
             if self._split is not None:                                 # index sets belong to the old vertices: drop them
                 try: GL.glDeleteBuffers(2, [int(self._split[0]), int(self._split[3])])
                 except Exception: pass
@@ -177,6 +183,48 @@ class GLView(OpenGLFrame):
             self._display()
             if self._split_req is not None and len(self._split_req[0]) == len(f): self.set_split(*self._split_req)
             (on_ready and on_ready(True))     # only now is view._src actually set - firing this any earlier is a race (found 2026-09-14)
+        except Exception as e:
+            self.failed = True; self._err = e
+            (on_ready and on_ready(False))
+    # ---- point cloud (Fused points) ----  additive: mesh state (_n) is zeroed so the mesh branch is skipped
+    def load_points(self, path, on_ready=None, max_points=400000, tf=None):
+        """Load a fused point cloud and show it as points. tf (from the scan's mesh) lines the points up
+        exactly with the mesh, so flipping Mesh<->Points doesn't jump."""
+        self._gen += 1; gen = self._gen; self._n = 0
+        def work():
+            try:
+                import shade
+                v, t = shade.load_points_tf(path, max_points, tf)
+                if gen != self._gen: return
+                self.tf = t
+                res = np.ascontiguousarray(v, dtype=np.float32)
+            except Exception as e:
+                res = e
+            try: self.after(0, lambda: self._points_loaded(gen, res, on_ready))
+            except Exception: pass
+        threading.Thread(target=work, daemon=True).start()
+    def _points_loaded(self, gen, res, on_ready):
+        if gen != self._gen or not self._alive(): return
+        if isinstance(res, Exception) or self.failed:
+            (on_ready and on_ready(False)); return
+        self.markers = []; self.plane = None; self._ncol = 0; self._split_req = None
+        self.clear_layers(draw=False); self.reset(draw=False)
+        if self.ready: self._upload_points(res, on_ready)
+        else: self._pending_pts = (res, on_ready)
+    def _upload_points(self, v, on_ready=None):
+        if not self._mapped(): self._pending_pts = (v, on_ready); return
+        try:
+            self.tkMakeCurrent()
+            if self._pvbo is not None:
+                try: GL.glDeleteBuffers(1, [int(self._pvbo)])
+                except Exception: pass
+            self._pvbo = int(GL.glGenBuffers(1))
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._pvbo); GL.glBufferData(GL.GL_ARRAY_BUFFER, v.nbytes, v, GL.GL_STATIC_DRAW)
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
+            self._pts_n = int(len(v)); self._n = 0            # points mode: mesh branch stays off
+            self._zmax = float(v[:, 2].max()) if len(v) else 0.0; self._src = None
+            self._display()
+            (on_ready and on_ready(True))
         except Exception as e:
             self.failed = True; self._err = e
             (on_ready and on_ready(False))
@@ -245,6 +293,13 @@ class GLView(OpenGLFrame):
                 if use_col: GL.glDisableClientState(GL.GL_COLOR_ARRAY); GL.glDisable(GL.GL_COLOR_MATERIAL)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0); GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
             GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
+        if self._pts_n and self._pvbo is not None:      # Fused-points view (drawn instead of the mesh)
+            GL.glDisable(GL.GL_LIGHTING); GL.glColor3f(0.36, 0.66, 1.0); GL.glPointSize(2.0)
+            GL.glEnableClientState(GL.GL_VERTEX_ARRAY)
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._pvbo); GL.glVertexPointer(3, GL.GL_FLOAT, 0, None)
+            GL.glDrawArrays(GL.GL_POINTS, 0, self._pts_n)
+            GL.glDisableClientState(GL.GL_VERTEX_ARRAY); GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
+            GL.glPointSize(1.0); GL.glEnable(GL.GL_LIGHTING)
         for L in self.layers:                  # tinted overlays (another scan, for alignment checks)
             GL.glEnable(GL.GL_LIGHTING); GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
             GL.glMaterialfv(GL.GL_FRONT_AND_BACK, GL.GL_AMBIENT_AND_DIFFUSE, L["colour"] + (1.0,))
