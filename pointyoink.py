@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.131-pre"
+APP = "PointYoink"; VERSION = "0.9.132-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1619,6 +1619,26 @@ class App(ctk.CTk):
                             fg_color="transparent", hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11),
                             command=cmd)
             b.pack(side="left", padx=1, pady=1); self._tip(b, tip)
+        # point-editing toolbar (only shown in Points mode): select tools + delete/undo, mouse-friendly
+        self.edit_bar=ctk.CTkFrame(bigwrap, fg_color="#0d1017", corner_radius=8, border_width=1, border_color=STROKE)
+        self._edit_tool_btns={}
+        def _mktool(tool, label, tip):
+            b=ctk.CTkButton(self.edit_bar, text=label, width=66, height=26, corner_radius=6, fg_color="transparent",
+                            hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11), command=lambda t=tool: self._set_edit_tool(t))
+            b.pack(side="left", padx=2, pady=3); self._tip(b, tip); self._edit_tool_btns[tool]=b
+        _mktool("lasso","◌ Lasso","Trace around points to select (Shift adds, Ctrl removes)")
+        _mktool("rect","▭ Box","Drag a box to select")
+        _mktool("brush","● Brush","Paint over points to select · scroll to size the brush")
+        _mktool("magic","✦ Magic","Click a spot: grabs everything connected to it (the whole base, a whole stray blob)")
+        tk.Frame(self.edit_bar, bg=STROKE, width=1, bd=0, highlightthickness=0).pack(side="left", fill="y", padx=5, pady=5)
+        for label,tip,cmd in (("🗑 Delete","Delete the selected (red) points",self._edit_delete),
+                              ("↶ Undo","Undo the last delete",lambda:self.mv.undo_points()),
+                              ("Invert","Select everything except what's selected",lambda:self.mv.invert_selection()),
+                              ("Clear","Clear the selection",lambda:self.mv.clear_selection())):
+            b=ctk.CTkButton(self.edit_bar, text=label, width=64, height=26, corner_radius=6, fg_color="transparent",
+                            hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11), command=cmd)
+            b.pack(side="left", padx=2, pady=3); self._tip(b, tip)
+        self.edit_count=ctk.CTkLabel(self.edit_bar, text="", text_color=MUT, font=ctk.CTkFont(size=10)); self.edit_count.pack(side="left", padx=(6,8))
         # nothing selected: an empty state sits over the box (inset so the rounded border stays visible); select_project hides it
         self.big_empty=self._empty_state(bigwrap, "preview"); self.big_empty.grid(row=0,column=0, sticky="nsew", padx=6, pady=6)
         self.film=ctk.CTkScrollableFrame(pv, orientation="horizontal", fg_color="transparent", height=128); self._autohide(self.film, "horizontal")
@@ -2922,6 +2942,8 @@ class App(ctk.CTk):
             except Exception: pass
             return
         if v!="Points":
+            try: self.mv.set_edit_tool(None); self.edit_bar.place_forget()   # leave edit mode with the points
+            except Exception: pass
             # back to the mesh: load it straight into the live view (which is showing points) and swap when
             # ready, so there's no flash of the still PNG at the default angle. Keep the camera.
             mesh=self._mesh_for_node(name, node)
@@ -2972,12 +2994,43 @@ class App(ctk.CTk):
                     except Exception: pass
                 try: self.renders_lbl.configure(text="Fused points · scanner")
                 except Exception: pass
-                self.big_hint.configure(text="Fused points — what the scanner captured · drag to rotate · switch to Mesh for the built model")
+                self.big_hint.configure(text="Fused points — pick a tool to clean it, then switch to Mesh · Delete removes the red points")
+                try:
+                    self.mv.on_points_change=self._edit_points_changed; self.mv.set_edit_tool(None)
+                    self._set_edit_tool(None, _init=True)
+                    self.edit_bar.place(relx=0.5, rely=1.0, y=-8, anchor="s"); self.edit_bar.lift()
+                    self._edit_points_changed(self.mv._pts_n if self.mv._pts_n else 0)
+                except Exception as e: log_error("edit-bar", e)
             else:
                 self.big_hint.configure(text="Couldn't load the fused points (see Help > Log).")
         try: self.mv.load_points(cloud, ready, tf=tf)
         except Exception as e:
             log_error("load-points", e); self._mv_loading=False; self._preview_idle()
+    def _set_edit_tool(self, tool, _init=False):
+        """Pick a point-selection tool (or click the active one / pass None to go back to orbit)."""
+        cur=getattr(self.mv, "edit_tool", None)
+        if not _init and cur==tool: tool=None
+        try: self.mv.set_edit_tool(tool)
+        except Exception: pass
+        for t,b in getattr(self, "_edit_tool_btns", {}).items():
+            try: b.configure(fg_color=(AC if t==tool else "transparent"), text_color=("#04121f" if t==tool else TX))
+            except Exception: pass
+        try: self.big_hint.configure(text={
+            "lasso":"Lasso: trace around points to select · Shift adds, Ctrl removes · then Delete",
+            "rect":"Box: drag a rectangle to select · Shift adds, Ctrl removes · then Delete",
+            "brush":"Brush: paint over points · scroll to size · Ctrl to erase selection · then Delete",
+            "magic":"Magic: click a spot to grab everything connected to it · then Delete",
+        }.get(tool, "Fused points — pick a tool to clean it, then switch to Mesh"))
+        except Exception: pass
+    def _edit_delete(self):
+        try: self.mv.delete_selected()
+        except Exception as e: log_error("edit-delete", e)
+    def _edit_points_changed(self, n):
+        """Update the editor's live point/selection count (fired by glview after a select or edit)."""
+        try:
+            sel=int(self.mv._pts_sel.sum()) if getattr(self.mv, "_pts_sel", None) is not None else 0
+            self.edit_count.configure(text=("%s pts" % _kfmt(n)) + (" · %s selected" % _kfmt(sel) if sel else ""))
+        except Exception: pass
     def _reset_view(self, _=None):
         """Reset the live 3D view to its default angle and zoom (same as double-clicking the model)."""
         try:

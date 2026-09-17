@@ -75,6 +75,11 @@ class GLView(OpenGLFrame):
         self._pcvbo = None; self._pts_v = None; self._pts_sel = None; self._pts_undo = []   # point editing: colour vbo, view-space points, selection mask, undo stack
         self.on_points_change = None                                   # callback(kept_count) after an edit, for the editor UI
         self._keep_view = False        # set True before a load to keep the current camera (Mesh<->Points toggles in place)
+        self.edit_tool = None          # None = orbit; "lasso"/"rect"/"brush"/"magic" = drag selects points instead of rotating
+        self.edit_mode = "replace"     # replace / add / subtract (Shift adds, Ctrl subtracts)
+        self._sel_path = None          # screen-space points of the in-progress lasso/rect/brush stroke
+        self.brush_px = 24.0           # brush radius in screen pixels
+        self.magic_thresh = 0.02       # magic-wand grow distance (view-space units; ~2% of the model)
         self.animate = 0
         self.tf = None                         # orientation transform of the loaded mesh (shade.load_oriented_tf)
         self.markers = []                      # [(xyz in view coords, (r,g,b))] drawn as dots
@@ -253,6 +258,9 @@ class GLView(OpenGLFrame):
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._pcvbo); GL.glBufferData(GL.GL_ARRAY_BUFFER, col.nbytes, col, GL.GL_STATIC_DRAW)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
         except Exception: pass
+        if callable(self.on_points_change):
+            try: self.on_points_change(len(self._pts_v))    # live point/selection count for the editor
+            except Exception: pass
     def _project_all(self):
         """Screen (x,y) in Tk top-left coords for every point, plus an in-front mask. Vectorised, with a
         one-point gluProject check so it is right whatever matrix layout PyOpenGL hands back."""
@@ -330,6 +338,54 @@ class GLView(OpenGLFrame):
         if self._pts_v is None or self.tf is None: return None
         try: return shade.view_to_world(self._pts_v.astype(np.float64), self.tf)
         except Exception: return None
+    def set_edit_tool(self, tool, mode="replace"):
+        """tool: None (orbit) / 'lasso' / 'rect' / 'brush' / 'magic'. mode: replace/add/subtract."""
+        self.edit_tool = tool; self.edit_mode = mode; self._sel_path = None; self.draw()
+    def _brush_at(self, x, y, mode):
+        """Paint-select points within brush_px pixels of (x, y)."""
+        if self._pts_v is None or self._pts_sel is None: return
+        pr = self._project_all()
+        if pr is None: return
+        scr, front = pr
+        hit = ((scr[:, 0] - x) ** 2 + (scr[:, 1] - y) ** 2 <= self.brush_px ** 2) & front
+        if mode == "subtract": self._pts_sel &= ~hit
+        else: self._pts_sel |= hit
+        self._pts_recolor(); self._display()
+    def _magic_at(self, x, y, mode):
+        """Region-grow from the point clicked: everything connected within magic_thresh (view units)."""
+        if self._pts_v is None or self._pts_sel is None: return
+        pr = self._project_all()
+        if pr is None: return
+        scr, front = pr
+        d2 = (scr[:, 0] - x) ** 2 + (scr[:, 1] - y) ** 2
+        cand = np.where(front & (d2 <= (self.brush_px * 1.5) ** 2))[0]
+        if not len(cand): return
+        seed = int(cand[np.argmin(d2[cand])])
+        grown = self._region_grow(seed)
+        if mode == "subtract": self._pts_sel[grown] = False
+        else: self._pts_sel[grown] = True
+        self._pts_recolor(); self._display()
+    def _region_grow(self, seed):
+        """Connected points within magic_thresh of the growing set, from a seed. KDTree BFS, capped."""
+        pts = self._pts_v
+        try:
+            from scipy.spatial import cKDTree
+        except Exception:
+            d = np.linalg.norm(pts - pts[seed], axis=1)      # no scipy: a plain ball around the seed
+            return np.where(d <= self.magic_thresh * 5)[0]
+        tree = cKDTree(pts); thr = float(self.magic_thresh)
+        visited = np.zeros(len(pts), dtype=bool); visited[seed] = True
+        frontier = [seed]; cap = min(len(pts), 300000)
+        for _ in range(200):                                  # cap iterations so a runaway grow can't hang
+            if not frontier: break
+            nbrs = tree.query_ball_point(pts[frontier], thr)
+            nxt = []
+            for lst in nbrs:
+                for j in lst:
+                    if not visited[j]: visited[j] = True; nxt.append(j)
+            frontier = nxt
+            if visited.sum() >= cap: break
+        return np.where(visited)[0]
     def _upload_wire(self, wv, wf):
         GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[3]); GL.glBufferData(GL.GL_ARRAY_BUFFER, wv.nbytes, wv, GL.GL_STATIC_DRAW)
         GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[4]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, wf.nbytes, wf, GL.GL_STATIC_DRAW)
@@ -443,6 +499,28 @@ class GLView(OpenGLFrame):
         for col, ax in (((1.0, 0.36, 0.42), (1, 0, 0)), ((0.24, 0.81, 0.56), (0, 1, 0)), ((0.35, 0.69, 1.0), (0, 0, 1))):
             GL.glColor3f(*col); GL.glVertex3f(0, 0, 0); GL.glVertex3f(*ax)
         GL.glEnd(); GL.glLineWidth(1.0); GL.glEnable(GL.GL_DEPTH_TEST)
+        # selection stroke overlay (lasso / rect outline / brush ring), 2D screen space, top-left origin
+        if self.edit_tool and self._sel_path:
+            GL.glViewport(0, 0, w, h)
+            GL.glDisable(GL.GL_LIGHTING); GL.glDisable(GL.GL_DEPTH_TEST)
+            GL.glMatrixMode(GL.GL_PROJECTION); GL.glLoadIdentity(); GL.glOrtho(0, w, h, 0, -1, 1)
+            GL.glMatrixMode(GL.GL_MODELVIEW); GL.glLoadIdentity()
+            GL.glColor3f(0.30, 1.0, 0.45); GL.glLineWidth(1.6)
+            if self.edit_tool == "rect" and len(self._sel_path) >= 2:
+                (x0, y0) = self._sel_path[0]; (x1, y1) = self._sel_path[-1]
+                GL.glBegin(GL.GL_LINE_LOOP)
+                for px, py in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)): GL.glVertex2f(px, py)
+                GL.glEnd()
+            elif self.edit_tool == "brush":
+                cx, cy = self._sel_path[-1]
+                GL.glBegin(GL.GL_LINE_LOOP)
+                for a in np.linspace(0, 2 * np.pi, 28): GL.glVertex2f(cx + self.brush_px * np.cos(a), cy + self.brush_px * np.sin(a))
+                GL.glEnd()
+            elif len(self._sel_path) >= 2:                     # lasso
+                GL.glBegin(GL.GL_LINE_STRIP)
+                for px, py in self._sel_path: GL.glVertex2f(px, py)
+                GL.glEnd()
+            GL.glLineWidth(1.0); GL.glEnable(GL.GL_DEPTH_TEST)
     def draw(self, hi=False):
         if self.ready and not self.failed and self._alive() and self._mapped():
             try: self._display()
@@ -556,8 +634,26 @@ class GLView(OpenGLFrame):
         self.layers = []
         if draw: self.draw()
     # ---- mouse ----
-    def _press(self, e): self._drag = (e.x, e.y); self._press_at = (e.x, e.y)
+    def _press(self, e):
+        if self.edit_tool and self._pts_n and e.num == 1:  # LEFT drag selects; right/middle still orbit so you can check coverage
+            self._sel_mode_now = "add" if (e.state & 0x0001) else ("subtract" if (e.state & 0x0004) else self.edit_mode)
+            if self.edit_tool == "magic":
+                self._magic_at(e.x, e.y, self._sel_mode_now); self._sel_path = None; return
+            self._sel_path = [(e.x, e.y)]
+            if self.edit_tool == "brush": self._brush_at(e.x, e.y, self._sel_mode_now)
+            self.draw(); return
+        self._drag = (e.x, e.y); self._press_at = (e.x, e.y)
     def _release(self, e):
+        if self.edit_tool and self._sel_path is not None and e.num == 1:  # finish the LEFT-button stroke
+            path = self._sel_path; self._sel_path = None; m = getattr(self, "_sel_mode_now", "replace")
+            if self.edit_tool == "lasso" and len(path) >= 3:
+                self.select_region(path, mode=m)
+            elif self.edit_tool == "rect" and len(path) >= 2:
+                (x0, y0) = path[0]; (x1, y1) = path[-1]
+                self.select_region([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], mode=m)
+            else:
+                self.draw()                                # brush already applied live
+            return
         self._drag = None
         if self.on_pick and self._press_at and abs(e.x - self._press_at[0]) <= 8 and abs(e.y - self._press_at[1]) <= 8 and e.num == 1:   # a click, not a drag
             r = self.pick(e.x, e.y)
@@ -566,6 +662,10 @@ class GLView(OpenGLFrame):
                 except Exception: pass
         self._press_at = None
     def _rotate(self, e):
+        if self.edit_tool and self._sel_path is not None:  # extend the stroke, don't orbit
+            self._sel_path.append((e.x, e.y))
+            if self.edit_tool == "brush": self._brush_at(e.x, e.y, getattr(self, "_sel_mode_now", "add"))
+            self.draw(); return
         if not self._drag: return
         if self._press_at and abs(e.x - self._press_at[0]) <= 8 and abs(e.y - self._press_at[1]) <= 8: return   # still within a click
         dx, dy = e.x - self._drag[0], e.y - self._drag[1]; self._drag = (e.x, e.y)
@@ -577,7 +677,14 @@ class GLView(OpenGLFrame):
         if not self._drag: return
         w, h = max(64, self.winfo_width()), max(64, self.winfo_height())
         dx, dy = e.x - self._drag[0], e.y - self._drag[1]; self._drag = (e.x, e.y)
-        self.pan[0] += dx / (w * 0.5); self.pan[1] -= dy / (h * 0.5); self.draw()
+        if self.edit_tool:                 # while a select tool is active, right/middle-drag ORBITS so you can
+            self.rot = self._axis_rot(dy * 0.5, 1, 0, 0) @ self._axis_rot(dx * 0.5, 0, 1, 0) @ self.rot; self.draw(); return   # check coverage from any angle; the red selection persists
+        self.pan[0] += dx / (w * 0.9); self.pan[1] -= dy / (h * 0.9); self.draw()   # was *0.5: pan was too twitchy
     def _wheel(self, e, direction=None):
         d = direction if direction is not None else (1 if e.delta > 0 else -1)
+        if self.edit_tool == "brush":                        # scroll sizes the brush, not the zoom
+            self.brush_px = max(6.0, min(120.0, self.brush_px * (1.15 if d > 0 else 1 / 1.15)))
+            if self._sel_path is None: self._sel_path = [(e.x, e.y)]   # show the ring where the cursor is
+            else: self._sel_path[-1] = (e.x, e.y)
+            self.draw(); return
         self.zoom = max(0.2, min(8.0, self.zoom * (1.12 if d > 0 else 1 / 1.12))); self.draw()
