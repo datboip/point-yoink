@@ -1,4 +1,4 @@
-# MIRACO projector control — findings from the leaked SDK (2026-09-13)
+# MIRACO projector control - findings from the leaked SDK (2026-09-13)
 
 ## Why the RANGE recipe partially worked
 We measured the RANGE's projector command (selector 7: `echo s 0xb00 1`, `0xb01 1`,
@@ -23,7 +23,7 @@ Best guess: the RANGE recipe's `0xb00`/`0xb01` toggle something MIRACO still sha
 resonant-MEMS laser drive, which is why coverage is well below what the scanner's own
 One-tap models show.
 
-## What the proper sequence would be (untested — do not run without a plan)
+## What the proper sequence would be (untested - do not run without a plan)
 1. Read `/data/g_resonant_frequency` through the XU file-read selector (safe, read-only;
    same mechanism as reading Pl.bin and /tmp/inited, both already verified working).
 2. Set far/near camera state: extension property 0x23 (`PROPERTY_EXT_FAR_NEAR_CAMERA_STATE`).
@@ -57,12 +57,12 @@ wValue = selector<<8, wIndex = unit<<8 | interface. Matches range.py's ioctl exa
 
 Markers: computed ON the scanner from the IR pair (cs::markersPoints, using the Q
 reprojection matrix), returned as {point, normal, confidence, radius, epipolarError}
-structs via STREAM_FORMAT_IR_MARKERS / getMarkersInfo() — not raw images. So true
+structs via STREAM_FORMAT_IR_MARKERS / getMarkersInfo() - not raw images. So true
 marker-based tracking from our side would mean requesting that stream format, not
 running our own detector on the IR frames.
 
 Full symbol/string dump and SDK source tree are in scratchpad/rp/ from this session
-(sdk/, bin/new_x64.so, bin/syms.txt) — not committed to the repo (large/binary).
+(sdk/, bin/new_x64.so, bin/syms.txt) - not committed to the repo (large/binary).
 
 ## Physical sensor bar (photo from the user, 2026-09-13)
 camera-bar.jpg: the front sensor strip. Top to bottom: a lens with a lit green indicator, a dark

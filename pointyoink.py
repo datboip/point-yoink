@@ -1341,11 +1341,11 @@ class App(ctk.CTk):
                     out=os.path.join(THUMBS, "%s__%s__%s__shaded.png" % (name, node, verkey or "v"))
                     if not (os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh) and os.path.getsize(out)>1024):
                         self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, out, "--size", "900x600"], timeout=120, env=env)   # the still preview PNG (40k)
-                    film=os.path.join(THUMBS, "%s__%s__%s__film.png" % (name, node, verkey or "v"))   # the little strip thumbnail — warm it too, or the scan strip flashes blue -> grey on open
+                    film=os.path.join(THUMBS, "%s__%s__%s__film.png" % (name, node, verkey or "v"))   # the little strip thumbnail - warm it too, or the scan strip flashes blue -> grey on open
                     if not (os.path.exists(film) and os.path.getmtime(film)>=os.path.getmtime(mesh) and os.path.getsize(film)>1024):
                         self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, film, "--size", "300x220"], timeout=120, env=env)
                     # warm the EXACT entry the interactive viewer reads (detail faces + normals), independent of the PNG,
-                    # so the first 3D open is a pure cache read - not another parse+simplify+normals pass (Codex 2026-09-16)
+                    # so the first 3D open is a pure cache read - not another parse+simplify+normals pass
                     nkey=_sh._mesh_key(mesh, faces, None)
                     npz=os.path.join(_sh.MESH_CACHE, nkey+"_n.npz") if nkey else None
                     if not (npz and os.path.exists(npz)):
@@ -1455,7 +1455,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(wm, text="Point", font=ctk.CTkFont(family=WORDMARK, size=20, weight="bold"), text_color=TX).pack(side="left")
         ctk.CTkLabel(wm, text="Yoink", font=ctk.CTkFont(family=WORDMARK, size=20, weight="bold"), text_color=AC).pack(side="left")
         vl=ctk.CTkLabel(wm, text="v%s · %s" % (VERSION, BUILD), font=ctk.CTkFont(size=10), text_color=DIM); vl.pack(side="left", padx=(6,0), pady=(6,0))
-        self._tip(vl, "Build %s — the git commit this app is running (a trailing + means uncommitted changes). Match it to `git log --oneline -1` to know it's current." % BUILD)
+        self._tip(vl, "Build %s - the git commit this app is running (a trailing + means uncommitted changes). Match it to `git log --oneline -1` to know it's current." % BUILD)
         self._modes=TabStrip(h, command=lambda lab: self._set_mode(HEADER_KEY.get(lab, lab)), content=False, base=CARD, size=13)
         self._modes.grid(row=0,column=2, sticky="w", padx=(26,0), pady=(8,0))
         self._modes.add("Import", icon="⬇"); self._modes.add("Projects", icon="▤"); self._modes.add("Captures", icon="▣")
@@ -2450,7 +2450,7 @@ class App(ctk.CTk):
         """Device / scanner / WiFi state owns the TOP MIRACO line (never the bottom bar). Holding it for a
         few seconds keeps the periodic USB probe from overwriting an active WiFi/network status; an ongoing
         operation keeps calling this so the hold refreshes, and when it stops the probe reclaims the line
-        within `secs` — self-healing, no per-endpoint cleanup needed."""
+        within `secs` - self-healing, no per-endpoint cleanup needed."""
         self._dev_hold=time.time()+secs; self.set_banner(text, color)
     def _probe_banner(self, text, color):
         """The probe's own banner write, suppressed while a device op is holding the line."""
@@ -2463,7 +2463,7 @@ class App(ctk.CTk):
         self.update_summary()
     def update_summary(self):
         cm=getattr(self, "_cur_mode", None)
-        if cm=="Captures":                      # not editing a project here — don't leave "Editing <project>" in the bottom bar
+        if cm=="Captures":                      # not editing a project here - don't leave "Editing <project>" in the bottom bar
             self.sel_lbl.configure(text="Captures"); self.summary.configure(text="Captures · the scanner's screenshots & recordings (USB)"); return
         if cm=="Live":
             self.sel_lbl.configure(text="Live view"); self.summary.configure(text="Live view · scanner cameras"); return
@@ -2510,7 +2510,7 @@ class App(ctk.CTk):
         elif not mounted and self.listed_src=="device":
             self.listed=False; self.start_listing("local")   # scanner disappeared; fall back without poking MTP
         if st=="absent":
-            # editing saved scans without a scanner is normal — don't cry wolf. Prompt only on the Import page.
+            # editing saved scans without a scanner is normal - don't cry wolf. Prompt only on the Import page.
             if self.page=="import": self._probe_banner("Scanner not detected - plug in the USB-C cable, or use WiFi.", WARN)
             else: self._probe_banner("Working on saved scans · connect the scanner over USB or WiFi to import more.", MUT)
             self.action_btn.configure(text="🔌  USB", state="normal"); self.auto_tried=False
@@ -2528,7 +2528,7 @@ class App(ctk.CTk):
                 else: self._probe_banner("MIRACO connected - open the Import tab to bring its projects over.", OK)   # guide, don't leave them wondering
                 if self.projects: self.render_list(self.projects)   # refresh badges if files changed on disk (cheap no-op otherwise)
             elif not self.listing:
-                # MTP reads are slow, so only auto-read when the user is actually on the Import tab —
+                # MTP reads are slow, so only auto-read when the user is actually on the Import tab -
                 # never slow-scan the scanner while they're editing local scans on the Projects page.
                 if self.page=="import":
                     self._probe_banner("Connected - reading scanner projects…", AC)
@@ -2908,7 +2908,7 @@ class App(ctk.CTk):
             self._request_shaded(name, node)     # fresh cache: shows grey now, no render, no blue
         elif self._auto_mesh_preview() and self._mesh_for_node(name, node):
             # not cached yet but the scan HAS a mesh: go straight to the "Drawing the 3D model" spinner and
-            # swap grey in when ready — never flash the blue point cloud first (that reads as "loaded twice").
+            # swap grey in when ready - never flash the blue point cloud first (that reads as "loaded twice").
             self._request_shaded(name, node)
         else:
             self._set_big_image(path); self._maybe_schedule_shaded(name, node, 350)   # raw scan / previews off: the scanner's own preview is the right fallback
@@ -3241,7 +3241,7 @@ class App(ctk.CTk):
             "rect":"Box: drag a rectangle to select · Shift adds, Ctrl removes · then Delete",
             "brush":"Brush: paint over points · scroll to size · Ctrl to erase selection · then Delete",
             "magic":"Magic: click a spot to grab everything connected to it · then Delete",
-        }.get(tool, "Fused points — pick a tool to clean it, then switch to Mesh"))
+        }.get(tool, "Fused points - pick a tool to clean it, then switch to Mesh"))
         except Exception: pass
     def _edit_delete(self):
         try:
@@ -3401,12 +3401,12 @@ class App(ctk.CTk):
                 self.big_hint.configure(text="Scanner preview · View in 3D loads the model only when you ask")
             else:                                   # raw scan: don't promise a 3D view that can't exist
                 self._show_3d_controls(False); self.renders_lbl.configure(text="")
-                self.big_hint.configure(text="This scan is still raw data — showing the scanner's point cloud. Press “Build model” to make the 3D model.")
+                self.big_hint.configure(text="This scan is still raw data - showing the scanner's point cloud. Press “Build model” to make the 3D model.")
         except Exception: pass
     def _show_3d_controls(self, on):
         """Show the 3D-only chrome (Fit/Top/Front view nav, Solid/Wireframe, Reset view, View in 3D) only
         when a real 3D model is on screen. A raw scan shows the flat scanner point cloud, where those
-        controls do nothing — hiding them is clearer than a separate 2D/3D tab."""
+        controls do nothing - hiding them is clearer than a separate 2D/3D tab."""
         try:
             if on: self.view_nav.place(relx=0.0, rely=0.0, x=8, y=8, anchor="nw"); self.view_nav.lift()
             else: self.view_nav.place_forget()
@@ -3440,10 +3440,10 @@ class App(ctk.CTk):
             self._mv_want=None; self._mv_key=None; self._shade_key=None; self._cancel_mv_start()   # reset _shade_key too, or a late mesh_stats for the PREVIOUS scan re-stamps its triangle count here
             try: self.mv.grid_remove(); self.big.grid()
             except Exception: pass
-            try: self.renders_lbl.configure(text="")   # clear the "3D model · N triangles" overlay — a raw scan has no mesh, so it must not carry the previous scan's count
+            try: self.renders_lbl.configure(text="")   # clear the "3D model · N triangles" overlay - a raw scan has no mesh, so it must not carry the previous scan's count
             except Exception: pass
             self._show_3d_controls(False)   # flat scanner cloud: no 3D nav / shading / reset to offer
-            self.big_hint.configure(text="This scan is still raw data — showing the scanner's point cloud. Press “Build model” to make the 3D model (a few seconds), or One-tap Edit on the scanner."); self._preview_idle(); return
+            self.big_hint.configure(text="This scan is still raw data - showing the scanner's point cloud. Press “Build model” to make the 3D model (a few seconds), or One-tap Edit on the scanner."); self._preview_idle(); return
         node=node or self._node_of(name, mesh)
         self._show_3d_controls(True)        # a fused mesh exists for this scan: the 3D view and its controls apply
         if node and node!=self._film_sel: self._film_sel=node; self._mark_scan(node)
@@ -3504,12 +3504,12 @@ class App(ctk.CTk):
             except Exception as e:
                 log_error("shaded-preview "+key, e); self.q.put(("shaded", key, mode, None))
     def _warm_enqueue(self, jobs, front=False):
-        """Queue (name,node) preview renders for the background warmer. front=True jumps the queue —
+        """Queue (name,node) preview renders for the background warmer. front=True jumps the queue -
         used for the project you just opened, so its scans warm before the rest of the library."""
         if not jobs: return
         with self._warm_lock:
             if front:
-                drop=set(jobs)                                    # drop any already-queued copies, then jump them to the front —
+                drop=set(jobs)                                    # drop any already-queued copies, then jump them to the front -
                 self._warm_q[:]=[q for q in self._warm_q if q not in drop]   # reopening a project re-prioritises, never re-stacks it
                 for j in reversed(jobs): self._warm_q.insert(0, j)
             else:
@@ -3568,12 +3568,12 @@ class App(ctk.CTk):
             try: self.select_project(name)
             except Exception as e: log_error("refresh-after-warm", e)
     def _start_prewarm(self):
-        """Queue every local project's previews to warm in the background, once per session. Silent — the
+        """Queue every local project's previews to warm in the background, once per session. Silent - the
         on-disk cache persists, so this fills gaps; the open project (front of the queue) warms first."""
         if getattr(self, "_prewarm_started", False): return
         self._prewarm_started=True
         dest=self.dest.get() or DEFAULT_DEST
-        # scan the local folder directly, NOT self.all_projects — that list reflects the current page
+        # scan the local folder directly, NOT self.all_projects - that list reflects the current page
         # (device projects on the Import page), which would leave the queue empty and warm nothing.
         try: names=sorted(d for d in os.listdir(dest) if not d.startswith(".") and os.path.isdir(os.path.join(dest, d)))
         except Exception: names=[]
@@ -3933,7 +3933,7 @@ class App(ctk.CTk):
             for ln in proc.stdout:
                 if self.cancel: proc.terminate(); break
                 # rsync --info=progress2 line: "   1,234,567  45%   12.34MB/s    0:00:30"
-                # use ALL of it (bytes, speed, time-left), not just the % — a full-project copy over the
+                # use ALL of it (bytes, speed, time-left), not just the % - a full-project copy over the
                 # slow MTP link sits at a low % for ages, so bytes/speed/ETA are what shows it's alive.
                 m=re.search(r"([\d,]+)\s+(\d+)%\s+(\S+)\s+(\d+:\d+:\d+)", ln)
                 if m:
@@ -3958,7 +3958,7 @@ class App(ctk.CTk):
         self.cancel=True
         try:                                            # immediate feedback: the worker may take a moment to stop the current file
             self.cancel_btn.configure(text="Cancelling…", state="disabled")
-            self.set_banner("Cancelling — stopping after the current file…", WARN)
+            self.set_banner("Cancelling - stopping after the current file…", WARN)
         except Exception: pass
         if self.proc:
             try: self.proc.terminate()
@@ -4501,24 +4501,24 @@ class App(ctk.CTk):
             def go(n=n0): self._pick_scan_by_node(name, n); self.on_remove_base(n)
             def skip(n=n0): self._skip_base(name, n)
             # a suggestion, not a diagnosis: whether the scan has a table is not actually detected, so
-            # offer "No base — skip" right here instead of only inside the cut dialog.
+            # offer "No base - skip" right here instead of only inside the cut dialog.
             return ("Cut the base off %s" % self._scan_label(name, n0),
                     "%d of %d scan%s may still have the table under the part. Drag one line above it and apply, or skip if this scan has no base. The cut is remembered and applied when the scans are combined." % (len(nobase), len(built), "" if len(built)==1 else "s"),
                     "✂  Remove base on %s" % self._scan_label(name, n0), go, 1,
-                    ("No base — skip", skip))
+                    ("No base - skip", skip))
         if unbuilt:
             return ("Build the 3D model%s" % ("" if len(unbuilt)==1 else "s"),
                     "%d scan%s %s raw data only. Easiest is One-tap Edit on the scanner, then share the project again. Or build here now (seconds on a graphics card) and prepare it yourself." % (len(unbuilt), "" if len(unbuilt)==1 else "s", "has" if len(unbuilt)==1 else "have"),
                     "⚙  Build %d model%s here" % (len(unbuilt), "" if len(unbuilt)==1 else "s"), lambda: self._proc_build(name, unbuilt), 0, None)
         keep_sep=bool(self.records.get(name, {}).get("keep_separate"))
         # Several built scans and no combined model yet: PointYoink assumes they're sides of one object and
-        # pushes Combine — but they might be separate objects. Offer the choice instead of assuming, and
+        # pushes Combine - but they might be separate objects. Offer the choice instead of assuming, and
         # remember it (reversible below with "Combine them after all").
         if len(built)>=2 and "combined" not in nodes and not keep_sep:
             return ("Combine these scans into one model?",
                     "You have %d scans. If they're sides of one object, line them up into a single model. If they're separate objects, keep them apart and prepare or export each on its own." % len(built),
                     "⧉  Combine scans…", lambda: self._align_dialog(name), 2,
-                    ("Keep separate — different objects", lambda: self._keep_separate(name)))
+                    ("Keep separate - different objects", lambda: self._keep_separate(name)))
         if keep_sep and "combined" not in nodes and len(built)>=2:
             # SELECTION-FIRST: Prepare/Export the scan you're actually looking at, not just the first
             # unprepared one - else viewing Scan 2 could Prepare/Export Scan 1. Only walk to the next
@@ -4545,7 +4545,7 @@ class App(ctk.CTk):
         """The user says these scans are different objects, not sides of one. Stop pushing Combine on the
         NEXT bar; each scan is prepared/exported on its own. Reversible ("Combine them after all")."""
         self.records.setdefault(name, {})["keep_separate"]=True; self._persist()
-        self.set_banner("Keeping these scans separate — prepare or export each on its own. Combine is still one click away if you change your mind.", MUT)
+        self.set_banner("Keeping these scans separate - prepare or export each on its own. Combine is still one click away if you change your mind.", MUT)
         if self.selected==name: self._panel_refresh()
     def _unkeep_separate(self, name):
         """Undo Keep separate: the NEXT bar offers Combine again."""
@@ -4607,7 +4607,7 @@ class App(ctk.CTk):
         hb=ctk.CTkButton(ns, text="How this works  (?)", width=152, height=24, corner_radius=12, fg_color="transparent", border_width=1, border_color=STROKE, hover_color="#15304d", text_color=AC, font=ctk.CTkFont(size=11), command=self._howto_dialog)
         hb.grid(row=2,column=0, padx=(12,26), pady=(0,8), sticky="w")   # right pad separates it from the step trail
         tl=ctk.CTkLabel(ns, text=title, text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w", justify="left"); tl.grid(row=0,column=1, sticky="w", pady=(8,0))
-        self._tip(tl, detail)   # the per-step "why" on hover — no inline expand that jumps the layout; the full guide is the How this works button
+        self._tip(tl, detail)   # the per-step "why" on hover - no inline expand that jumps the layout; the full guide is the How this works button
         trail=ctk.CTkFrame(ns, fg_color="transparent"); trail.grid(row=2,column=1, sticky="w", pady=(0,8))
         nb=[None]
         def relayout(e):
@@ -4628,7 +4628,7 @@ class App(ctk.CTk):
         if btxt:
             bwrap=ctk.CTkFrame(ns, fg_color="transparent")
             ctk.CTkButton(bwrap, text=btxt, width=210, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).pack()
-            if alt:   # a secondary "No base — skip" / suggestion opt-out sits under the main action
+            if alt:   # a secondary "No base - skip" / suggestion opt-out sits under the main action
                 ctk.CTkButton(bwrap, text=alt[0], width=220, height=26, corner_radius=13, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=alt[1]).pack(pady=(6,0))
             nb[0]=bwrap; nb[0].grid(row=0,column=2, rowspan=3, padx=16, pady=10, sticky="e")
     def _proc_next_strip(self, name, nodes, local):
@@ -4738,7 +4738,7 @@ class App(ctk.CTk):
                 if stw: ctk.CTkLabel(hdr, text="Scanner: "+stw, text_color=stc, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=12, pady=(2,0))
                 hasp=node in self._base_planes(name)
                 pl=self._base_planes(name).get(node)
-                ctk.CTkLabel(hdr, text=(("Marked: no base to cut ✓" if pl.get("skip") else "Base removed ✓ — reapplied when combining") if hasp else "Base not cut yet"), text_color=(OK if hasp else WARN), font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=12)
+                ctk.CTkLabel(hdr, text=(("Marked: no base to cut ✓" if pl.get("skip") else "Base removed ✓ - reapplied when combining") if hasp else "Base not cut yet"), text_color=(OK if hasp else WARN), font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=12)
             ctk.CTkFrame(hdr, fg_color="transparent", height=8).pack()
             if vs:
                 # One model, shown plainly - the scan rides on ONE identity so the preview, points and
@@ -5037,7 +5037,7 @@ class App(ctk.CTk):
                     if prev_archive and os.path.exists(prev_archive): os.remove(prev_archive)
                 except Exception: pass
                 log_error("prepare keep", e)
-                status.configure(text="Couldn't back up the current version — nothing was overwritten, your prepared version is safe (see Help > Log).", text_color=WARN); return
+                status.configure(text="Couldn't back up the current version - nothing was overwritten, your prepared version is safe (see Help > Log).", text_color=WARN); return
             self._prep_record(name, node, pstate["opts"], prev_archive, os.path.getsize(final))
             self._persist(); self._mesh_stats={}; self.gallery_cache.pop(name, None); self.projects_sig=None
             n=len(self._prep_history(name, node))
@@ -5676,7 +5676,7 @@ class App(ctk.CTk):
         if self._range_busy: return
         if self._range_on: self._range_disconnect(); return
         self._range_busy=True; self.range_btn.configure(state="disabled")
-        self.range_status.configure(text="Looking for the RANGE…", text_color=MUT); self.hold_banner("RANGE — connecting…", AC)
+        self.range_status.configure(text="Looking for the RANGE…", text_color=MUT); self.hold_banner("RANGE - connecting…", AC)
         threading.Thread(target=self._range_connect_worker, daemon=True).start()
     def _range_connect_worker(self):
         try:
@@ -6419,7 +6419,7 @@ class App(ctk.CTk):
             log_error("shots", e); self.q.put(("shots_failed", str(e)))
     def _play_recording(self, path, nm):
         """Play a recording. MTP is flaky for video, so if it's still on the scanner mount, copy it into a
-        PLAYBACK CACHE (not captures/) first — playing is a preview, it must NOT flip the on-device/on-PC
+        PLAYBACK CACHE (not captures/) first - playing is a preview, it must NOT flip the on-device/on-PC
         badge; only Pull all saves to the PC."""
         try:
             if path.startswith(MOUNT) or path.startswith(PROJECTS):
@@ -6487,7 +6487,7 @@ class App(ctk.CTk):
                         r=min(W/im.width, H/im.height); im=im.resize((max(1,int(im.width*r)), max(1,int(im.height*r))))
                         self.imgs["vpop"]=ctk.CTkImage(light_image=im, dark_image=im, size=im.size); img_lbl.configure(image=self.imgs["vpop"], text="")
                     except Exception as e: img_lbl.configure(image=None, text="(no preview)"); log_error("vpop-show", e)
-                else: img_lbl.configure(image=None, text="No preview frame — press ▶ Play to open it")
+                else: img_lbl.configure(image=None, text="No preview frame - press ▶ Play to open it")
                 parts=[]
                 if w and h: parts.append("%d × %d" % (w, h))
                 if dur: parts.append("%d:%02d" % (int(dur)//60, int(dur)%60))
@@ -6497,7 +6497,7 @@ class App(ctk.CTk):
                 if len(stem)>=14 and stem[:14].isdigit():
                     try: parts.append(datetime.datetime.strptime(stem[:14], "%m%d%Y%H%M%S").strftime("%Y-%m-%d %H:%M:%S"))
                     except Exception: pass
-                meta.configure(text="  ·  ".join(parts) or "—")
+                meta.configure(text="  ·  ".join(parts) or "-")
             self.q.put(("call", show))
         threading.Thread(target=load, daemon=True).start()
     def refresh_screenshots_soft(self):
@@ -6505,7 +6505,7 @@ class App(ctk.CTk):
         try: self.render_shots((getattr(self,"_shots_items",[]), getattr(self,"_recs",[])))
         except Exception as e: log_error("shots-soft", e)
     def _del_capture(self, nm):
-        """Remove a capture's copies FROM THIS PC — the pulled file in captures/ and the cached thumbnail —
+        """Remove a capture's copies FROM THIS PC - the pulled file in captures/ and the cached thumbnail -
         to the trash (recoverable). The scanner's original is NOT touched; if it's still on the device it
         reappears on the next read (and shows the 'on device' badge)."""
         if not self._confirm("Remove capture", "Remove %s from this PC?\n\nIt goes to the trash (recoverable). The scanner's original is not touched." % nm):
@@ -6984,10 +6984,10 @@ class App(ctk.CTk):
                 elif kind=="listing_progress":
                     i,t=rest; self.hold_banner("Reading scanner projects… %d of %d" % (i, t), AC)   # live count = obviously working, not frozen (MTP is just slow)
                 elif kind=="projects":
-                    self.listing=False; self.listed=True; self.listed_src=self._listing_src; self.set_status("")   # clear "Refreshing projects…" — done, or it lingers as a fake perpetual-loading label
+                    self.listing=False; self.listed=True; self.listed_src=self._listing_src; self.set_status("")   # clear "Refreshing projects…" - done, or it lingers as a fake perpetual-loading label
                     if self.listed_src=="device":                    # flip the "reading… N of M" banner to a clear DONE state instead of sticking at "10 of 10"
                         self._dev_hold=0.0; n=len(rest[0])
-                        self.set_banner("Connected · read %d project%s — tick scans to import" % (n, "" if n==1 else "s"), OK)
+                        self.set_banner("Connected · read %d project%s - tick scans to import" % (n, "" if n==1 else "s"), OK)
                     if not getattr(self, "_first_listed", False):
                         self._first_listed=True
                         if self.listed_src=="local" and any(p.get("local") for p in rest[0]): self._set_mode("Local")   # no scanner: start on what is on this PC

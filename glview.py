@@ -152,7 +152,7 @@ class GLView(OpenGLFrame):
         self._gen += 1; gen = self._gen; self._n = 0
         def work():
             try:
-                v, f, tf, nrm = shade.load_oriented_nrm(path, max_faces)   # verts+faces+transform+normals, all cached — the splash warms this exact entry
+                v, f, tf, nrm = shade.load_oriented_nrm(path, max_faces)   # verts+faces+transform+normals, all cached - the splash warms this exact entry
                 if gen != self._gen: return                       # a newer load superseded this one: stop early
                 self.tf = tf
                 if gen != self._gen: return

@@ -18,8 +18,8 @@ def emit(stage, **kw):
 
 def _smooth_fill_faces(m, old_fcount, iters=120):
     """Round flat, ear-clipped hole fills (the faces at/after old_fcount) into the surface. Splits only
-    the fill patches' INTERIOR edges — the rim edges shared with the untouched original faces stay whole,
-    so watertightness is preserved (no T-junction cracks) — then relaxes the new midpoints toward a smooth
+    the fill patches' INTERIOR edges - the rim edges shared with the untouched original faces stay whole,
+    so watertightness is preserved (no T-junction cracks) - then relaxes the new midpoints toward a smooth
     surface while every original vertex stays put."""
     import numpy as np, trimesh
     from collections import defaultdict
@@ -95,7 +95,7 @@ def main():
         return
     if not a.outfile: print("outfile required unless --info"); sys.exit(2)
 
-    # 1) DECIMATE FIRST — turns the memory-heavy topology ops that follow into cheap ones
+    # 1) DECIMATE FIRST - turns the memory-heavy topology ops that follow into cheap ones
     if a.decimate and len(m.faces) > a.decimate:
         import fast_simplification
         v, f = fast_simplification.simplify(m.vertices, m.faces, target_count=a.decimate)
@@ -110,7 +110,7 @@ def main():
         except Exception: pass
         emit("deduped", faces=len(m.faces))
 
-    # 2) BASE REMOVAL — RANSAC the dominant plane (the table/turntable) and cut it away
+    # 2) BASE REMOVAL - RANSAC the dominant plane (the table/turntable) and cut it away
     if a.base_remove:
         V = np.asarray(m.vertices)
         diag = float(np.linalg.norm(V.max(0) - V.min(0)))
@@ -143,18 +143,18 @@ def main():
                  thresh_mm=round(thresh, 2), removed_faces=int((~keep_f).sum()), drop_pct=round(100*drop_frac, 1))
             # Guardrail: the "dominant plane" is only the table if it cuts off a minority. When it would
             # take a big chunk (e.g. a flat face of the object itself, common after a manual Cut base has
-            # already dropped the real table), it is slicing the part — skip it rather than remove half.
+            # already dropped the real table), it is slicing the part - skip it rather than remove half.
             if drop_frac > 0.30:
                 emit("base_skip", drop_pct=round(100*drop_frac, 1),
                      msg="the biggest flat surface looks like part of the object (would remove %.0f%%); left it in place" % (100*drop_frac))
             else:
                 m.update_faces(keep_f); m.remove_unreferenced_vertices()
 
-    # 3) ISOLATE — drop floating junk / table remnants. --isolate and --base-remove keep only the
+    # 3) ISOLATE - drop floating junk / table remnants. --isolate and --base-remove keep only the
     # largest connected piece; --clean keeps every piece at least --isolation-rate % of the largest
     # (the scanner's "Isolation rate", default 15%), so an object scanned in parts survives.
     # Use connected_components + a face mask instead of .split() (which builds every
-    # submesh and calls fill_holes) — faster, lighter, and no repair dependency.
+    # submesh and calls fill_holes) - faster, lighter, and no repair dependency.
     if a.isolate or a.base_remove or a.clean:
         comps = trimesh.graph.connected_components(m.face_adjacency, min_len=1)
         if len(comps) > 1:

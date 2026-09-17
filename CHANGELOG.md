@@ -82,7 +82,7 @@ builds; 1.0.0 will be the first public GitHub release.
   probe, project listing, mount) now catches its own exceptions and
   reports failure through the UI instead of leaving things stuck with
   nothing in the log.
-- Patch from a Codex review, verified directly before shipping: confirmed
+- Patch from a code review, verified directly before shipping: confirmed
   selecting a scan no longer calls _mv_start() at all by default, and the
   full smoke suite passes clean.
 
@@ -130,7 +130,7 @@ builds; 1.0.0 will be the first public GitHub release.
 
 ## 0.9.45 (dev, 2026-09-14)
 - Fixed the exact bug behind the "Drawing the 3D model…" blank right panel,
-  found with a Codex audit: `_panel_refresh`, `_proc_render`, `_next_refresh`,
+  found with a code audit: `_panel_refresh`, `_proc_render`, `_next_refresh`,
   and `render_list`/`render_shots` all destroyed their widgets before
   rebuilding, with nothing catching an exception partway through - the panel
   was left permanently blank with no error anywhere (a Tk-callback
