@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.162-pre"
+APP = "PointYoink"; VERSION = "0.9.163-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1995,7 +1995,7 @@ class App(ctk.CTk):
         self.side_mode=None; self._folder_loaded=False
 
     def set_side(self, key, open_only=False):
-        """Kept for callers (dev/render.py, older paths). The side panel is now the always-visible Import options
+        """Kept for callers (older paths). The side panel is now the always-visible Import options
         column: 'folder' opens the Files tab, 'edit' the Process tab, anything else is a no-op."""
         if key=="folder":
             self._set_mode("Projects"); self.tabs.set("Files"); self._fit_folder(); self.refresh_folder()
@@ -3119,7 +3119,7 @@ class App(ctk.CTk):
     def _cloud_for_node(self, name, node):
         """The fused point cloud for a scan, or None. Models-only imports write <name>_<node>_cloud.ply;
         full-project imports keep the fuse under data/<node>/. Checks both so Points doesn't falsely say
-        'no cloud' for a full import (2026-09-16 review)."""
+        'no cloud' for a full import."""
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
         cands=[os.path.join(local, "%s_%s_cloud.ply" % (name, node)),
                os.path.join(local, "data", node, "fuse.ply"),
@@ -4206,7 +4206,7 @@ class App(ctk.CTk):
         return len(meshes)
 
     def _ensure_clean_vars(self):
-        """Clean-up knobs, named and defaulted like the scanner's Mesh panel (dev/design/device/SCANNER-EDIT-OPTIONS.md).
+        """Clean-up knobs, named and defaulted like the scanner's Mesh panel.
         The Process page is built before the settings vars, so both sides call this."""
         if "clean_iso" in self.__dict__: return
         self.clean_iso=ctk.StringVar(value=str(self.cfg.get("clean_isolation",15)))
@@ -7269,7 +7269,7 @@ class App(ctk.CTk):
             cur=self._proc_current(name, node)
             if cur and cur[2] and os.path.exists(cur[2]): out.append(cur[2])
         # No silent fall-back to every version: if a "current" scope resolves nothing, the caller reports an
-        # empty export rather than quietly shipping ALL versions the user didn't ask for (2026-09-16 review).
+        # empty export rather than quietly shipping ALL versions the user didn't ask for.
         return sorted(set(out))
     def _zip_worker(self, sel, dest, mode, scope="current"):
         import zipfile

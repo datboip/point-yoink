@@ -802,7 +802,7 @@ class GLView(OpenGLFrame):
             self._sel_mode_now = "add" if (e.state & 0x0001) else ("subtract" if (e.state & 0x0004) else self.edit_mode)
             # Brush/magic paint by OR-ing points in; a "replace" stroke has to clear the old selection at its
             # START, then behave as add for the rest of the drag. Without this the previous selection lingered
-            # and replace acted like add (2026-09-16 review). Lasso/rect already replace correctly.
+            # and replace acted like add. Lasso/rect already replace correctly.
             if self.edit_tool in ("brush", "magic") and self._sel_mode_now == "replace":
                 if self._pts_sel is not None: self._pts_sel[:] = False
                 self._sel_mode_now = "add"

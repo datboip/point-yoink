@@ -61,7 +61,7 @@ def main():
     ap.add_argument("--every", type=int, default=1, help="use every Nth frame")
     ap.add_argument("--gpu", action="store_true")
     ap.add_argument("--poses", default="auto", help="global pose table: auto (use <frames>/global_register_pose.pose if present), none, or a path")
-    # defaults measured against the scanner's One-tap Edit on 2026-09-13 (dev/design/device/SCANNER-EDIT-OPTIONS.md):
+    # defaults measured against the scanner's One-tap Edit, matching its Mesh panel:
     # frame filter 3 mm / 80 deg removes the edge and grazing pixels that made double skins; a 3-voxel band keeps thin sheets
     # from cancelling out; 3 views per voxel drops one-frame noise. Our surface then sits within 0.3 mm of the scanner's (95%).
     ap.add_argument("--min-weight", type=float, default=3.0, help="GPU: drop voxels seen fewer than N times (raise to cut noise)")

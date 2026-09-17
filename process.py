@@ -72,7 +72,7 @@ def main():
     ap.add_argument("--isolate", action="store_true")
     ap.add_argument("--plane-thresh", type=float, default=0, help="mm; 0=auto from bbox")
     ap.add_argument("--clean", action="store_true", help="dedupe, drop small pieces, optional hole fill, smooth, optional simplify")
-    # The scanner's own editing knobs (see dev/design/device/SCANNER-EDIT-OPTIONS.md); defaults match its Mesh panel.
+    # The scanner's own editing knobs; defaults match its Mesh panel.
     ap.add_argument("--isolation-rate", type=float, default=15.0, help="drop pieces smaller than this %% of the largest one (100 = keep only the largest)")
     ap.add_argument("--fill-holes", action="store_true", help="fill holes (the scanner has this off by default)")
     ap.add_argument("--hole-size", type=float, default=0, help="largest hole to fill, in mm (0 = auto: ~4%% of the bbox diagonal, so real gaps close but an intentionally-open base does not)")
