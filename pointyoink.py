@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.124-pre"
+APP = "PointYoink"; VERSION = "0.9.125-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3355,7 +3355,8 @@ class App(ctk.CTk):
                 continue   # finished-models: skip a scan with no built mesh entirely - don't leave a stray preview-only "scan" that shows blue and can't be built (its raw data wasn't imported)
             for fn,outn,kind in (("fuse_mesh.ply","%s_%s.ply"%(name,node),"mesh"),
                                  ("fuse.ply","%s_%s_cloud.ply"%(name,node),"cloud"),
-                                 ("preview.png","%s_%s.png"%(name,node),"prev")):
+                                 ("preview.png","%s_%s.png"%(name,node),"prev"),
+                                 ("property.rvproj","%s_%s.rvproj"%(name,node),"meta")):   # scan metadata (counts + modes) so it shows offline
                 sp=os.path.join(nd,fn)
                 if os.path.exists(sp):
                     try: total_bytes+=os.path.getsize(sp)
@@ -4188,6 +4189,34 @@ class App(ctk.CTk):
             except Exception: pass
         self._panel_job=self.after(delay, lambda: (setattr(self, "_panel_job", None), self._panel_refresh()))
 
+    # scanner's scan-settings + counts, decoded from property.rvproj (device's per-scan metadata). Codes
+    # confirmed by correlating with the on-device labels; unconfirmed ones fall back to the raw number so we
+    # never show a wrong label. (accuracy 0/2, object types other than General/Dark, and Near/Far are not
+    # yet decoded - Near/Far isn't even in this file.)
+    _META_ACC={1:"High"}
+    _META_ALIGN={0:"Feature", 1:"Marker"}
+    _META_OBJ={0:"General", 4:"Dark"}
+    def _scan_meta(self, name, node):
+        """Scan metadata (counts + scan modes) from the device's property.rvproj - imported as
+        name_node.rvproj, or read live off the device mount. Returns a dict or None."""
+        if not name or not node or node=="combined": return None
+        local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
+        for p in (os.path.join(local, "%s_%s.rvproj" % (name, node)),
+                  os.path.join(local, "data", node, "property.rvproj"),
+                  os.path.join(PROJECTS, name, "data", node, "property.rvproj")):
+            try:
+                if not os.path.exists(p): continue
+                d=json.load(open(p)); sp=d.get("scan_param", {})
+                def lab(m, v): return m.get(v) if v in m else ("#%s" % v if v is not None else None)
+                modes=[x for x in (lab(self._META_ACC, sp.get("accuracy_type")),
+                                   lab(self._META_ALIGN, sp.get("scan_mode")),
+                                   lab(self._META_OBJ, sp.get("scan_object"))) if x]
+                return {"verts": d.get("vertex_count"), "polys": d.get("face_count"),
+                        "points": d.get("point_count"), "frames": d.get("vf_count"),
+                        "modes": modes, "color": {0:"off", 1:"on"}.get(sp.get("color_type"))}
+            except Exception: pass
+        return None
+
     def _panel_refresh(self):
         """The right column on the Projects page: what to do next, the selected scan's versions and actions, project actions."""
         pp=self.projpanel
@@ -4230,6 +4259,15 @@ class App(ctk.CTk):
             order=[n for n in nodes if n!="combined"]; pos=("scan %d of %d" % (order.index(node)+1, len(order))) if node in order else ""
             sub=("built from the scans you lined up" if node=="combined" else ((pos+" · " if pos else "")+"id "+node))   # show the real scanner id for reference, not the confusing raw/built wording
             ctk.CTkLabel(hdr, text=sub, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=12)
+            meta=self._scan_meta(name, node)   # scanner scan-settings + counts (from the device's property.rvproj)
+            if meta:
+                line1=" / ".join(meta["modes"]) if meta.get("modes") else ""
+                cts=[]
+                if meta.get("polys"): cts.append("%s tris" % _kfmt(meta["polys"]))
+                if meta.get("points"): cts.append("%s pts" % _kfmt(meta["points"]))
+                if meta.get("frames"): cts.append("%d frames" % meta["frames"])
+                mtxt=" · ".join([p for p in (line1, "  ".join(cts)) if p])
+                if mtxt: ctk.CTkLabel(hdr, text=mtxt, text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=230).pack(fill="x", padx=12, pady=(1,0))
             if node!="combined":
                 stw, stc = self.STAGE_WORDS[self._device_stage(local, node)]
                 if stw: ctk.CTkLabel(hdr, text="Scanner: "+stw, text_color=stc, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=12, pady=(2,0))
