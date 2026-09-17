@@ -80,6 +80,7 @@ class GLView(OpenGLFrame):
         self._sel_path = None          # screen-space points of the in-progress lasso/rect/brush stroke
         self.brush_px = 24.0           # brush radius in screen pixels
         self.magic_thresh = 0.02       # magic-wand grow distance (view-space units; ~2% of the model)
+        self._edit_orbit = False       # a left-drag that started in the empty margin: orbit, don't select
         self.animate = 0
         self.tf = None                         # orientation transform of the loaded mesh (shade.load_oriented_tf)
         self.markers = []                      # [(xyz in view coords, (r,g,b))] drawn as dots
@@ -341,6 +342,16 @@ class GLView(OpenGLFrame):
     def set_edit_tool(self, tool, mode="replace"):
         """tool: None (orbit) / 'lasso' / 'rect' / 'brush' / 'magic'. mode: replace/add/subtract."""
         self.edit_tool = tool; self.edit_mode = mode; self._sel_path = None; self.draw()
+    def _over_content(self, x, y):
+        """True if (x, y) is over the object's screen area (so a left-drag there selects); False out in the
+        empty margins (so a left-drag there orbits instead - no tool switch needed)."""
+        pr = self._project_all()
+        if pr is None: return True
+        scr, front = pr
+        s = scr[front]
+        if not len(s): return True
+        m = 45.0                        # margin so you can lasso just outside the silhouette
+        return (s[:, 0].min() - m) <= x <= (s[:, 0].max() + m) and (s[:, 1].min() - m) <= y <= (s[:, 1].max() + m)
     def _brush_at(self, x, y, mode):
         """Paint-select points within brush_px pixels of (x, y)."""
         if self._pts_v is None or self._pts_sel is None: return
@@ -635,7 +646,10 @@ class GLView(OpenGLFrame):
         if draw: self.draw()
     # ---- mouse ----
     def _press(self, e):
-        if self.edit_tool and self._pts_n and e.num == 1:  # LEFT drag selects; right/middle still orbit so you can check coverage
+        if self.edit_tool and self._pts_n and e.num == 1:  # LEFT button in edit mode
+            if not self._over_content(e.x, e.y):           # started out in the empty margin: orbit, don't select
+                self._edit_orbit = True; self._drag = (e.x, e.y); self._press_at = (e.x, e.y); return
+            self._edit_orbit = False
             self._sel_mode_now = "add" if (e.state & 0x0001) else ("subtract" if (e.state & 0x0004) else self.edit_mode)
             if self.edit_tool == "magic":
                 self._magic_at(e.x, e.y, self._sel_mode_now); self._sel_path = None; return
@@ -644,6 +658,8 @@ class GLView(OpenGLFrame):
             self.draw(); return
         self._drag = (e.x, e.y); self._press_at = (e.x, e.y)
     def _release(self, e):
+        if self.edit_tool and self._edit_orbit and e.num == 1:            # empty-margin orbit drag ended
+            self._edit_orbit = False; self._drag = None; self._press_at = None; return
         if self.edit_tool and self._sel_path is not None and e.num == 1:  # finish the LEFT-button stroke
             path = self._sel_path; self._sel_path = None; m = getattr(self, "_sel_mode_now", "replace")
             if self.edit_tool == "lasso" and len(path) >= 3:
@@ -662,6 +678,9 @@ class GLView(OpenGLFrame):
                 except Exception: pass
         self._press_at = None
     def _rotate(self, e):
+        if self.edit_tool and self._edit_orbit and self._drag:            # left-drag from the empty margin: orbit
+            dx, dy = e.x - self._drag[0], e.y - self._drag[1]; self._drag = (e.x, e.y)
+            self.rot = self._axis_rot(dy * 0.5, 1, 0, 0) @ self._axis_rot(dx * 0.5, 0, 1, 0) @ self.rot; self.draw(); return
         if self.edit_tool and self._sel_path is not None:  # extend the stroke, don't orbit
             self._sel_path.append((e.x, e.y))
             if self.edit_tool == "brush": self._brush_at(e.x, e.y, getattr(self, "_sel_mode_now", "add"))
