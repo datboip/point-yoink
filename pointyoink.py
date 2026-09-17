@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.147-pre"
+APP = "PointYoink"; VERSION = "0.9.148-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1643,47 +1643,8 @@ class App(ctk.CTk):
                             fg_color="transparent", hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11),
                             command=cmd)
             b.pack(side="left", padx=1, pady=1); self._tip(b, tip)
-        # point-editing toolbar (only shown in Points mode): select tools + delete/undo, mouse-friendly
-        self.edit_bar=ctk.CTkFrame(bigwrap, fg_color="#0d1017", corner_radius=8, border_width=1, border_color=STROKE)
-        # what you're editing: the built Mesh (cut faces off it directly, no rebuild) or the Points (clean the
-        # capture, then rebuild a mesh). Mesh is the everyday cleanup; Points is the regenerate-from-scratch path.
-        ctk.CTkLabel(self.edit_bar, text="Edit:", text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=(8,2))
-        self.edit_target_sw=ctk.CTkSegmentedButton(self.edit_bar, values=["Mesh","Points"], command=self._edit_target_changed, height=26, corner_radius=6,
-                                                   fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE,
-                                                   text_color=TX, font=ctk.CTkFont(size=11))
-        self.edit_target_sw.pack(side="left", padx=(0,6)); self.edit_target_sw.set("Mesh")
-        tk.Frame(self.edit_bar, bg=STROKE, width=1, bd=0, highlightthickness=0).pack(side="left", fill="y", padx=5, pady=5)
-        self._edit_tool_btns={}
-        def _mktool(tool, label, tip):
-            b=ctk.CTkButton(self.edit_bar, text=label, width=66, height=26, corner_radius=6, fg_color="transparent",
-                            hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11), command=lambda t=tool: self._set_edit_tool(t))
-            b.pack(side="left", padx=2, pady=3); self._tip(b, tip); self._edit_tool_btns[tool]=b
-        _mktool("lasso","◌ Lasso","Trace around points to select (Shift adds, Ctrl removes)")
-        _mktool("rect","▭ Box","Drag a box to select")
-        _mktool("brush","● Brush","Paint over points to select · scroll to size the brush")
-        _mktool("magic","✦ Magic","Click a spot: grabs everything connected to it (the whole base, a whole stray blob)")
-        tk.Frame(self.edit_bar, bg=STROKE, width=1, bd=0, highlightthickness=0).pack(side="left", fill="y", padx=5, pady=5)
-        self.vis_only=ctk.BooleanVar(value=False)
-        _vis=ctk.CTkCheckBox(self.edit_bar, text="Visible only", variable=self.vis_only, command=self._toggle_visible_only,
-                             font=ctk.CTkFont(size=11), text_color=TX, checkbox_width=16, checkbox_height=16, corner_radius=4)
-        _vis.pack(side="left", padx=(4,4)); self._tip(_vis, "On: selection only grabs what faces you, not points/faces hidden behind the object. Off: selects through.")
-        tk.Frame(self.edit_bar, bg=STROKE, width=1, bd=0, highlightthickness=0).pack(side="left", fill="y", padx=5, pady=5)
-        for label,tip,cmd in (("🗑 Delete","Delete the selected (red) points",self._edit_delete),
-                              ("↶ Undo","Undo the last delete",self._edit_undo),
-                              ("Invert","Select everything except what's selected",lambda:self.mv.invert_selection()),
-                              ("Clear","Clear the selection",lambda:self.mv.clear_selection())):
-            b=ctk.CTkButton(self.edit_bar, text=label, width=64, height=26, corner_radius=6, fg_color="transparent",
-                            hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11), command=cmd)
-            b.pack(side="left", padx=2, pady=3); self._tip(b, tip)
-        self.edit_count=ctk.CTkLabel(self.edit_bar, text="", text_color=MUT, font=ctk.CTkFont(size=10)); self.edit_count.pack(side="left", padx=(6,8))
-        tk.Frame(self.edit_bar, bg=STROKE, width=1, bd=0, highlightthickness=0).pack(side="left", fill="y", padx=5, pady=5)
-        # Keep turns the cleaned points into a new model (rebuilt to keep the openings); Discard reverts.
-        self.edit_keep=ctk.CTkButton(self.edit_bar, text="✓ Keep as model", width=126, height=26, corner_radius=6, fg_color=OK, hover_color="#35b57c",
-                                     text_color="#04140d", font=ctk.CTkFont(size=12, weight="bold"), command=self._edit_keep, state="disabled")
-        self.edit_keep.pack(side="left", padx=2, pady=3); self._tip(self.edit_keep, "Rebuild a model from the cleaned points (keeps holes/openings) and save it as a new version.")
-        self.edit_discard=ctk.CTkButton(self.edit_bar, text="Discard", width=64, height=26, corner_radius=6, fg_color="transparent", border_width=1, border_color=STROKE,
-                                        hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11), command=self._edit_discard, state="disabled")
-        self.edit_discard.pack(side="left", padx=2, pady=3); self._tip(self.edit_discard, "Throw away these point edits and reload the original cloud.")
+        # The point/mesh editor tools live in the right-side palette (self.editpanel / _build_edit_palette),
+        # shown in place of the project panel while editing. No bottom overlay bar any more.
         # nothing selected: an empty state sits over the box (inset so the rounded border stays visible); select_project hides it
         self.big_empty=self._empty_state(bigwrap, "preview"); self.big_empty.grid(row=0,column=0, sticky="nsew", padx=6, pady=6)
         self.film=ctk.CTkScrollableFrame(pv, orientation="horizontal", fg_color="transparent", height=128); self._autohide(self.film, "horizontal")
@@ -1704,6 +1665,8 @@ class App(ctk.CTk):
         self.opts.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.opts, "vertical"), add="+")
         self.projpanel=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.projpanel.grid(row=0,column=0, sticky="nsew", padx=(6,0)); self.projpanel.grid_remove(); self._autohide(self.projpanel)
         self.projpanel.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.projpanel, "vertical"), add="+")
+        self.editpanel=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.editpanel.grid(row=0,column=0, sticky="nsew", padx=(6,0)); self.editpanel.grid_remove(); self._autohide(self.editpanel)
+        self._build_edit_palette(self.editpanel)   # the point/mesh editor tools live here (shown in place of the project panel while editing)
         self.rail_btns={}; self.rail_bars={}
 
         # -- Process mode: the selected project's scans, each with its versions and the tools --
@@ -3019,7 +2982,7 @@ class App(ctk.CTk):
                 return False                       # Cancel, or closed with X (returns None): abort, never treat as discard (Codex #1)
         # proceed (clean exit OR explicit Discard): always clear edit mode so it never lingers (Codex #2)
         self._edit_dirty=False; self._in_edit_mode=False
-        try: self._editmode_chrome(False); self.mv.set_edit_tool(None); self.edit_bar.place_forget()
+        try: self._editmode_chrome(False); self.mv.set_edit_tool(None); self._hide_edit_palette()
         except Exception: pass
         return True
     def _on_preview_tab(self, name):
@@ -3070,6 +3033,9 @@ class App(ctk.CTk):
                 return
         self._in_edit_mode=True
         self._editmode_chrome(True)                                    # hide the view switches: this is the editing workspace
+        try: self.edit_target_sw.set(tgt)
+        except Exception: pass
+        self._show_edit_palette()                                      # swap the right panel to the editor tools right away
         if tgt=="Points":
             self.pts_sw.set("Points"); self._view_mode_changed("Points")   # cloud + tools, keeps the camera
         else:
@@ -3113,7 +3079,7 @@ class App(ctk.CTk):
                     self.set_banner("Editing a reduced model: %s of %s faces (the saved model uses this resolution)." % (_kfmt(self._edit_orig_n), _kfmt(full)), WARN)
                 self.mv.on_points_change=self._edit_points_changed
                 self.mv.set_edit_tool(None); self._set_edit_tool(None, _init=True)
-                self.edit_bar.place(relx=0.5, rely=1.0, y=-8, anchor="s"); self.edit_bar.lift()
+                self._show_edit_palette()
                 self.renders_lbl.configure(text="Editing the model")
                 self.big_hint.configure(text="Select the junk and Delete to cut it off · “Keep as model” saves it · Discard reverts")
             except Exception as e: log_error("mesh-edit-bar", e)
@@ -3175,7 +3141,7 @@ class App(ctk.CTk):
                     except Exception: pass
                     self._edit_keep(); return       # save + rebuild, then it switches to the new model itself
                 self._edit_dirty=False              # discard: drop the edits and fall through to the mesh
-            try: self.mv.set_edit_tool(None); self.edit_bar.place_forget()   # leave edit mode with the points
+            try: self.mv.set_edit_tool(None); self._hide_edit_palette()   # leave edit mode with the points
             except Exception: pass
             # back to the mesh: load it straight into the live view (which is showing points) and swap when
             # ready, so there's no flash of the still PNG at the default angle. Keep the camera.
@@ -3249,12 +3215,12 @@ class App(ctk.CTk):
                             self.set_banner("Editing a reduced set: %s of %s points (the saved model uses this resolution)." % (_kfmt(self._edit_orig_n), _kfmt(full)), WARN)
                         self.mv.on_points_change=self._edit_points_changed; self.mv.set_edit_tool(None)
                         self._set_edit_tool(None, _init=True)
-                        self.edit_bar.place(relx=0.5, rely=1.0, y=-8, anchor="s"); self.edit_bar.lift()
+                        self._show_edit_palette()
                         self._edit_points_changed(self.mv._pts_n if self.mv._pts_n else 0)
                     except Exception as e: log_error("edit-bar", e)
                 else:
                     # plain Points view (from the 3D Preview toggle): just for comparing mesh vs capture, no tools
-                    try: self.mv.on_points_change=None; self.mv.set_edit_tool(None); self.edit_bar.place_forget()
+                    try: self.mv.on_points_change=None; self.mv.set_edit_tool(None); self._hide_edit_palette()
                     except Exception: pass
                     self.big_hint.configure(text=("The raw captured points (open the ✏ Edit tab to clean them) · drag to rotate" if real_cloud
                                                   else "The model's own vertices (no separate cloud for this scan) · drag to rotate"))
@@ -3265,6 +3231,57 @@ class App(ctk.CTk):
         try: self.mv.load_points(cloud, ready, tf=tf, max_points=6_000_000)
         except Exception as e:
             log_error("load-points", e); self._mv_loading=False; self._preview_idle()
+    def _build_edit_palette(self, p):
+        """The point/mesh editor's tools, laid out as a roomy vertical palette on the right (shown in place
+        of the project panel while editing). Replaces the old cramped bottom overlay bar."""
+        ctk.CTkLabel(p, text="Editing this scan", font=ctk.CTkFont(size=14, weight="bold"), text_color=TX, anchor="w").pack(fill="x", padx=6, pady=(6,0))
+        ctk.CTkLabel(p, text="Trim the model, then Save. The original is always kept.", font=ctk.CTkFont(size=10), text_color=DIM, anchor="w", justify="left", wraplength=250).pack(fill="x", padx=6, pady=(0,8))
+        ctk.CTkLabel(p, text="WHAT TO EDIT", font=ctk.CTkFont(size=10, weight="bold"), text_color=MUT, anchor="w").pack(fill="x", padx=6, pady=(2,2))
+        self.edit_target_sw=ctk.CTkSegmentedButton(p, values=["Mesh","Points"], command=self._edit_target_changed, height=30, corner_radius=8,
+                                                   fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=12))
+        self.edit_target_sw.pack(fill="x", padx=6); self.edit_target_sw.set("Mesh")
+        ctk.CTkLabel(p, text="Mesh: cut junk off the built model. Points: clean the raw capture, then rebuild.", font=ctk.CTkFont(size=10), text_color=DIM, anchor="w", justify="left", wraplength=250).pack(fill="x", padx=6, pady=(2,10))
+        ctk.CTkLabel(p, text="SELECT WITH", font=ctk.CTkFont(size=10, weight="bold"), text_color=MUT, anchor="w").pack(fill="x", padx=6, pady=(2,2))
+        self._edit_tool_btns={}
+        def _mktool(tool, label, tip):
+            b=ctk.CTkButton(p, text=label, height=32, corner_radius=8, fg_color="transparent", hover_color=CARD2, text_color=TX, anchor="w", font=ctk.CTkFont(size=12), command=lambda t=tool: self._set_edit_tool(t))
+            b.pack(fill="x", padx=6, pady=2); self._tip(b, tip); self._edit_tool_btns[tool]=b
+        _mktool("lasso","➰  Lasso","Trace a freehand loop around what to select")
+        _mktool("rect","▭  Box","Drag a rectangle to select")
+        _mktool("brush","🖌  Brush","Paint over what to select · scroll to size the brush")
+        _mktool("magic","🪄  Magic","Click one spot to grab everything connected to it")
+        self.vis_only=ctk.BooleanVar(value=False)
+        _vis=ctk.CTkCheckBox(p, text="Only what I can see", variable=self.vis_only, command=self._toggle_visible_only,
+                             font=ctk.CTkFont(size=12), text_color=TX, checkbox_width=18, checkbox_height=18, corner_radius=4)
+        _vis.pack(anchor="w", padx=6, pady=(10,0)); self._tip(_vis, "On: selection ignores the hidden back side (good for trimming). Off: selects straight through the object.")
+        ctk.CTkLabel(p, text="Skips faces/points hidden behind the object.", font=ctk.CTkFont(size=10), text_color=DIM, anchor="w", justify="left", wraplength=250).pack(fill="x", padx=6, pady=(0,8))
+        self._hr(p, pady=(2,6))
+        srow=ctk.CTkFrame(p, fg_color="transparent"); srow.pack(fill="x", padx=6)
+        for label,cmd,tip in (("Invert", lambda:self.mv.invert_selection(), "Select everything except what's selected"),
+                              ("Clear", lambda:self.mv.clear_selection(), "Unselect everything")):
+            bb=ctk.CTkButton(srow, text=label, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11), command=cmd)
+            bb.pack(side="left", expand=True, fill="x", padx=2); self._tip(bb, tip)
+        self.edit_count=ctk.CTkLabel(p, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w"); self.edit_count.pack(fill="x", padx=6, pady=(4,2))
+        drow=ctk.CTkFrame(p, fg_color="transparent"); drow.pack(fill="x", padx=6, pady=(2,0))
+        db=ctk.CTkButton(drow, text="🗑  Delete selected", height=34, corner_radius=8, fg_color="#3a2530", hover_color="#4a2f3c", text_color="#ff9db0", font=ctk.CTkFont(size=12, weight="bold"), command=self._edit_delete)
+        db.pack(side="left", expand=True, fill="x", padx=(0,2)); self._tip(db, "Delete the selected (red) part")
+        ub=ctk.CTkButton(drow, text="↶", width=44, height=34, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=13), command=self._edit_undo)
+        ub.pack(side="left", padx=(2,0)); self._tip(ub, "Undo the last delete")
+        self._hr(p, pady=(12,6))
+        self.edit_keep=ctk.CTkButton(p, text="✓  Save as new model", height=40, corner_radius=8, fg_color=OK, hover_color="#35b57c", text_color="#04140d", font=ctk.CTkFont(size=13, weight="bold"), command=self._edit_keep, state="disabled")
+        self.edit_keep.pack(fill="x", padx=6, pady=(0,4)); self._tip(self.edit_keep, "Save your edits as a new model version. The original is kept.")
+        self.edit_discard=ctk.CTkButton(p, text="Discard edits", height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=self._edit_discard, state="disabled")
+        self.edit_discard.pack(fill="x", padx=6, pady=(0,2)); self._tip(self.edit_discard, "Throw the edits away and reload the original.")
+        ctk.CTkButton(p, text="‹  Done editing", height=28, corner_radius=8, fg_color="transparent", border_width=0, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11),
+                      command=lambda: self.tabs.set("3D Preview", True)).pack(fill="x", padx=6, pady=(6,12))
+    def _show_edit_palette(self):
+        try: self.projpanel.grid_remove(); self.editpanel.grid(); self.editpanel.lift()
+        except Exception: pass
+    def _hide_edit_palette(self):
+        try:
+            self.editpanel.grid_remove()
+            if self.page=="projects": self.projpanel.grid()
+        except Exception: pass
     def _toggle_visible_only(self):
         try: self.mv.set_visible_only(bool(self.vis_only.get()))
         except Exception as e: log_error("visible-only", e)
@@ -3396,7 +3413,7 @@ class App(ctk.CTk):
             self.set_banner("Saved a cleaned model of %s." % self._scan_label(name, node), OK); return
         self.set_banner("Saved a cleaned model of %s. Showing it now." % self._scan_label(name, node), OK)
         self._edit_dirty=False; self._in_edit_mode=False; self._editmode_chrome(False)
-        try: self.mv.set_edit_tool(None); self.edit_bar.place_forget()   # leave edit mode; we're switching to the rebuilt Mesh
+        try: self.mv.set_edit_tool(None); self._hide_edit_palette()   # leave edit mode; we're switching to the rebuilt Mesh
         except Exception: pass
         try:
             if self.tabs.get()=="✏ Edit": self.tabs.set("3D Preview"); self._preview_tab.grid()   # land on the finished model
@@ -4768,7 +4785,8 @@ class App(ctk.CTk):
             ctk.CTkLabel(pp, text="Couldn't refresh this panel (see Help > Log). Try selecting the project again.",
                          text_color=WARN, font=ctk.CTkFont(size=12), wraplength=230, justify="left").pack(anchor="w", padx=16, pady=20)
         finally:
-            pp.grid(); self._fit_scrollbar_later(pp, "vertical", 120)
+            if not getattr(self, "_in_edit_mode", False):   # keep the edit palette up while editing
+                pp.grid(); self._fit_scrollbar_later(pp, "vertical", 120)
     def _panel_refresh_body(self, pp):
         name=self.selected; dest=self.dest.get() or DEFAULT_DEST; local=os.path.join(dest, name) if name else None
         if not name or not local or not os.path.isdir(local):
