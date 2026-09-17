@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.121-pre"
+APP = "PointYoink"; VERSION = "0.9.122-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -5427,7 +5427,7 @@ class App(ctk.CTk):
         top=tk.Toplevel(self); top.title("Importing"); top.configure(bg=BG)
         try: top.transient(self.winfo_toplevel())
         except Exception: pass
-        top.geometry("520x430"); self._imp_top=top
+        top.geometry("520x500"); self._imp_top=top   # was 430: the graph + 4 stat tiles + button row overflowed, clipping the buttons
         card=ctk.CTkFrame(top, fg_color=CARD, corner_radius=16); card.pack(fill="both", expand=True, padx=16, pady=16)
         self.imp_title=ctk.CTkLabel(card, text="Importing…", text_color=TX, font=ctk.CTkFont(size=15, weight="bold")); self.imp_title.pack(pady=(16,2))
         self.imp_sub=ctk.CTkLabel(card, text="Copying off the scanner…", text_color=MUT, font=ctk.CTkFont(size=11)); self.imp_sub.pack()
@@ -6509,7 +6509,13 @@ class App(ctk.CTk):
                             if mg: self.imp_stats["got"].configure(text=mg.group(1))
                             ms=re.search(r"scan\s*(\d+/\d+)", line)
                             if ms: self.imp_stats["scans"].configure(text=ms.group(1))
-                            me=re.search(r"(\d+:\d+)\s*left", line)
+                            else:
+                                # full-project rsync has no per-scan progress; show the project's total scan
+                                # count instead of a bare "-" (which reads as broken).
+                                mn=re.search(r"·\s*(Project\S+)\s*·", line)
+                                pj=next((x for x in self.projects if x.get("name")==mn.group(1)), None) if mn else None
+                                if pj and pj.get("nodes"): self.imp_stats["scans"].configure(text=str(pj["nodes"]))
+                            me=re.search(r"([\d:]+)\s*left", line)   # was (\d+:\d+): dropped the hours on a 1:28:02 ETA, so the tile showed 28:02
                             if me: self.imp_stats["eta"].configure(text=me.group(1))
                         except Exception: pass
                 elif kind=="done": self._finish(rest[0],rest[1], no_models=rest[2] if len(rest)>2 else [])
