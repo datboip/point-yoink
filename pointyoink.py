@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.122-pre"
+APP = "PointYoink"; VERSION = "0.9.123-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3281,6 +3281,17 @@ class App(ctk.CTk):
                 sel=[n for n in sel if n not in already]
                 if not sel:
                     self.set_banner("Nothing to import (all already imported).", MUT); return
+        # Full project brings the raw capture frames, which crawl over the USB cable (MTP, often under
+        # ~150 KB/s), so a project can take an hour or more. WiFi is far faster for raw data. Warn, but
+        # let them proceed - some people do want the raw frames over the cable.
+        if not self.models_only.get():
+            if not self._confirm("Full project over USB is slow",
+                    "Full project copies the raw capture frames. That is slow over the USB cable (MTP - often under 150 KB/s), so this can take an hour or more.\n\n"
+                    "Faster options:\n"
+                    "  •  Share over WiFi › Full project - much faster for raw data\n"
+                    "  •  Finished models - just the built model, quick over USB\n\n"
+                    "Import the full project over USB anyway?"):
+                return   # nothing started yet (pulling/buttons unchanged), just back out
         self.pulling=True; self.cancel=False; self._pull_list=sel; self._export_fails=[]
         self._imp_samples=[]; self._imp_last=0.0   # fresh speed graph for this import
         self.import_btn.grid_remove(); self.cancel_btn.grid(row=0,column=3)
@@ -5393,11 +5404,17 @@ class App(ctk.CTk):
         cv.delete("all")
         for gy in (0.25,0.5,0.75): cv.create_line(0, H*gy, W, H*gy, fill="#161a22")
         if not samples: return
-        rates=[r for _,r in samples]; top=(max(rates) or 1.0)*1.15; N=len(rates)
+        rates=[r for _,r in samples]; N=len(rates)
+        # scale to the 90th percentile, not the peak: MTP sends an initial buffered burst that is many times
+        # the steady rate, and peak-scaling squashed the whole rest of the transfer into a flat line at the
+        # bottom. p90 lets the steady rate fill the chart; the one-time spike just clips at the top.
+        srt=sorted(rates); p90=srt[min(N-1, int(N*0.9))]
+        top=(p90 or max(rates) or 1.0)*1.3
+        def _y(r): return H-4-min(1.0, r/top)*(H-14)   # clamp so a clipped spike sits on the top edge, not off-canvas
         if N==1:
-            pts=[(W-4, H-4-(rates[0]/top)*(H-14))]
+            pts=[(W-4, _y(rates[0]))]
         else:
-            pts=[(4+(i/(N-1))*(W-8), H-4-(r/top)*(H-14)) for i,r in enumerate(rates)]   # x = time order, newest on the right
+            pts=[(4+(i/(N-1))*(W-8), _y(r)) for i,r in enumerate(rates)]   # x = time order, newest on the right
         if len(pts)>=2:
             poly=[(pts[0][0], H-4)]+pts+[(pts[-1][0], H-4)]
             cv.create_polygon(*[c for xy in poly for c in xy], fill="#1d3f66", outline="")
