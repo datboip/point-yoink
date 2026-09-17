@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.165-pre"
+APP = "PointYoink"; VERSION = "0.9.166-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1767,9 +1767,10 @@ class App(ctk.CTk):
         self.film.bind("<Configure>", lambda e: self.after(80, self._film_fit))
         # Files tab: the project's model files (what an import copies) above the save folder on this PC
         fl.grid_columnconfigure(0, weight=1); fl.grid_rowconfigure(3, weight=1)
-        ctk.CTkLabel(fl, text="Model files in this project", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").grid(row=0,column=0, sticky="ew", pady=(10,2))
-        self.files_box=ctk.CTkTextbox(fl, fg_color="#0a0c10", text_color=TX, corner_radius=10, height=150, font=ctk.CTkFont(family="monospace", size=11))
-        self.files_box.grid(row=1,column=0, sticky="ew")
+        self.files_hdr=ctk.CTkLabel(fl, text="Model files in this project", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w")
+        self.files_hdr.grid(row=0,column=0, sticky="ew", pady=(10,2))
+        self.files_list=ctk.CTkScrollableFrame(fl, fg_color="#0a0c10", corner_radius=10, height=160)
+        self.files_list.grid(row=1,column=0, sticky="ew"); self.files_list.grid_columnconfigure(0, weight=1); self._autohide(self.files_list)
         self._folder_tab=fl
 
         # -- right: Import options (always visible, scrolls) --
@@ -2049,8 +2050,7 @@ class App(ctk.CTk):
             self.next_strip.pack_forget(); self.projbar.grid_remove(); self.film.grid_remove(); self.proj_empty.grid()
             self._mv_key=None; self.mv.grid_remove(); self.big.grid(); self.big_empty.grid(); self.big_empty.lift()
             self.view_nav.place_forget()
-            self.files_box.configure(state="normal"); self.files_box.delete("1.0","end")   # don't leave the last project's file list up when nothing is picked
-            self.files_box.insert("end","Pick a project to see its model files.\n"); self.files_box.configure(state="disabled")
+            self._set_files_rows(msg="Pick a project to see its model files.")   # don't leave the last project's file list up when nothing is picked
         except Exception as e: log_error("clear selection", e)
         try: self.update_summary()
         except Exception: pass
@@ -2064,6 +2064,30 @@ class App(ctk.CTk):
             rows=max(4, min(40, (self._tree_wrap.winfo_height()-12)//24))
             if rows!=int(self.ftree.cget("height")): self.ftree.configure(height=rows)
         except Exception: pass
+    def _set_files_rows(self, msg=None, name=None, files=None, tot=0):
+        """Render the project's model files as styled rows (a mesh/points icon, the name, its kind and node,
+        the size), instead of the old monospace text dump."""
+        fl=getattr(self, "files_list", None)
+        if fl is None: return
+        for w in fl.winfo_children(): w.destroy()
+        if msg is not None:
+            self.files_hdr.configure(text="Model files in this project")
+            ctk.CTkLabel(fl, text=msg, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=360).pack(fill="x", padx=10, pady=8)
+            return
+        self.files_hdr.configure(text="Model files in this project  ·  %s total" % human(tot))
+        if not files:
+            ctk.CTkLabel(fl, text="No model files yet - this project is raw scan data.\nBuild the models on the Projects page, or One-tap Edit on the scanner and share it again.",
+                         text_color=WARN, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=360).pack(fill="x", padx=10, pady=8)
+            return
+        for node, fn, sz in sorted(files, key=lambda x: -x[2]):
+            is_cloud=(fn=="fuse.ply" or fn.endswith("_cloud.ply"))
+            row=ctk.CTkFrame(fl, fg_color=CARD2, corner_radius=8); row.pack(fill="x", padx=6, pady=3)
+            ic=_icon("points" if is_cloud else "mesh", "default", 18)
+            if ic is not None: ctk.CTkLabel(row, image=ic, text="").pack(side="left", padx=(10,8), pady=6)
+            txt=ctk.CTkFrame(row, fg_color="transparent"); txt.pack(side="left", fill="x", expand=True, pady=4)
+            ctk.CTkLabel(txt, text=fn, text_color=TX, font=ctk.CTkFont(size=12), anchor="w").pack(fill="x")
+            ctk.CTkLabel(txt, text=("Point cloud" if is_cloud else "Mesh")+"  ·  "+node, text_color=DIM, font=ctk.CTkFont(size=10), anchor="w").pack(fill="x")
+            ctk.CTkLabel(row, text=human(sz), text_color=MUT, font=ctk.CTkFont(size=11, weight="bold")).pack(side="right", padx=12)
     def refresh_folder(self):
         root=self.dest.get() or DEFAULT_DEST
         self.ftree.delete(*self.ftree.get_children()); self._ftree_paths={}
@@ -2915,8 +2939,7 @@ class App(ctk.CTk):
             ctk.CTkLabel(self.film, text="loading scan renders…", text_color=MUT).pack(side="left", padx=8, pady=40)
             local=os.path.join(self.dest.get() or DEFAULT_DEST, name); render_combined=self._auto_mesh_preview()
             threading.Thread(target=lambda n=name, l=local, rc=render_combined: self.q.put(("gallery",n,gather_gallery(n, l, render_combined=rc))), daemon=True).start()
-        self.files_box.configure(state="normal"); self.files_box.delete("1.0","end")
-        self.files_box.insert("end","computing model files…\n"); self.files_box.configure(state="disabled")
+        self._set_files_rows(msg="Computing model files…")
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
         threading.Thread(target=lambda n=name, l=local: self.q.put(("files",n,project_model_size(n, l))), daemon=True).start()
         self._maybe_schedule_shaded(name, None, 250)
@@ -7491,13 +7514,7 @@ class App(ctk.CTk):
                         except Exception: pass
                 elif kind=="files":
                     n,(tot,files)=rest
-                    if self.selected==n:
-                        self.files_box.configure(state="normal"); self.files_box.delete("1.0","end")
-                        self.files_box.insert("end","Model files in %s  (total %s)\n\n"%(n,human(tot)))
-                        if not files: self.files_box.insert("end","  No model files yet: this project is raw scan data.\n  Build the models on the Projects page (or One-tap Edit on the scanner and share again).\n")
-                        for node,fn,sz in sorted(files,key=lambda x:-x[2]):
-                            self.files_box.insert("end","  %-5s %9s   %s/%s\n"%("CLOUD" if (fn=="fuse.ply" or fn.endswith("_cloud.ply")) else "MESH", human(sz), node, fn))
-                        self.files_box.configure(state="disabled")
+                    if self.selected==n: self._set_files_rows(name=n, files=files, tot=tot)
                 elif kind=="prog":
                     frac=rest[0]; line=rest[1]; rate=rest[2] if len(rest)>2 else None
                     if "Converting" in line:                       # conversion has no % - animate instead of sitting at 99%
