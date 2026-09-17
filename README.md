@@ -1,8 +1,8 @@
 # PointYoink
 
-[![Release](https://img.shields.io/github/v/release/datboip/pointyoink?color=4aa3ff)](https://github.com/datboip/pointyoink/releases)
-[![Downloads](https://img.shields.io/github/downloads/datboip/pointyoink/total?color=3ecf8e)](https://github.com/datboip/pointyoink/releases)
-[![Stars](https://img.shields.io/github/stars/datboip/pointyoink?color=ffb454)](https://github.com/datboip/pointyoink/stargazers)
+[![Release](https://img.shields.io/github/v/release/datboip/point-yoink?color=4aa3ff)](https://github.com/datboip/point-yoink/releases)
+[![Downloads](https://img.shields.io/github/downloads/datboip/point-yoink/total?color=3ecf8e)](https://github.com/datboip/point-yoink/releases)
+[![Stars](https://img.shields.io/github/stars/datboip/point-yoink?color=ffb454)](https://github.com/datboip/point-yoink/stargazers)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Linux-informational)
 
@@ -68,7 +68,7 @@ These are the standalone MIRACO models that store finished projects on the devic
 
 ### Debian / Ubuntu (recommended)
 
-Download the latest `.deb` from [Releases](https://github.com/datboip/pointyoink/releases), then install it (this pulls in the dependencies automatically):
+Download the latest `.deb` from [Releases](https://github.com/datboip/point-yoink/releases), then install it (this pulls in the dependencies automatically):
 
 ```bash
 sudo apt install ./pointyoink_0.8.0_amd64.deb
@@ -80,7 +80,7 @@ PointYoink then shows up in your application menu - launch it from there, or run
 
 ```bash
 sudo apt install python3-tk python3-pil.imagetk python3-matplotlib python3-networkx jmtpfs rsync
-git clone https://github.com/datboip/pointyoink
+git clone https://github.com/datboip/point-yoink
 cd pointyoink
 python3 -m venv --system-site-packages venv
 ./venv/bin/pip install customtkinter pillow trimesh "pyglet<2" fast-simplification networkx matplotlib

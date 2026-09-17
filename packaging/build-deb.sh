@@ -73,7 +73,7 @@ Depends: python3, python3-tk, python3-pil, python3-pil.imagetk, python3-numpy, p
 Recommends: v4l-utils
 Section: graphics
 Priority: optional
-Homepage: https://github.com/datboip/pointyoink
+Homepage: https://github.com/datboip/point-yoink
 Description: Pull 3D scans off a Revopoint MIRACO over USB
  PointYoink copies finished scans off a Revopoint MIRACO / MIRACO Pro
  scanner on Linux over USB, with no Revo Scan, Windows, or cloud needed.
