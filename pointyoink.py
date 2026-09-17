@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.142-pre"
+APP = "PointYoink"; VERSION = "0.9.143-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2417,6 +2417,7 @@ class App(ctk.CTk):
         self.records.setdefault(name,{})["label"]=(val.strip() or None)
         self._persist(); self.projects_sig=None  # force re-render
     def on_close(self):
+        if not self._guard_unsaved_edits(): return   # don't let closing the app silently drop unsaved editor edits (Codex #1)
         try:
             if self._wifi: self._wifi.stop()
         except Exception: pass
@@ -2716,7 +2717,7 @@ class App(ctk.CTk):
             if n not in self.size_cache:
                 sz,_=project_model_size(n, os.path.join(dest, n)); self.size_cache[n]=sz; self.q.put(("sizes",None))
     def select_project(self, name):
-        if name!=getattr(self, "selected", None) and not self._guard_unsaved_edits(): return   # protect unsaved editor edits
+        if not self._guard_unsaved_edits(): return   # protect unsaved editor edits (even re-selecting reloads the view)
         self.selected=name
         for n,card in self.rows.items():
             card.configure(fg_color=(SELB if n==name else ROW))
@@ -2898,7 +2899,7 @@ class App(ctk.CTk):
         except Exception: pass
         return None
     def _pick_scan(self, name, node, path):
-        if node!=getattr(self, "_film_sel", None) and not self._guard_unsaved_edits(): return   # protect unsaved editor edits
+        if not self._guard_unsaved_edits(): return   # protect unsaved editor edits (re-clicking the same scan also reloads)
         self._film_sel=node; self._mark_scan(node)
         # Show the cached grey shaded still IMMEDIATELY when it exists, instead of first flashing the
         # scanner's blue preview.png (raw point cloud on black) and swapping the grey in 350 ms later.
@@ -2995,17 +2996,23 @@ class App(ctk.CTk):
         if self.selected and self._film_sel: self._request_shaded(self.selected, self._film_sel)
     def _guard_unsaved_edits(self):
         """The ONE gate before any navigation that would replace the edited view (tab switch, scan tile,
-        project select). Returns True to proceed, False to abort. Keep saves and stays put (caller aborts);
-        Discard drops the edits and proceeds; Cancel aborts. Does not touch tabs - callers own their view."""
-        if not (getattr(self, "_in_edit_mode", False) and getattr(self, "_edit_dirty", False) and not getattr(self, "_edit_saving", False)):
-            return True
-        choice=self._modal("Unsaved edits",
-                           "You've edited this scan but haven't saved.\nKeep it as a new model, or throw the edits away?",
-                           [("Keep as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
-        if choice=="cancel": return False
-        if choice=="keep":
-            self._edit_keep(); return False        # save + land on the new model; the pending nav is abandoned
-        self._edit_dirty=False; self._in_edit_mode=False   # discard: clear edit state, let the nav proceed
+        project select, version change, app close). Returns True to proceed, False to abort. Keep saves and
+        stays put (caller aborts); Discard drops the edits and proceeds; Cancel aborts. On every 'proceed' it
+        clears edit mode, so a clean exit tidies up too. Blocks while a save is in flight."""
+        if not getattr(self, "_in_edit_mode", False):
+            return True                            # not in the editor: nothing to guard or clear
+        if getattr(self, "_edit_saving", False):   # a save is running: don't let the view move out from under it (Codex #3)
+            self._alert("Still saving", "Hang on - still saving your edited model. Try again in a moment.")
+            return False
+        if getattr(self, "_edit_dirty", False):
+            choice=self._modal("Unsaved edits",
+                               "You've edited this scan but haven't saved.\nKeep it as a new model, or throw the edits away?",
+                               [("Keep as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
+            if choice=="cancel": return False
+            if choice=="keep":
+                self._edit_keep(); return False    # save + land on the new model; the pending nav is abandoned
+        # proceed (clean exit OR discard): always clear edit mode so it never lingers (Codex #2)
+        self._edit_dirty=False; self._in_edit_mode=False
         try: self._editmode_chrome(False); self.mv.set_edit_tool(None); self.edit_bar.place_forget()
         except Exception: pass
         return True
@@ -3332,11 +3339,10 @@ class App(ctk.CTk):
         out=os.path.join(local, "%s_%s_edited.ply" % (name, node))
         def work():
             try:
-                if os.path.exists(out) and os.path.getsize(out)>1024:   # keep the previous edited model (Codex #4: don't overwrite silently)
-                    try:
-                        vdir=os.path.join(local, ".versions"); os.makedirs(vdir, exist_ok=True)
-                        shutil.copy2(out, os.path.join(vdir, "%s_edited_%s.ply" % (node, time.strftime("%Y%m%d-%H%M%S"))))
-                    except Exception as e: log_error("edit-keep-archive", e)
+                if os.path.exists(out) and os.path.getsize(out)>1024:   # keep the previous edited model (Codex #4)
+                    # if we can't back it up, ABORT rather than overwrite it - the old edited version must not be lost
+                    vdir=os.path.join(local, ".versions"); os.makedirs(vdir, exist_ok=True)
+                    shutil.copy2(out, os.path.join(vdir, "%s_edited_%s.ply" % (node, time.strftime("%Y%m%d-%H%M%S"))))
                 if is_mesh:
                     import trimesh
                     verts,faces=payload
@@ -3364,6 +3370,12 @@ class App(ctk.CTk):
             self._edit_sync_dirty()
             self.set_banner("Couldn't save the edited model (%s). Your edits are still on screen." % (err or "see Help > Log"), WARN); return
         self._mesh_stats={}; self.gallery_cache.pop(name, None); self.projects_sig=None
+        # defensive (Codex #3): navigation is blocked during a save, but if we somehow moved on, just record
+        # the new version and don't hijack whatever view is up now.
+        moved = (self.selected!=name or getattr(self, "_film_sel", None)!=node)
+        self._proc_set_current(name, node, "edited")   # records the pick; re-renders the preview only if still on this scan
+        if moved:
+            self.set_banner("Saved a cleaned model of %s." % self._scan_label(name, node), OK); return
         self.set_banner("Saved a cleaned model of %s. Showing it now." % self._scan_label(name, node), OK)
         self._edit_dirty=False; self._in_edit_mode=False; self._editmode_chrome(False)
         try: self.mv.set_edit_tool(None); self.edit_bar.place_forget()   # leave edit mode; we're switching to the rebuilt Mesh
@@ -3371,7 +3383,6 @@ class App(ctk.CTk):
         try:
             if self.tabs.get()=="✏ Edit": self.tabs.set("3D Preview"); self._preview_tab.grid()   # land on the finished model
         except Exception: pass
-        self._proc_set_current(name, node, "edited")   # switches the shown model to the rebuilt one (Mesh view)
     def _reset_view(self, _=None):
         """Reset the live 3D view to its default angle and zoom (same as double-clicking the model)."""
         try:
@@ -4357,6 +4368,10 @@ class App(ctk.CTk):
         s.discard(node) if node in s else s.add(node)
         self._alt_ver_open=s
         self._schedule_panel_refresh(10)
+    def _pick_version(self, name, node, key):
+        """User clicked a version chip: guard unsaved editor edits (this reloads the preview) then switch."""
+        if not self._guard_unsaved_edits(): return
+        self._proc_set_current(name, node, key)
     def _proc_set_current(self, name, node, key):
         self.records.setdefault(name,{}).setdefault("current",{})[node]=key; self._persist(); self._mesh_stats={}
         label={"clean":"prepared copy","scanner":"scanner's model","pcfused":"PC build","edited":"cleaned model"}.get(key,key)
@@ -4468,7 +4483,7 @@ class App(ctk.CTk):
                 is_cur=(cur and cur[0]==key)
                 chip=ctk.CTkFrame(vr, fg_color=("#15304d" if is_cur else CARD2), corner_radius=9); chip.pack(side="left", padx=3)
                 b=ctk.CTkButton(chip, text=("✓ " if is_cur else "")+label, height=22, corner_radius=9, fg_color="transparent", hover_color=STROKE,
-                                text_color=(AC if is_cur else TX), font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key: self._proc_set_current(n, nd, k)); b.pack(side="left", padx=(6,0))
+                                text_color=(AC if is_cur else TX), font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key: self._pick_version(n, nd, k)); b.pack(side="left", padx=(6,0))
                 self._tip(b, "%s · %s\nClick to make this the version the preview and exports use." % (os.path.basename(path), human(os.path.getsize(path))))
                 x=ctk.CTkButton(chip, text="✕", width=22, height=22, corner_radius=9, fg_color="transparent", hover_color="#3a2530", text_color=MUT,
                                 font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key,pth=path: self._proc_delete_version(n, nd, k, pth)); x.pack(side="left", padx=(0,4))
@@ -4584,7 +4599,7 @@ class App(ctk.CTk):
         if self.selected==name: self._panel_refresh()
     def _pick_scan_by_node(self, name, node):
         """Select a scan tile the way a click on the strip would (so Remove base and the preview follow)."""
-        if (name, node)!=(getattr(self,"selected",None), getattr(self,"_film_sel",None)) and not self._guard_unsaved_edits(): return
+        if not self._guard_unsaved_edits(): return
         if self.selected!=name: self.select_project(name)
         self._film_sel=node; self._mark_scan(node)
         try: self._maybe_schedule_shaded(name, node, 250)
@@ -4796,7 +4811,7 @@ class App(ctk.CTk):
                         for key,label,path in others:
                             chip=ctk.CTkFrame(pp, fg_color=CARD2, corner_radius=9); chip.pack(fill="x", padx=6, pady=2)
                             b=ctk.CTkButton(chip, text=label+_sz(path), height=24, corner_radius=9, fg_color="transparent", hover_color=STROKE, anchor="w",
-                                            text_color=TX, font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key: self._proc_set_current(n, nd, k)); b.pack(side="left", fill="x", expand=True, padx=(6,0))
+                                            text_color=TX, font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key: self._pick_version(n, nd, k)); b.pack(side="left", fill="x", expand=True, padx=(6,0))
                             self._tip(b, "Make this the model this scan uses. Nothing is changed or deleted.\n"+os.path.basename(path))
                             x=ctk.CTkButton(chip, text="✕", width=24, height=24, corner_radius=9, fg_color="transparent", hover_color="#3a2530", text_color=MUT, font=ctk.CTkFont(size=11),
                                             command=lambda n=name,nd=node,k=key,pth=path: self._proc_delete_version(n, nd, k, pth)); x.pack(side="right", padx=(0,5))
