@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.156-pre"
+APP = "PointYoink"; VERSION = "0.9.159-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -103,19 +103,61 @@ for d in (THUMBS, CFG_DIR): os.makedirs(d, exist_ok=True)
 
 _INSTANCE_LOCK = None
 
+def _ver_key(v):
+    """Order two version strings. A release ('0.9.156') outranks the same-numbered pre ('0.9.156-pre'),
+    so relaunching a dev build never kicks a real release of the same number, and two identical builds
+    tie (neither is 'newer', so no take-over ping-pong)."""
+    v = (v or "").strip()
+    base = v.split("-", 1)[0]
+    is_release = 1 if "-" not in v else 0
+    parts = []
+    for p in base.split("."):
+        try: parts.append(int(p))
+        except Exception: parts.append(0)
+    return (tuple(parts), is_release)
+
+def _read_lock_holder(fh):
+    """(pid, version) recorded by the instance that currently holds the lock, or (None, None)."""
+    try:
+        fh.seek(0); lines = fh.read().splitlines()
+        pid = int(lines[0].strip()) if lines and lines[0].strip() else None
+        ver = lines[1].strip() if len(lines) > 1 else ""
+        return pid, ver
+    except Exception:
+        return None, None
+
 def _acquire_single_instance():
-    """Hold a process lock so PointYoink never runs two UI instances against the same device."""
+    """Hold a process lock so PointYoink never runs two UI instances against the same device.
+
+    If the lock is already held but WE are a strictly newer build than the one holding it, ask that
+    instance to bow out (SIGTERM) and take the lock over. Same or older -> refuse (the caller shows the
+    'already running' dialog). This makes relaunching a fresh build during development just work."""
     global _INSTANCE_LOCK
     lock_path = os.path.join(CFG_DIR, "pointyoink.lock")
     try:
         import fcntl
-        _INSTANCE_LOCK = open(lock_path, "w")
-        fcntl.flock(_INSTANCE_LOCK.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)   # do NOT truncate: we may need to read the holder
+        _INSTANCE_LOCK = os.fdopen(fd, "r+")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            hpid, hver = _read_lock_holder(_INSTANCE_LOCK)
+            if not (hpid and _ver_key(VERSION) > _ver_key(hver)):
+                return False   # same/older build, or unknown holder: leave the running window alone
+            try: log_line("single-instance-takeover %s > %s (pid %s)" % (VERSION, hver or "?", hpid))
+            except Exception: pass
+            try: os.kill(hpid, signal.SIGTERM)   # ask the older instance to close cleanly
+            except Exception: pass
+            for _ in range(80):                  # wait up to ~8s for it to release the lock
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); break
+                except BlockingIOError:
+                    time.sleep(0.1)
+            else:
+                return False                     # it never let go: don't fight it
         _INSTANCE_LOCK.seek(0); _INSTANCE_LOCK.truncate()
-        _INSTANCE_LOCK.write("%s\n" % os.getpid()); _INSTANCE_LOCK.flush()
+        _INSTANCE_LOCK.write("%s\n%s\n" % (os.getpid(), VERSION)); _INSTANCE_LOCK.flush()
         return True
-    except BlockingIOError:
-        return False
     except Exception:
         return True   # never block a real launch over a lock-file problem
 
@@ -1082,6 +1124,7 @@ class App(ctk.CTk):
         self.search.trace_add("write", lambda *a: self._search_changed())
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.refresh_loop(); self.drain_loop(); self._pulse()
+        self._install_handoff()   # a strictly newer build relaunching will SIGTERM us; step aside cleanly
         self.after(60000, lambda: self._close_splash(force=True))  # last-resort fallback only
         self._when_ready(self._wifi_recover)   # offer a stranded WiFi transfer, if any: after the splash, never before
         self._when_ready(lambda: self.after(2500, self._start_prewarm))   # then quietly warm the preview cache in the background
@@ -1533,16 +1576,16 @@ class App(ctk.CTk):
         self.banner.bind("<Configure>", self._wrap_banner)
         def vsep(col): tk.Frame(d, bg=STROKE, width=1, bd=0, highlightthickness=0).grid(row=0,column=col, sticky="ns", pady=13)
         vsep(4)
-        self.wifi_btn=ctk.CTkButton(d, text="\U0001F4F6  WiFi", width=96, height=32, corner_radius=8, fg_color="transparent", border_width=1,
+        self.wifi_btn=ctk.CTkButton(d, text="  WiFi", image=_icon("wifi","default"), compound="left", width=96, height=32, corner_radius=8, fg_color="transparent", border_width=1,
                                     border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=12, weight="bold"), command=self.on_wifi)
         self.wifi_btn.grid(row=0,column=5, padx=(12,4))
         self._tip(self.wifi_btn, "Receive a project over WiFi, no cable: the scanner's Share to PC > Wi-Fi sends it straight to PointYoink.")
-        self.action_btn=ctk.CTkButton(d, text="\U0001F50C  USB", width=96, height=32, corner_radius=8, fg_color="transparent", border_width=1,
+        self.action_btn=ctk.CTkButton(d, text="  USB", image=_icon("usb","default"), compound="left", width=96, height=32, corner_radius=8, fg_color="transparent", border_width=1,
                                       border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=12, weight="bold"), command=self.on_mount)
         self.action_btn.grid(row=0,column=6, padx=(4,12))
         self._tip(self.action_btn, "Connect to the scanner over the USB-C cable (it must be in File Transfer mode) and list its projects.")
         vsep(7)
-        rb=ctk.CTkButton(d, text="↻  Refresh", width=96, height=32, corner_radius=8, fg_color="transparent", hover_color=CARD2,
+        rb=ctk.CTkButton(d, text="  Refresh", image=_icon("refresh","default"), compound="left", width=96, height=32, corner_radius=8, fg_color="transparent", hover_color=CARD2,
                          text_color=TX, font=ctk.CTkFont(size=12, weight="bold"), command=self.on_refresh)
         rb.grid(row=0,column=8, padx=(12,18)); self._tip(rb, "Read the project list again (scanner or this PC).")
         tk.Frame(d, bg=STROKE, height=1, bd=0, highlightthickness=0).place(x=0, rely=1.0, y=-1, relwidth=1.0)
@@ -1670,13 +1713,14 @@ class App(ctk.CTk):
         # standard-view nav (Fusion-style): snap the 3D view to Home / Top / Front / Back / Left / Right,
         # so the model is never lost off-screen; drag still gives free rotation to any angle.
         self.view_nav=ctk.CTkFrame(bigwrap, fg_color="#0d1017", corner_radius=6, border_width=1, border_color=STROKE)
-        for lab, az, el, tip in (("Fit",None,None,"Fit the model in view: home angle, zoom and pan reset"), ("Top",0,90,"Top-down"),
-                                 ("Front",0,0,"Front"), ("Back",180,0,"Back"), ("Left",-90,0,"Left side"), ("Right",90,0,"Right side")):
+        _navbtns=(("Fit",None,None,"Fit the model in view: home angle, zoom and pan reset"), ("Top",0,90,"Top-down"),
+                  ("Front",0,0,"Front"), ("Back",180,0,"Back"), ("Left",-90,0,"Left side"), ("Right",90,0,"Right side"))
+        for _i,(lab, az, el, tip) in enumerate(_navbtns):
             cmd=self._reset_view if az is None else (lambda a=az,e=el: self._set_view(a,e))
             b=ctk.CTkButton(self.view_nav, text=("  "+lab if az is None else lab), image=(_icon("fit-view","default",16) if az is None else None), compound="left",
                             width=(52 if az is None else 42), height=22, corner_radius=4,
                             fg_color="transparent", hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11), command=cmd)
-            b.pack(side="left", padx=1, pady=1); self._tip(b, tip)
+            b.pack(side="left", padx=(5 if _i==0 else 1, 5 if _i==len(_navbtns)-1 else 1), pady=3); self._tip(b, tip)   # equal end gutters
         # The point/mesh editor tools live in the right-side palette (self.editpanel / _build_edit_palette),
         # shown in place of the project panel while editing. No bottom overlay bar any more.
         # nothing selected: an empty state sits over the box (inset so the rounded border stays visible); select_project hides it
@@ -2029,11 +2073,11 @@ class App(ctk.CTk):
         self.progress=ctk.CTkProgressBar(a, height=6, corner_radius=3, progress_color=AC); self.progress.set(0)
         self._imp_samples=[]; self._imp_last=0.0; self._imp_top=None   # USB import transfer popup (WiFi-style)
         self.progline=ctk.CTkLabel(a, text="", text_color=MUT, anchor="w", font=ctk.CTkFont(size=11))
-        def outlined(text, cmd, w=130):
-            return ctk.CTkButton(a, text=text, width=w, height=40, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
+        def outlined(text, cmd, w=130, icon=None):
+            return ctk.CTkButton(a, text=text, image=(_icon(icon,"default") if icon else None), compound="left", width=w, height=40, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
                                  hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=13), command=cmd)
-        self.open_btn=outlined("\U0001F4C2  Open folder", self.open_folder); self.open_btn.grid(row=0,column=1, padx=6, pady=(12,4))
-        self.zip_btn=outlined("\U0001F5DC  Export ZIP", self.on_export_zip); self.zip_btn.grid(row=0,column=2, padx=6, pady=(12,4))
+        self.open_btn=outlined("  Open folder", self.open_folder, icon="external-link"); self.open_btn.grid(row=0,column=1, padx=6, pady=(12,4))
+        self.zip_btn=outlined("  Export ZIP", self.on_export_zip, icon="archive"); self.zip_btn.grid(row=0,column=2, padx=6, pady=(12,4))
         self.cancel_btn=ctk.CTkButton(a, text="Cancel", width=150, height=40, corner_radius=8,
                                       fg_color="#3a2530", hover_color=DANGER, text_color=TX, command=self.on_cancel)
         self.import_btn=SplitButton(a, "Import selected", self.on_pull,
@@ -2420,6 +2464,46 @@ class App(ctk.CTk):
         if val is None: return
         self.records.setdefault(name,{})["label"]=(val.strip() or None)
         self._persist(); self.projects_sig=None  # force re-render
+    def _install_handoff(self):
+        """When a newer build launches, _acquire_single_instance SIGTERMs the running one. Catch it and
+        close cleanly. The periodic tick also keeps the Python interpreter ticking so the signal handler
+        actually runs while Tk owns the main loop."""
+        self._handoff_requested = False
+        try:
+            signal.signal(signal.SIGTERM, lambda *a: setattr(self, "_handoff_requested", True))
+        except Exception: pass
+        self._handoff_tick()
+
+    def _handoff_tick(self):
+        if getattr(self, "_handoff_requested", False):
+            self._handoff_close(); return
+        try: self.after(300, self._handoff_tick)
+        except Exception: pass
+
+    def _handoff_close(self):
+        """A newer build is taking over. Bow out without prompting (the guard would block the hand-off),
+        but still run the real device cleanup so we don't leave the scanner or a stream busy."""
+        try: log_line("handoff-close: newer build took over")
+        except Exception: pass
+        try:
+            if self._wifi: self._wifi.stop()
+        except Exception: pass
+        try:
+            if getattr(self, "_range_on", False) and self._range:
+                self._range.projector(False)
+                if self._range_color: self._range_color.stop()
+                if self._range_stream: self._range_stream.stop()
+        except Exception: pass
+        try: self._terminate_children()
+        except Exception: pass
+        try: self._persist()   # flush config so the newer build opens on the same state
+        except Exception: pass
+        try: self.withdraw()
+        except Exception: pass
+        try: self.quit()
+        except Exception: pass
+        os._exit(0)
+
     def on_close(self):
         if not self._guard_unsaved_edits(): return   # don't let closing the app silently drop unsaved editor edits (Codex #1)
         try:
@@ -4802,12 +4886,12 @@ class App(ctk.CTk):
         self._film_sel=node; self._mark_scan(node)
         try: self._maybe_schedule_shaded(name, node, 250)
         except Exception: pass
-    HOWTO=(("Import", "⬇", "Get the project off the scanner: USB lists everything on it, WiFi Share to PC sends one project. Finished models is quick; Full project also brings the raw frames you need for building and combining here."),
-           ("Build", "⚙", "A scan is raw frames until something fuses them into a 3D model. The scanner does that with One-tap Edit; this PC does it with Build, in seconds on a graphics card, using the scanner's own registration. Easiest: One-tap Edit on the scanner when it turns out fine, Build here when it does not."),
-           ("Cut base", "✂", "Every scan carries the table under the part. Drag one line above it and apply. The cut is remembered for that scan and applied again when scans are combined, so the table never gets fused in."),
-           ("Combine", "⧉", "Scanned each side separately? Pick a base scan, click three to five matching spots on it and on another scan, Line up, check the orange overlay, Keep. Repeat for each side, then Build one model from all their frames at once. Your points stay editable."),
-           ("Prepare", "✦", "Remove floating pieces, smooth, fill small holes, reduce triangles. It runs on a copy and shows before and after; Keep or Discard. Once Combined exists, prepare that one."),
-           ("Export", "⬆", "Pick the version, the format (STL for slicers, OBJ, GLB, PLY) and the folder. The size and a mesh check are shown first: open edges are gaps in the surface; separate pieces are disconnected chunks (not the same thing)."))
+    HOWTO=(("Import", "import", "Get the project off the scanner: USB lists everything on it, WiFi Share to PC sends one project. Finished models is quick; Full project also brings the raw frames you need for building and combining here."),
+           ("Build", "build", "A scan is raw frames until something fuses them into a 3D model. The scanner does that with One-tap Edit; this PC does it with Build, in seconds on a graphics card, using the scanner's own registration. Easiest: One-tap Edit on the scanner when it turns out fine, Build here when it does not."),
+           ("Cut base", "cut-base", "Every scan carries the table under the part. Drag one line above it and apply. The cut is remembered for that scan and applied again when scans are combined, so the table never gets fused in."),
+           ("Combine", "combine", "Scanned each side separately? Pick a base scan, click three to five matching spots on it and on another scan, Line up, check the orange overlay, Keep. Repeat for each side, then Build one model from all their frames at once. Your points stay editable."),
+           ("Prepare", "prepare", "Remove floating pieces, smooth, fill small holes, reduce triangles. It runs on a copy and shows before and after; Keep or Discard. Once Combined exists, prepare that one."),
+           ("Export", "export", "Pick the version, the format (STL for slicers, OBJ, GLB, PLY) and the folder. The size and a mesh check are shown first: open edges are gaps in the surface; separate pieces are disconnected chunks (not the same thing)."))
     def _when_ready(self, fn):
         """Run fn once the splash is gone and the main window is on screen. A dialog opened earlier is attached to the
         withdrawn main window and drags it onto the screen half-built."""
@@ -4819,15 +4903,18 @@ class App(ctk.CTk):
         if getattr(self, "_splash", None) or not self.winfo_viewable(): self.after(700, self._howto_when_ready); return
         if not self.cfg.get("seen_howto") and "howto" not in getattr(self, "_dialogs", {}): self._howto_dialog()
     def _howto_dialog(self):
-        t=self._top("How PointYoink works", 700, 640, key="howto")
+        t=self._top("How PointYoink works", 760, 880, key="howto")
         if t is None: return
         box=ctk.CTkScrollableFrame(t, fg_color="transparent"); box.pack(fill="both", expand=True, padx=12, pady=(12,0))
         ctk.CTkLabel(box, text="Scan to model, in five steps", text_color=TX, font=ctk.CTkFont(size=17, weight="bold"), anchor="w").pack(fill="x", padx=10, pady=(6,2))
         ctk.CTkLabel(box, text="The NEXT bar on the Projects page always shows which step you are on and does it with one button. Originals are never changed: every step saves a new version.",
                      text_color=MUT, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=620).pack(fill="x", padx=10, pady=(0,10))
-        for i,(nm,ico,txt) in enumerate(self.HOWTO):
+        for i,(nm,iname,txt) in enumerate(self.HOWTO):
             card=ctk.CTkFrame(box, fg_color=CARD, corner_radius=12); card.pack(fill="x", padx=6, pady=4)
-            ctk.CTkLabel(card, text="%s  %d · %s" % (ico, i, nm) if i else "%s  %s" % (ico, nm), text_color=AC, font=ctk.CTkFont(size=13, weight="bold"), anchor="w").pack(fill="x", padx=14, pady=(10,2))
+            hd=ctk.CTkFrame(card, fg_color="transparent"); hd.pack(fill="x", padx=14, pady=(10,2))
+            ic=_icon(iname, "accent", 20)
+            if ic is not None: ctk.CTkLabel(hd, image=ic, text="").pack(side="left", padx=(0,8))
+            ctk.CTkLabel(hd, text=("%d · %s" % (i, nm) if i else nm), text_color=AC, font=ctk.CTkFont(size=13, weight="bold"), anchor="w").pack(side="left")
             ctk.CTkLabel(card, text=txt, text_color=TX, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=600).pack(fill="x", padx=14, pady=(0,10))
         row=ctk.CTkFrame(t, fg_color="transparent"); row.pack(fill="x", padx=12, pady=10)
         def ok(): self.cfg["seen_howto"]=True; save_cfg(self.cfg); self._dialogs.pop("howto", None); t.destroy()
@@ -5018,32 +5105,35 @@ class App(ctk.CTk):
             else: ctk.CTkLabel(pp, text="No 3D model yet", text_color=WARN, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6, pady=(6,0))
             combined_exists=("combined" in nodes and node!="combined")
             primary="build" if (raw and not vs) else ("cut" if (vs and node!="combined" and node not in self._base_planes(name)) else (None if combined_exists else ("prepare" if (vs and not has_prep) else ("export" if vs else None))))
+            _mkicon={"build":"build","cut":"cut-base","prepare":"prepare","export":"export"}
             def mk(kind, text, enabled, cmd, tip):
                 if not enabled: return None   # only show what this scan can actually do: a raw scan (no model) shows Build, not greyed Remove base / Prepare / Export
                 # NEXT bar is the ONE filled primary CTA; the sidebar's matching action gets a subtle accent
                 # (accent border + text), not a second full-fill button competing for attention.
                 accent=(kind==primary)
-                b=ctk.CTkButton(pp, text=text, height=32, corner_radius=8, fg_color="transparent", hover_color=CARD2,
+                b=ctk.CTkButton(pp, text=text, image=_icon(_mkicon.get(kind,kind), "accent" if accent else "default"), compound="left",
+                                height=32, corner_radius=8, fg_color="transparent", hover_color=CARD2,
                                 border_width=1, border_color=(AC if accent else STROKE),
                                 text_color=(AC if accent else TX), state="normal", anchor="w", command=cmd)
                 b.pack(fill="x", padx=6, pady=(6,0)); self._tip(b, tip); return b
-            if node!="combined": mk("build", "⚙  Build model", bool(raw), lambda n=name,nd=node: self._proc_build(n, [nd]), "Build this scan's 3D model from its raw data, on this PC." if raw else "No raw data on this PC for this scan (share the project over WiFi as Full project).")
-            if node!="combined": mk("cut", "✂  Remove base…", bool(vs), lambda nd=node: self.on_remove_base(nd), "Drag one line just above the table and apply. Saves a prepared version and remembers the cut for combining.")
+            if node!="combined": mk("build", "  Build model", bool(raw), lambda n=name,nd=node: self._proc_build(n, [nd]), "Build this scan's 3D model from its raw data, on this PC." if raw else "No raw data on this PC for this scan (share the project over WiFi as Full project).")
+            if node!="combined": mk("cut", "  Remove base…", bool(vs), lambda nd=node: self.on_remove_base(nd), "Drag one line just above the table and apply. Saves a prepared version and remembers the cut for combining.")
             aside="This project has a Combined model - usually you prepare and export that (the Combined tile). This still works on just this scan."
-            mk("prepare", "✦  Prepare…", bool(vs), lambda n=name,nd=node: self._prepare_dialog(n, nd), aside if combined_exists else "Remove floating pieces, smooth, fill holes, reduce triangles. Before and after, then keep or discard.")
-            mk("export", "⬆  Export…", bool(vs), lambda n=name,nd=node: self._export_dialog(n, nd), aside if combined_exists else "Save as STL, OBJ, GLB or PLY with a size and mesh check.")
+            mk("prepare", "  Prepare…", bool(vs), lambda n=name,nd=node: self._prepare_dialog(n, nd), aside if combined_exists else "Remove floating pieces, smooth, fill holes, reduce triangles. Before and after, then keep or discard.")
+            mk("export", "  Export…", bool(vs), lambda n=name,nd=node: self._export_dialog(n, nd), aside if combined_exists else "Save as STL, OBJ, GLB or PLY with a size and mesh check.")
             if combined_exists and node!="combined": ctk.CTkLabel(pp, text="Combined recommended - but you can still prepare/export this scan.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=230).pack(fill="x", padx=6, pady=(4,0))
         self._hr(pp, pady=(14,6)); self._title(pp, "Whole project", size=13)
-        def act(text, cmd, tip=None, danger=False):
-            b=ctk.CTkButton(pp, text=text, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=("#3a2530" if danger else CARD2), text_color=(MUT if danger else TX), anchor="w", command=cmd)
+        def act(text, cmd, tip=None, danger=False, icon=None):
+            b=ctk.CTkButton(pp, text=text, image=(_icon(icon, "danger" if danger else "default") if icon else None), compound="left",
+                            height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=("#3a2530" if danger else CARD2), text_color=(MUT if danger else TX), anchor="w", command=cmd)
             b.pack(fill="x", padx=6, pady=3)
             if tip: self._tip(b, tip)
-        act("⇆  Compare versions…", lambda: self._compare_dialog(name), "Two 3D views side by side, any scan or version in each, turning together.")
-        act("⧉  Combine scans…", lambda: self._align_dialog(name), "Scanned each side separately? Line the scans up and build one model from all of them.")
-        act("⚙  Build all models", self.on_process_pc, "Build the 3D model of every scan that has raw data.")
+        act("  Compare versions…", lambda: self._compare_dialog(name), "Two 3D views side by side, any scan or version in each, turning together.", icon="compare")
+        act("  Combine scans…", lambda: self._align_dialog(name), "Scanned each side separately? Line the scans up and build one model from all of them.", icon="combine")
+        act("  Build all models", self.on_process_pc, "Build the 3D model of every scan that has raw data.", icon="build")
         # "All scans as cards…" removed 2026-09-16: it was a near-empty duplicate of this page (hero +
         # filmstrip + these same actions already live here). Build detail lives in Settings.
-        act("🗑  Delete project from this PC", self._proc_delete_project, "Everything in its folder goes to the trash. The scanner copy is not touched.", danger=True)
+        act("  Delete project from this PC", self._proc_delete_project, "Everything in its folder goes to the trash. The scanner copy is not touched.", danger=True, icon="delete")
     def _proc_progress(self, node, frac, text):
         r=self._proc_rows.get(node)
         if not r: return
