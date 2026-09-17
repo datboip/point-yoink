@@ -168,6 +168,7 @@ def main():
         else:
             emit("isolated", pieces=len(comps), kept=len(comps), faces=len(m.faces))
 
+    warnings = []   # requested steps that silently failed - reported at 'done' so the app never claims a clean run it didn't do
     if a.clean:
         if a.fill_holes:
             # trimesh.fill_holes() only closes gaps bounded by a few edges (measured: it left ~40k open
@@ -191,14 +192,17 @@ def main():
                     try: m = _smooth_fill_faces(m, old_fcount)
                     except Exception: pass
                 emit("filled", hole_mm=round(hole_mm, 1), faces=len(m.faces)); filled = True
-            except Exception:
-                pass
+            except Exception as e:
+                emit("warn", step="fill-holes", err=str(e)[:200])
             if not filled:
-                try: m.fill_holes()
-                except Exception: pass
+                try:
+                    m.fill_holes(); filled = True
+                except Exception as e:
+                    warnings.append("hole fill"); emit("warn", step="fill-holes-fallback", err=str(e)[:200])
         if a.smooth_times > 0:
             try: trimesh.smoothing.filter_humphrey(m, iterations=int(a.smooth_times))
-            except Exception: pass
+            except Exception as e:
+                warnings.append("smoothing"); emit("warn", step="smooth", err=str(e)[:200])
             # Humphrey/Laplacian smoothing is unstable on these open-boundary scan meshes: it drags a few
             # percent of vertices far off the surface, spawning long sliver triangles that render as
             # "shredded" garbage (measured max edge 97 vs a 0.27 median on a real scan; even 1 pass does it,
@@ -221,7 +225,7 @@ def main():
 
     m.export(a.outfile)
     emit("done", out=os.path.basename(a.outfile), faces=len(m.faces),
-         mb=round(os.path.getsize(a.outfile) / 1048576, 1))
+         mb=round(os.path.getsize(a.outfile) / 1048576, 1), warnings=warnings)
 
 if __name__ == "__main__":
     main()

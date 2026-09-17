@@ -74,6 +74,8 @@ class GLView(OpenGLFrame):
         self._pvbo = None; self._pts_n = 0; self._pending_pts = None   # point-cloud view (Fused points): separate, additive path; never touches the mesh draw
         self._pcvbo = None; self._pts_v = None; self._pts_sel = None; self._pts_undo = []   # point editing: colour vbo, view-space points, selection mask, undo stack
         self.on_points_change = None                                   # callback(kept_count) after an edit, for the editor UI
+        self.edit_target = "points"    # "points" (clean cloud -> rebuild) or "mesh" (delete faces on the built model, no rebuild)
+        self._medit_faces = None; self._medit_undo = []; self._selfbo = None; self._sel_face_n = 0   # mesh face editing: faces, undo, selected-face overlay buffer
         self._keep_view = False        # set True before a load to keep the current camera (Mesh<->Points toggles in place)
         self.edit_tool = None          # None = orbit; "lasso"/"rect"/"brush"/"magic" = drag selects points instead of rotating
         self.edit_mode = "replace"     # replace / add / subtract (Shift adds, Ctrl subtracts)
@@ -186,6 +188,7 @@ class GLView(OpenGLFrame):
             GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[2]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, f.nbytes, f, GL.GL_STATIC_DRAW)
             self._n = int(f.size); self._nw = 0; self._zmax = float(v[:, 2].max()); self._src = (v, f); self._wire_gen = None
             self._pts_n = 0                                              # leaving points mode: don't draw stale points over the mesh
+            self.edit_target = "points"; self._medit_faces = None; self._sel_face_n = 0   # a freshly loaded mesh is view-only until begin_mesh_edit()
             if self._split is not None:                                 # index sets belong to the old vertices: drop them
                 try: GL.glDeleteBuffers(2, [int(self._split[0]), int(self._split[3])])
                 except Exception: pass
@@ -249,8 +252,50 @@ class GLView(OpenGLFrame):
             self.failed = True; self._err = e
             (on_ready and on_ready(False))
     # ---- point editing (select / delete / undo) ----
+    def _mesh_recolor(self):
+        """Mesh editing: rebuild the red overlay of faces that will be deleted (all 3 verts selected)."""
+        if self._pts_v is None or self._medit_faces is None: return
+        try:
+            if self._pts_sel is not None and self._pts_sel.any():
+                sf = self._medit_faces[self._pts_sel[self._medit_faces].all(axis=1)]
+            else:
+                sf = np.zeros((0, 3), dtype=np.uint32)
+            sf = np.ascontiguousarray(sf, dtype=np.uint32)
+            self.tkMakeCurrent()
+            if self._selfbo is None: self._selfbo = GL.glGenBuffers(1)
+            GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._selfbo)
+            GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, sf.nbytes, sf if sf.size else None, GL.GL_DYNAMIC_DRAW)
+            GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
+            self._sel_face_n = int(sf.size)
+        except Exception as e: self._err = e
+        if callable(self.on_points_change):
+            try: self.on_points_change(int(len(self._medit_faces)))
+            except Exception: pass
+    def begin_mesh_edit(self):
+        """Turn the currently-loaded mesh (its displayed verts/faces) into an editable target: selection tools
+        act on its vertices, Delete drops the faces you cover. WYSIWYG - you edit exactly what's on screen."""
+        if not self._src: return False
+        v, f = self._src
+        self._pts_v = np.ascontiguousarray(v, dtype=np.float32)     # view-space verts: the selection tools project these
+        self._pts_sel = np.zeros(len(self._pts_v), dtype=bool)
+        self._medit_faces = np.ascontiguousarray(f, dtype=np.uint32).reshape(-1, 3)
+        self._medit_undo = []; self._pts_n = 0                      # _pts_n=0 so GL_POINTS isn't drawn; the mesh draws
+        self.edit_target = "mesh"
+        self._mesh_recolor()
+        return True
+    def mesh_world(self):
+        """The edited mesh (verts in the scan's mm coords, faces) for saving. Drops now-unused verts."""
+        if self._pts_v is None or self._medit_faces is None or self.tf is None: return None
+        try:
+            vw = shade.view_to_world(self._pts_v.astype(np.float64), self.tf)
+            f = self._medit_faces.astype(np.int64)
+            used = np.unique(f)
+            remap = np.zeros(len(vw), dtype=np.int64); remap[used] = np.arange(len(used))
+            return vw[used], remap[f]
+        except Exception: return None
     def _pts_recolor(self):
         """Per-point colour VBO from _pts_sel: blue normally, red where selected."""
+        if self.edit_target == "mesh": self._mesh_recolor(); return
         if self._pts_v is None or self._pcvbo is None: return
         col = np.empty((len(self._pts_v), 3), dtype=np.float32); col[:] = (0.36, 0.66, 1.0)
         if self._pts_sel is not None and self._pts_sel.any(): col[self._pts_sel] = (1.0, 0.28, 0.30)
@@ -314,13 +359,38 @@ class GLView(OpenGLFrame):
     def invert_selection(self):
         if self._pts_sel is not None: self._pts_sel = ~self._pts_sel; self._pts_recolor(); self._display()
     def delete_selected(self):
-        """Remove selected points. Pushes the current cloud to the undo stack first."""
-        if self._pts_v is None or self._pts_sel is None or not self._pts_sel.any(): return
+        """Remove selected points (points mode) or the covered faces (mesh mode). Pushes undo first."""
+        if self._pts_sel is None or not self._pts_sel.any(): return
+        if self.edit_target == "mesh":
+            if self._medit_faces is None: return
+            self._medit_undo.append(self._medit_faces.copy())
+            if len(self._medit_undo) > 12: self._medit_undo.pop(0)
+            drop = self._pts_sel[self._medit_faces].all(axis=1)      # a face goes only when all 3 of its verts are selected: clean cuts
+            self._medit_faces = np.ascontiguousarray(self._medit_faces[~drop], dtype=np.uint32)
+            self._pts_sel[:] = False; self._reupload_mesh_faces()
+            return
+        if self._pts_v is None: return
         self._pts_undo.append(self._pts_v.copy())
         if len(self._pts_undo) > 12: self._pts_undo.pop(0)
         keep = ~self._pts_sel
         self._pts_v = np.ascontiguousarray(self._pts_v[keep]); self._reupload_points()
+    def _reupload_mesh_faces(self):
+        """Re-push the mesh's index buffer after a face delete/undo and refresh the overlay."""
+        try:
+            self.tkMakeCurrent()
+            f = np.ascontiguousarray(self._medit_faces, dtype=np.uint32)
+            GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[2]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, f.nbytes, f, GL.GL_STATIC_DRAW)
+            GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
+            self._n = int(f.size); self._wire_gen = None            # wireframe cache is stale after a face change
+            if self._pts_sel is None or len(self._pts_sel) != len(self._pts_v):
+                self._pts_sel = np.zeros(len(self._pts_v), dtype=bool)
+            self._mesh_recolor(); self._display()
+        except Exception as e:
+            self._err = e
     def undo_points(self):
+        if self.edit_target == "mesh":
+            if not self._medit_undo: return
+            self._medit_faces = self._medit_undo.pop(); self._pts_sel[:] = False; self._reupload_mesh_faces(); return
         if not self._pts_undo: return
         self._pts_v = self._pts_undo.pop(); self._reupload_points()
     def _reupload_points(self):
@@ -462,6 +532,14 @@ class GLView(OpenGLFrame):
                 if use_col: GL.glDisableClientState(GL.GL_COLOR_ARRAY); GL.glDisable(GL.GL_COLOR_MATERIAL)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0); GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
             GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
+            if self.edit_target == "mesh" and self._sel_face_n and self._selfbo is not None and self._vbo is not None:
+                GL.glDisable(GL.GL_LIGHTING); GL.glEnable(GL.GL_POLYGON_OFFSET_FILL); GL.glPolygonOffset(-1.0, -1.0)
+                GL.glColor3f(1.0, 0.28, 0.30)                # the faces that Delete will remove, painted red on top
+                GL.glEnableClientState(GL.GL_VERTEX_ARRAY)
+                GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[0]); GL.glVertexPointer(3, GL.GL_FLOAT, 0, None)
+                GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._selfbo); GL.glDrawElements(GL.GL_TRIANGLES, self._sel_face_n, GL.GL_UNSIGNED_INT, None)
+                GL.glDisableClientState(GL.GL_VERTEX_ARRAY); GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0); GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
+                GL.glDisable(GL.GL_POLYGON_OFFSET_FILL); GL.glEnable(GL.GL_LIGHTING)
         if self._pts_n and self._pvbo is not None:      # Fused-points view (drawn instead of the mesh)
             GL.glDisable(GL.GL_LIGHTING); GL.glPointSize(2.0)
             GL.glEnableClientState(GL.GL_VERTEX_ARRAY)
@@ -646,11 +724,18 @@ class GLView(OpenGLFrame):
         if draw: self.draw()
     # ---- mouse ----
     def _press(self, e):
-        if self.edit_tool and self._pts_n and e.num == 1:  # LEFT button in edit mode
+        _editable = self._pts_n or (self.edit_target == "mesh" and self._medit_faces is not None)
+        if self.edit_tool and _editable and e.num == 1:  # LEFT button in edit mode (points or mesh faces)
             if not self._over_content(e.x, e.y):           # started out in the empty margin: orbit, don't select
                 self._edit_orbit = True; self._drag = (e.x, e.y); self._press_at = (e.x, e.y); return
             self._edit_orbit = False
             self._sel_mode_now = "add" if (e.state & 0x0001) else ("subtract" if (e.state & 0x0004) else self.edit_mode)
+            # Brush/magic paint by OR-ing points in; a "replace" stroke has to clear the old selection at its
+            # START, then behave as add for the rest of the drag. Without this the previous selection lingered
+            # and replace acted like add (2026-09-16 review). Lasso/rect already replace correctly.
+            if self.edit_tool in ("brush", "magic") and self._sel_mode_now == "replace":
+                if self._pts_sel is not None: self._pts_sel[:] = False
+                self._sel_mode_now = "add"
             if self.edit_tool == "magic":
                 self._magic_at(e.x, e.y, self._sel_mode_now); self._sel_path = None; return
             self._sel_path = [(e.x, e.y)]

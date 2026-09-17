@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.133-pre"
+APP = "PointYoink"; VERSION = "0.9.141-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -617,6 +617,29 @@ def human(n):
         if n<1024: return "%.0f %s"%(n,u) if u=="B" else "%.1f %s"%(n,u)
         n/=1024
     return "%.1f TB"%n
+
+def _rebuild_mesh_from_points(pts, out_path):
+    """Rebuild a triangle mesh from an (N,3) point array using ball-pivoting (open3d). Ball-pivoting is
+    used on purpose over Poisson: it spans only where there are points, so real openings/holes stay open
+    instead of being sealed over. Writes a binary PLY to out_path. Runs off the UI thread."""
+    import numpy as np, open3d as o3d
+    pts=np.asarray(pts, dtype=np.float64)
+    pcd=o3d.geometry.PointCloud(); pcd.points=o3d.utility.Vector3dVector(pts)
+    pcd.remove_duplicated_points()
+    try: avg=float(np.mean(pcd.compute_nearest_neighbor_distance()))
+    except Exception: avg=0.0
+    if not (avg>0 and np.isfinite(avg)): avg=0.3
+    pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=avg*3.0, max_nn=30))
+    try: pcd.orient_normals_consistent_tangent_plane(20)
+    except Exception: pass
+    radii=[avg*1.5, avg*3.0, avg*6.0]
+    mesh=o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(pcd, o3d.utility.DoubleVector(radii))
+    mesh.remove_duplicated_vertices(); mesh.remove_duplicated_triangles()
+    mesh.remove_degenerate_triangles(); mesh.remove_unreferenced_vertices()
+    if len(mesh.triangles)==0: raise RuntimeError("ball-pivoting produced no faces")
+    tmp=out_path+".tmp.ply"
+    o3d.io.write_triangle_mesh(tmp, mesh)
+    os.replace(tmp, out_path)
 
 def cimg(path, w):
     im=Image.open(path); r=w/im.width; return ctk.CTkImage(light_image=im, dark_image=im, size=(w, int(im.height*r)))
@@ -1565,8 +1588,9 @@ class App(ctk.CTk):
         self.hdr_date=ctk.CTkLabel(ir, text="", text_color=DIM, anchor="w", font=ctk.CTkFont(size=11)); self.hdr_date.pack(side="left", padx=(10,0))
         self.detail=ctk.CTkLabel(self.projbar, text="", text_color=TX, anchor="w", justify="left", font=ctk.CTkFont(size=12), wraplength=360)
         self.next_strip=ctk.CTkFrame(self.projbar, fg_color="#0f1a2b", corner_radius=12, border_width=1, border_color="#1f3a5f")   # NEXT: shown on the Projects page only
-        self.tabs=TabStrip(centre, base=BG, size=13); self.tabs.grid(row=1,column=0, sticky="nsew")
-        pv=self.tabs.add("3D preview"); fl=self.tabs.add("Files")
+        self.tabs=TabStrip(centre, base=BG, size=13, command=self._on_preview_tab); self.tabs.grid(row=1,column=0, sticky="nsew")
+        pv=self.tabs.add("3D Preview"); self._edit_tab=self.tabs.add("✏ Edit"); fl=self.tabs.add("Files")
+        self._preview_tab=pv   # the Edit tab reuses this same live-view frame (keeps the camera/object); it has no frame of its own
         ctl=ctk.CTkFrame(self.tabs.bar, fg_color="transparent"); ctl.pack(side="right", pady=(0,4)); self._tab_ctl=ctl   # the 3D-only toolbar (View in 3D / Solid-Wireframe / Reset view); hidden for a flat 2D scanner preview
         self.view_btn=ctk.CTkButton(ctl, text="⟳  View in 3D", width=98, height=30, corner_radius=8, fg_color="transparent", border_width=1,
                                     border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=12), command=self.on_view_3d)
@@ -1581,10 +1605,8 @@ class App(ctk.CTk):
                                            fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE,
                                            text_color=TX, font=ctk.CTkFont(size=11))
         self.pts_sw.pack(side="right", padx=(0,8)); self.pts_sw.set("Mesh")   # (no tooltip: CTkSegmentedButton.bind raises, like shade_sw)
-        self.reset_view_btn=ctk.CTkButton(ctl, text="⟲ Reset view", width=96, height=30, corner_radius=8, fg_color="transparent", border_width=1,
-                                          border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=12), command=self._reset_view)
-        self._tip(self.reset_view_btn, "Reset the 3D view to its default angle and zoom (or double-click the model).")
-        self.reset_view_btn.pack(side="right", padx=(0,8))
+        # "Reset view" lived here but it did the same thing as "⌂ Fit" in the bottom-left nav - dropped as a
+        # duplicate (2026-09-17). _reset_view stays (Fit and double-click use it).
         # preview box: the rendered PNG (or the scanner's preview) with a hint line at the bottom
         pv.grid_columnconfigure(0, weight=1); pv.grid_rowconfigure(0, weight=1, minsize=120)
         # corner_radius=0: this panel holds the OpenGL 3D view, which is a real X child window and can't be
@@ -1621,6 +1643,14 @@ class App(ctk.CTk):
             b.pack(side="left", padx=1, pady=1); self._tip(b, tip)
         # point-editing toolbar (only shown in Points mode): select tools + delete/undo, mouse-friendly
         self.edit_bar=ctk.CTkFrame(bigwrap, fg_color="#0d1017", corner_radius=8, border_width=1, border_color=STROKE)
+        # what you're editing: the built Mesh (cut faces off it directly, no rebuild) or the Points (clean the
+        # capture, then rebuild a mesh). Mesh is the everyday cleanup; Points is the regenerate-from-scratch path.
+        ctk.CTkLabel(self.edit_bar, text="Edit:", text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=(8,2))
+        self.edit_target_sw=ctk.CTkSegmentedButton(self.edit_bar, values=["Mesh","Points"], command=self._edit_target_changed, height=26, corner_radius=6,
+                                                   fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE,
+                                                   text_color=TX, font=ctk.CTkFont(size=11))
+        self.edit_target_sw.pack(side="left", padx=(0,6)); self.edit_target_sw.set("Mesh")
+        tk.Frame(self.edit_bar, bg=STROKE, width=1, bd=0, highlightthickness=0).pack(side="left", fill="y", padx=5, pady=5)
         self._edit_tool_btns={}
         def _mktool(tool, label, tip):
             b=ctk.CTkButton(self.edit_bar, text=label, width=66, height=26, corner_radius=6, fg_color="transparent",
@@ -1632,13 +1662,21 @@ class App(ctk.CTk):
         _mktool("magic","✦ Magic","Click a spot: grabs everything connected to it (the whole base, a whole stray blob)")
         tk.Frame(self.edit_bar, bg=STROKE, width=1, bd=0, highlightthickness=0).pack(side="left", fill="y", padx=5, pady=5)
         for label,tip,cmd in (("🗑 Delete","Delete the selected (red) points",self._edit_delete),
-                              ("↶ Undo","Undo the last delete",lambda:self.mv.undo_points()),
+                              ("↶ Undo","Undo the last delete",self._edit_undo),
                               ("Invert","Select everything except what's selected",lambda:self.mv.invert_selection()),
                               ("Clear","Clear the selection",lambda:self.mv.clear_selection())):
             b=ctk.CTkButton(self.edit_bar, text=label, width=64, height=26, corner_radius=6, fg_color="transparent",
                             hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11), command=cmd)
             b.pack(side="left", padx=2, pady=3); self._tip(b, tip)
         self.edit_count=ctk.CTkLabel(self.edit_bar, text="", text_color=MUT, font=ctk.CTkFont(size=10)); self.edit_count.pack(side="left", padx=(6,8))
+        tk.Frame(self.edit_bar, bg=STROKE, width=1, bd=0, highlightthickness=0).pack(side="left", fill="y", padx=5, pady=5)
+        # Keep turns the cleaned points into a new model (rebuilt to keep the openings); Discard reverts.
+        self.edit_keep=ctk.CTkButton(self.edit_bar, text="✓ Keep as model", width=126, height=26, corner_radius=6, fg_color=OK, hover_color="#35b57c",
+                                     text_color="#04140d", font=ctk.CTkFont(size=12, weight="bold"), command=self._edit_keep, state="disabled")
+        self.edit_keep.pack(side="left", padx=2, pady=3); self._tip(self.edit_keep, "Rebuild a model from the cleaned points (keeps holes/openings) and save it as a new version.")
+        self.edit_discard=ctk.CTkButton(self.edit_bar, text="Discard", width=64, height=26, corner_radius=6, fg_color="transparent", border_width=1, border_color=STROKE,
+                                        hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11), command=self._edit_discard, state="disabled")
+        self.edit_discard.pack(side="left", padx=2, pady=3); self._tip(self.edit_discard, "Throw away these point edits and reload the original cloud.")
         # nothing selected: an empty state sits over the box (inset so the rounded border stays visible); select_project hides it
         self.big_empty=self._empty_state(bigwrap, "preview"); self.big_empty.grid(row=0,column=0, sticky="nsew", padx=6, pady=6)
         self.film=ctk.CTkScrollableFrame(pv, orientation="horizontal", fg_color="transparent", height=128); self._autohide(self.film, "horizontal")
@@ -2687,6 +2725,11 @@ class App(ctk.CTk):
             except Exception: pass
         self.big_empty.grid_remove()
         self._film_sel=None; self._film_cells={}
+        if getattr(self, "_in_edit_mode", False):   # don't strand a new project in the previous one's Edit tab
+            self._in_edit_mode=False; self._editmode_chrome(False)
+            try:
+                if self.tabs.get()=="✏ Edit": self.tabs.set("3D Preview"); self._preview_tab.grid()
+            except Exception: pass
         if p.get("thumb"): self._set_big_image(p["thumb"])
         else: self._big_src=None; self.big.configure(image=None, text="No preview for this project yet")
         self.big_hint.configure(text="")
@@ -2912,6 +2955,20 @@ class App(ctk.CTk):
         except Exception: pass
 
     # ---- shaded 3D preview: the scan's mesh rendered off-screen (worker thread, cached PNG) ----
+    def _cloud_for_node(self, name, node):
+        """The fused point cloud for a scan, or None. Models-only imports write <name>_<node>_cloud.ply;
+        full-project imports keep the fuse under data/<node>/. Checks both so Points doesn't falsely say
+        'no cloud' for a full import (2026-09-16 review)."""
+        local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
+        cands=[os.path.join(local, "%s_%s_cloud.ply" % (name, node)),
+               os.path.join(local, "data", node, "fuse.ply"),
+               os.path.join(local, "data", node, "fuse_cloud.ply"),
+               os.path.join(local, "data", node, "fuse_mesh.ply")]   # last resort: a mesh's vertices work as points
+        for c in cands:
+            try:
+                if os.path.exists(c) and os.path.getsize(c)>1024: return c
+            except Exception: pass
+        return None
     def _mesh_for_node(self, name, node):
         cur=self._proc_current(name, node)          # the version picked on the Process page (or the best available)
         if cur: return cur[2]
@@ -2922,7 +2979,7 @@ class App(ctk.CTk):
         if base=="fuse_mesh.ply": return os.path.basename(os.path.dirname(path))
         if base.startswith(name+"_") and base.endswith(".ply"):
             n=base[len(name)+1:-4]
-            for suf in ("_pcfused","_clean","_cloud"):   # strip version/kind suffix so we return the real node id (matches node_of / _proc_nodes), not "<node>_pcfused"
+            for suf in ("_pcfused","_clean","_cloud","_edited"):   # strip version/kind suffix so we return the real node id (matches node_of / _proc_nodes), not "<node>_pcfused"
                 if n.endswith(suf): n=n[:-len(suf)]
             return n
         return None
@@ -2932,6 +2989,137 @@ class App(ctk.CTk):
         # still image: re-render it now in the chosen mode. (Going through _maybe_schedule_shaded meant the
         # opt-in auto-preview gate could swallow the first toggle, so it "took two clicks" to switch.)
         if self.selected and self._film_sel: self._request_shaded(self.selected, self._film_sel)
+    def _on_preview_tab(self, name):
+        """Sub-tab click: 3D preview | ✏ Edit | Files. Edit has no frame of its own - it reuses the live 3D
+        view (same camera, same object) and just turns on the point tools, so editing feels like the same
+        thing you were looking at, not a separate place."""
+        if name=="✏ Edit":
+            try: self._edit_tab.grid_remove(); self._preview_tab.grid()   # hide the empty Edit frame, keep the live view
+            except Exception: pass
+            self._enter_edit_mode(); return
+        # leaving the Edit tab: if there are unsaved edits (mesh OR points), prompt before dropping them
+        if getattr(self, "_in_edit_mode", False):
+            if getattr(self, "_edit_dirty", False) and not getattr(self, "_edit_saving", False):
+                choice=self._modal("Unsaved edits",
+                                   "You've edited this scan but haven't saved.\nKeep it as a new model, or throw the edits away?",
+                                   [("Keep as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
+                if choice in ("cancel","keep"):
+                    try: self.tabs.set("✏ Edit"); self._edit_tab.grid_remove(); self._preview_tab.grid()   # stay in the editor
+                    except Exception: pass
+                    if choice=="keep": self._edit_keep()   # save, then it lands on 3D Preview itself
+                    return
+                self._edit_dirty=False                     # discard: fall through
+            self._in_edit_mode=False; self._editmode_chrome(False)
+            try: self.mv.set_edit_tool(None); self.edit_bar.place_forget()
+            except Exception: pass
+            try: self.pts_sw.set("Mesh"); self._request_shaded(self.selected, self._film_sel)   # back to the model
+            except Exception: pass
+        if name=="3D Preview":
+            try: self._preview_tab.grid()
+            except Exception: pass
+    def _enter_edit_mode(self):
+        """Enter the Edit tab: same camera/object, show the tools. Edits the built Mesh (cut faces) or the
+        Points (clean + rebuild), per the Edit: switch."""
+        name=self.selected; node=getattr(self, "_film_sel", None)
+        if not (name and node) or node=="combined":
+            self.set_banner("Open a scan first - Edit works on that scan's model or points.", MUT)
+            try: self.tabs.set("3D Preview")
+            except Exception: pass
+            return
+        tgt=self.edit_target_sw.get() if hasattr(self, "edit_target_sw") else "Mesh"
+        if tgt=="Points" and not self._cloud_for_node(name, node):
+            self.set_banner("This scan has no point cloud - editing the model instead.", MUT)
+            try: self.edit_target_sw.set("Mesh")
+            except Exception: pass
+            tgt="Mesh"
+        if tgt=="Mesh" and not self._mesh_for_node(name, node):
+            if self._cloud_for_node(name, node):
+                self.set_banner("No built model yet - editing the points instead.", MUT)
+                try: self.edit_target_sw.set("Points")
+                except Exception: pass
+                tgt="Points"
+            else:
+                self.set_banner("This scan has no model or points to edit yet.", WARN)
+                try: self.tabs.set("3D Preview")
+                except Exception: pass
+                return
+        self._in_edit_mode=True
+        self._editmode_chrome(True)                                    # hide the view switches: this is the editing workspace
+        if tgt=="Points":
+            self.pts_sw.set("Points"); self._view_mode_changed("Points")   # cloud + tools, keeps the camera
+        else:
+            self._enter_mesh_edit(name, node)
+    def _enter_mesh_edit(self, name, node):
+        """Load the scan's current model into the live view and make its FACES editable (cut junk directly)."""
+        mesh=self._mesh_for_node(name, node)
+        if not mesh:
+            self.set_banner("No model to edit for this scan.", WARN); return
+        verkey=(self._proc_current(name, node) or (None,))[0] if node else None
+        key="%s__%s__%s" % (name, node, verkey or "v")
+        src=mesh if not mesh.startswith(PROJECTS) else os.path.join(THUMBS, "view", key+"_fuse_mesh.ply")
+        if not (src and os.path.exists(src)): src=mesh
+        self._edit_ctx=(name, node, mesh); self._edit_dirty=False; self._edit_saving=False; self._edit_orig_n=0; self._edit_cur_n=0
+        for _w in (getattr(self,"edit_keep",None), getattr(self,"edit_discard",None)):
+            try: _w.configure(state="disabled")
+            except Exception: pass
+        self._map_mv_under_still()
+        try: self.mv._keep_view=True
+        except Exception: pass
+        self._mv_key=None; self._mv_loading=True; self._preview_busy("Loading the model to edit")
+        faces=5_000_000   # edit at full detail (don't decimate the model just because you're trimming it)
+        def ready(ok):
+            self._mv_loading=False; self._preview_idle()
+            if not ok:
+                self.big_hint.configure(text="Couldn't load the model to edit (see Help > Log)."); return
+            try: self.big.grid_remove(); self.mv.grid(); self.mv.lift()
+            except Exception: pass
+            for _w in (self.view_nav, self.renders_lbl, self.big_hint):
+                try: _w.lift()
+                except Exception: pass
+            started=False
+            try: started=self.mv.begin_mesh_edit()
+            except Exception as e: log_error("begin-mesh-edit", e)
+            if not started:
+                self.big_hint.configure(text="Couldn't open this model for editing (see Help > Log)."); return
+            try:
+                self._edit_orig_n=int(len(self.mv._medit_faces)); self._edit_cur_n=self._edit_orig_n
+                self.mv.on_points_change=self._edit_points_changed
+                self.mv.set_edit_tool(None); self._set_edit_tool(None, _init=True)
+                self.edit_bar.place(relx=0.5, rely=1.0, y=-8, anchor="s"); self.edit_bar.lift()
+                self.renders_lbl.configure(text="Editing the model")
+                self.big_hint.configure(text="Select the junk and Delete to cut it off · “Keep as model” saves it · Discard reverts")
+            except Exception as e: log_error("mesh-edit-bar", e)
+        try: self.mv.load(src, ready, max_faces=faces)
+        except Exception as e:
+            log_error("mesh-edit-load", e); self._mv_loading=False; self._preview_idle()
+    def _edit_target_changed(self, v):
+        """Edit: Mesh <-> Points. Prompts to keep unsaved edits before reloading the other target."""
+        if not getattr(self, "_in_edit_mode", False): return
+        if getattr(self, "_edit_dirty", False) and not getattr(self, "_edit_saving", False):
+            choice=self._modal("Unsaved edits",
+                               "Keep your current edits before switching what you edit?",
+                               [("Keep as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
+            if choice=="cancel":
+                try: self.edit_target_sw.set("Points" if v=="Mesh" else "Mesh")   # put the switch back
+                except Exception: pass
+                return
+            if choice=="keep":
+                self._edit_keep(); return       # save first; user can switch again after
+            self._edit_dirty=False
+        self._enter_edit_mode()                 # reload the newly-chosen target
+    def _editmode_chrome(self, on):
+        """Editing is its own workspace, so hide the Mesh/Points + Solid/Wireframe VIEW switches while in the
+        Edit tab (Reset view stays). Without this, entering Edit just looked like the Points toggle flipped."""
+        try:
+            if on:
+                self.shade_sw.pack_forget(); self.pts_sw.pack_forget()
+            else:                                                      # restore in original right-to-left order
+                for w in (self.shade_sw, self.pts_sw):
+                    try: w.pack_forget()
+                    except Exception: pass
+                self.shade_sw.pack(side="right")
+                self.pts_sw.pack(side="right", padx=(0,8))
+        except Exception: pass
     def _view_mode_changed(self, v):
         """Mesh <-> Fused points. Points loads the scanner's fused cloud (name_node_cloud.ply) into the
         interactive view, oriented to overlay the mesh, so you can compare the built mesh with what the
@@ -2942,6 +3130,19 @@ class App(ctk.CTk):
             except Exception: pass
             return
         if v!="Points":
+            if getattr(self, "_edit_dirty", False) and not getattr(self, "_edit_saving", False):
+                choice=self._modal("Unsaved point edits",
+                                   "You've cleaned some points but haven't saved them.\nKeep them as a new model, or throw the edits away?",
+                                   [("Keep as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
+                if choice=="cancel":
+                    try: self.pts_sw.set("Points")   # stay in the editor
+                    except Exception: pass
+                    return
+                if choice=="keep":
+                    try: self.pts_sw.set("Points")
+                    except Exception: pass
+                    self._edit_keep(); return       # save + rebuild, then it switches to the new model itself
+                self._edit_dirty=False              # discard: drop the edits and fall through to the mesh
             try: self.mv.set_edit_tool(None); self.edit_bar.place_forget()   # leave edit mode with the points
             except Exception: pass
             # back to the mesh: load it straight into the live view (which is showing points) and swap when
@@ -2966,20 +3167,31 @@ class App(ctk.CTk):
                         try: _w.lift()
                         except Exception: pass
                     self.big_hint.configure(text="Drag to rotate · scroll to zoom · right-drag to pan · double-click to reset")
+                    st=self._mesh_stats.get(key)              # returning from Points: restore the mesh overlay, not the stale "Fused points · scanner"
+                    if st:
+                        try: self._show_stats(st)
+                        except Exception: pass
+                    else:
+                        try: self.renders_lbl.configure(text="3D model")
+                        except Exception: pass
                 else:
                     self._request_shaded(name, node)          # fell over: fall back to the still + normal load
             try: self.mv.load(src, mready, max_faces=faces)
             except Exception as e:
                 log_error("points-to-mesh", e); self._mv_loading=False; self._request_shaded(name, node)
             return
-        cloud=os.path.join(self.dest.get() or DEFAULT_DEST, name, "%s_%s_cloud.ply" % (name, node))
-        if not os.path.exists(cloud):
+        cloud=self._cloud_for_node(name, node)
+        if not cloud:
             self.set_banner("This scan has no fused point cloud on this PC (import the project again to get it).", MUT)
             try: self.pts_sw.set("Mesh")
             except Exception: pass
             return
         self._map_mv_under_still()                             # the GL view must be mapped to upload
         tf=getattr(self.mv, "tf", None)                        # align the points to the mesh if it's loaded
+        self._edit_ctx=(name, node, cloud); self._edit_dirty=False; self._edit_saving=False; self._edit_orig_n=0
+        for _w in (getattr(self,"edit_keep",None), getattr(self,"edit_discard",None)):   # fresh editor: nothing to save yet
+            try: _w.configure(state="disabled")
+            except Exception: pass
         self._mv_key=None                                      # the interactive view now shows points, not the tracked mesh: so toggling back to Mesh actually reloads it (else _mv_start short-circuits and stays on points)
         try: self.mv._keep_view=True                           # show the points at the mesh's current camera, not the default
         except Exception: pass
@@ -2994,16 +3206,25 @@ class App(ctk.CTk):
                     except Exception: pass
                 try: self.renders_lbl.configure(text="Fused points · scanner")
                 except Exception: pass
-                self.big_hint.configure(text="Fused points — pick a tool to clean it, then switch to Mesh · Delete removes the red points")
-                try:
-                    self.mv.on_points_change=self._edit_points_changed; self.mv.set_edit_tool(None)
-                    self._set_edit_tool(None, _init=True)
-                    self.edit_bar.place(relx=0.5, rely=1.0, y=-8, anchor="s"); self.edit_bar.lift()
-                    self._edit_points_changed(self.mv._pts_n if self.mv._pts_n else 0)
-                except Exception as e: log_error("edit-bar", e)
+                if getattr(self, "_in_edit_mode", False):
+                    self.big_hint.configure(text="Select and Delete to clean · then “Keep as model” to save it (holes stay open) · Discard to revert")
+                    try:
+                        self._edit_orig_n=int(self.mv._pts_n or 0); self._edit_cur_n=self._edit_orig_n   # baseline: edits are dirty once we drop below this
+                        self.mv.on_points_change=self._edit_points_changed; self.mv.set_edit_tool(None)
+                        self._set_edit_tool(None, _init=True)
+                        self.edit_bar.place(relx=0.5, rely=1.0, y=-8, anchor="s"); self.edit_bar.lift()
+                        self._edit_points_changed(self.mv._pts_n if self.mv._pts_n else 0)
+                    except Exception as e: log_error("edit-bar", e)
+                else:
+                    # plain Points view (from the 3D Preview toggle): just for comparing mesh vs capture, no tools
+                    try: self.mv.on_points_change=None; self.mv.set_edit_tool(None); self.edit_bar.place_forget()
+                    except Exception: pass
+                    self.big_hint.configure(text="The raw captured points (open the ✏ Edit tab to clean them) · drag to rotate")
             else:
                 self.big_hint.configure(text="Couldn't load the fused points (see Help > Log).")
-        try: self.mv.load_points(cloud, ready, tf=tf)
+        # Load the FULL cloud for editing (not the 400k preview cap), so Delete + Keep act on every point and
+        # the saved model is exact. Fused MIRACO clouds are a few hundred k points; 6M is effectively no cap.
+        try: self.mv.load_points(cloud, ready, tf=tf, max_points=6_000_000)
         except Exception as e:
             log_error("load-points", e); self._mv_loading=False; self._preview_idle()
     def _set_edit_tool(self, tool, _init=False):
@@ -3023,14 +3244,103 @@ class App(ctk.CTk):
         }.get(tool, "Fused points — pick a tool to clean it, then switch to Mesh"))
         except Exception: pass
     def _edit_delete(self):
-        try: self.mv.delete_selected()
-        except Exception as e: log_error("edit-delete", e)
-    def _edit_points_changed(self, n):
-        """Update the editor's live point/selection count (fired by glview after a select or edit)."""
         try:
-            sel=int(self.mv._pts_sel.sum()) if getattr(self.mv, "_pts_sel", None) is not None else 0
-            self.edit_count.configure(text=("%s pts" % _kfmt(n)) + (" · %s selected" % _kfmt(sel) if sel else ""))
+            self.mv.delete_selected()
+            self._edit_sync_dirty()
+        except Exception as e: log_error("edit-delete", e)
+    def _edit_undo(self):
+        try:
+            self.mv.undo_points()
+            self._edit_sync_dirty()
+        except Exception as e: log_error("edit-undo", e)
+    def _edit_sync_dirty(self):
+        """Dirty = fewer points/faces than we loaded. Drives Keep/Discard. Works for both edit targets
+        (mesh mode has _pts_n=0, so we track the count via _edit_cur_n from on_points_change)."""
+        try:
+            n=int(getattr(self, "_edit_cur_n", 0) or 0); orig=int(getattr(self, "_edit_orig_n", 0) or 0)
+            dirty=bool(orig and n<orig and not getattr(self, "_edit_saving", False))
+            self._edit_dirty=dirty
+            st="normal" if dirty else "disabled"
+            for w in (getattr(self,"edit_keep",None), getattr(self,"edit_discard",None)):
+                try: w.configure(state=st)
+                except Exception: pass
         except Exception: pass
+    def _edit_points_changed(self, n):
+        """Live count (fired by glview after a select or edit). n is points or faces per the edit target."""
+        self._edit_cur_n=int(n or 0)
+        try:
+            unit="faces" if getattr(self.mv, "edit_target", "points")=="mesh" else "pts"
+            sel=int(self.mv._pts_sel.sum()) if getattr(self.mv, "_pts_sel", None) is not None else 0
+            orig=int(getattr(self, "_edit_orig_n", 0) or 0)
+            removed=(orig-n) if (orig and n<orig) else 0
+            txt=("%s %s" % (_kfmt(n), unit)) + (" · %s selected" % _kfmt(sel) if sel else "") + (" · %s cut" % _kfmt(removed) if removed else "")
+            self.edit_count.configure(text=txt)
+        except Exception: pass
+        self._edit_sync_dirty()
+    def _edit_discard(self):
+        """Throw away the edits: reload the current target (mesh or points) fresh from disk."""
+        if not getattr(self, "_edit_ctx", None): return
+        self._edit_saving=False; self._edit_dirty=False
+        self._enter_edit_mode()   # honours the Edit: switch, reloads clean (clears undo, resets dirty)
+        self.set_banner("Discarded the edits.", MUT)
+    def _edit_keep(self):
+        """Save the edit as a new 'cleaned model' version. Mesh target: write the trimmed model as-is (no
+        rebuild). Points target: rebuild a mesh from the cleaned cloud (ball-pivot keeps openings)."""
+        ctx=getattr(self, "_edit_ctx", None)
+        if not ctx or getattr(self, "_edit_saving", False): return
+        name,node,_=ctx
+        is_mesh=(getattr(self.mv, "edit_target", "points")=="mesh")
+        payload=None
+        if is_mesh:
+            try: payload=self.mv.mesh_world()
+            except Exception as e: log_error("edit-keep-mesh", e)
+            if payload is None or payload[1] is None or len(payload[1])<1:
+                self.set_banner("Nothing left to save.", WARN); return
+        else:
+            pts=None
+            try: pts=self.mv.points_world()
+            except Exception as e: log_error("edit-keep-points", e)
+            if pts is None or len(pts)<100:
+                self.set_banner("Not enough points left to build a model.", WARN); return
+            import numpy as np
+            payload=np.ascontiguousarray(pts, dtype=np.float64)
+        self._edit_saving=True; self._edit_sync_dirty()
+        try: self.edit_keep.configure(state="disabled", text="Saving…" if is_mesh else "Building…")
+        except Exception: pass
+        self._preview_busy("Saving the edited model" if is_mesh else "Rebuilding the model from your cleaned points")
+        local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
+        out=os.path.join(local, "%s_%s_edited.ply" % (name, node))
+        def work():
+            try:
+                if is_mesh:
+                    import trimesh
+                    verts,faces=payload
+                    m=trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+                    tmp=out+".tmp.ply"; m.export(tmp); os.replace(tmp, out)
+                else:
+                    _rebuild_mesh_from_points(payload, out)
+                ok=(os.path.exists(out) and os.path.getsize(out)>1024)
+                err=None if ok else "empty result"
+            except Exception as e:
+                ok=False; err=str(e); log_error("edit-keep-save", e)
+            self.q.put(("call", lambda: self._edit_keep_done(name, node, out, ok, err)))
+        threading.Thread(target=work, daemon=True).start()
+    def _edit_keep_done(self, name, node, out, ok, err):
+        self._edit_saving=False; self._preview_idle()
+        try: self.edit_keep.configure(text="✓ Keep as model")
+        except Exception: pass
+        if not ok:
+            self._edit_sync_dirty()
+            self.set_banner("Couldn't save the edited model (%s). Your edits are still on screen." % (err or "see Help > Log"), WARN); return
+        self._mesh_stats={}; self.gallery_cache.pop(name, None); self.projects_sig=None
+        self.set_banner("Saved a cleaned model of %s. Showing it now." % self._scan_label(name, node), OK)
+        self._edit_dirty=False; self._in_edit_mode=False; self._editmode_chrome(False)
+        try: self.mv.set_edit_tool(None); self.edit_bar.place_forget()   # leave edit mode; we're switching to the rebuilt Mesh
+        except Exception: pass
+        try:
+            if self.tabs.get()=="✏ Edit": self.tabs.set("3D Preview"); self._preview_tab.grid()   # land on the finished model
+        except Exception: pass
+        self._proc_set_current(name, node, "edited")   # switches the shown model to the rebuilt one (Mesh view)
     def _reset_view(self, _=None):
         """Reset the live 3D view to its default angle and zoom (same as double-clicking the model)."""
         try:
@@ -3112,6 +3422,16 @@ class App(ctk.CTk):
         """Show the cached shaded render for this scan, or queue one. Never blocks the UI thread."""
         try: self.pts_sw.set("Mesh")   # showing the mesh (or its still): the Points toggle reflects that
         except Exception: pass
+        if not node:                    # resolve the scan so we honour the TICKED version, not just the biggest file
+            node=self._film_sel if (self._film_sel and self._film_sel!="combined") else None
+            if not node:
+                try:
+                    ns=self._proc_nodes(name)
+                    if len(ns)==1: node=ns[0]   # single scan: the version chip and the preview must agree
+                except Exception: pass
+        # honour the picked version (_mesh_for_node -> _proc_current) whenever we know the scan; _find_mesh
+        # (largest file) was showing the sealed scanner model even when "prepared copy" was ticked - the
+        # "first load sealed, toggle to points and back shows the holey one" bug (2026-09-16).
         mesh=self._mesh_for_node(name, node) if node else self._find_mesh(name)
         if not mesh:
             # genuinely no fused mesh (only raw frames). Clear the interactive target so clicking the
@@ -3554,6 +3874,11 @@ class App(ctk.CTk):
             opts=clean_opts if clean_opts is not None else self._clean_options()
             r=self._run_child([_sys.executable, os.path.join(HERE, "process.py"), src, out]+self._clean_args_from(opts),
                               timeout=1800, env=env)
+            self._last_clean_warnings=[]
+            try:
+                for ln in (r.stdout or "").splitlines():
+                    if ln.startswith("STAGE done "): self._last_clean_warnings=list(json.loads(ln[11:]).get("warnings") or [])
+            except Exception: pass
             if r.returncode==0 and os.path.exists(out) and os.path.getsize(out)>1024: return True
             log_line("clean %s failed (rc=%s): %s" % (os.path.basename(src), r.returncode, ((r.stdout or "")+(r.stderr or ""))[-400:]))
         except Exception as e: log_error("clean "+os.path.basename(src), e)
@@ -3967,14 +4292,15 @@ class App(ctk.CTk):
         for f in glob.glob(os.path.join(local, name+"_*.ply")):
             if f.endswith(".tmp.ply"): continue      # a Prepare temp file mid-write, not a scan node
             n=os.path.basename(f)[len(name)+1:-4]
-            for suf in ("_cloud","_pcfused","_clean"):
+            for suf in ("_cloud","_pcfused","_clean","_edited"):
                 if n.endswith(suf): n=n[:-len(suf)]
             nodes.add(n)
         return sorted(nodes)
     def _proc_versions(self, name, node):
         """The model files a scan has on this PC: [(key, label, path)] in default preference order."""
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name); out=[]
-        for key,label,cands in (("clean","prepared copy",[os.path.join(local,"%s_%s_clean.ply"%(name,node)), os.path.join(local,"%s_%s_pcfused_clean.ply"%(name,node))]),
+        for key,label,cands in (("edited","cleaned model",[os.path.join(local,"%s_%s_edited.ply"%(name,node))]),
+                                ("clean","prepared copy",[os.path.join(local,"%s_%s_clean.ply"%(name,node)), os.path.join(local,"%s_%s_pcfused_clean.ply"%(name,node))]),
                                 ("scanner","the scanner's model",[os.path.join(local,"%s_%s.ply"%(name,node)), os.path.join(local,"data",node,"fuse_mesh.ply")]),
                                 ("pcfused","PC build (from raw data)",[os.path.join(local,"%s_%s_pcfused.ply"%(name,node))])):
             for c in cands:
@@ -3987,10 +4313,22 @@ class App(ctk.CTk):
         want=self.records.get(name,{}).get("current",{}).get(node)
         for v in vs:
             if v[0]==want: return v
+        # No explicit pick: anchor on the scanner's model (the device's sealed, nicest result) so a fresh
+        # open shows ONE coherent model that matches the thumbnail and the fused points - NOT the holey
+        # prepared copy just because it sorts first. The prepared / PC-build versions are alternatives you
+        # switch to on purpose. Coherence fix 2026-09-16: "going back and seeing the other one feels like
+        # you're editing something else."
+        for v in vs:
+            if v[0]=="scanner": return v
         return vs[0]
+    def _toggle_alt_versions(self, node):
+        s=getattr(self, "_alt_ver_open", set())
+        s.discard(node) if node in s else s.add(node)
+        self._alt_ver_open=s
+        self._schedule_panel_refresh(10)
     def _proc_set_current(self, name, node, key):
         self.records.setdefault(name,{}).setdefault("current",{})[node]=key; self._persist(); self._mesh_stats={}
-        label={"clean":"prepared copy","scanner":"scanner's model","pcfused":"PC build"}.get(key,key)
+        label={"clean":"prepared copy","scanner":"scanner's model","pcfused":"PC build","edited":"cleaned model"}.get(key,key)
         if self.selected==name:
             self._film_sel=node; self._mv_key=None
             self.set_banner("Now showing the %s of %s." % (label, self._scan_label(name, node)), MUT)
@@ -4019,7 +4357,7 @@ class App(ctk.CTk):
             self.q.put(("call", lambda: done(ok)))
         threading.Thread(target=_run, daemon=True).start()
     def _proc_delete_version(self, name, node, key, path):
-        if not self._confirm("Delete this version?", "%s: the %s version of scan %s goes to the trash.\nOther versions and the raw data stay." % (self.disp(name), dict(clean="prepared copy", scanner="scanner's model", pcfused="PC build")[key], node)): return
+        if not self._confirm("Delete this version?", "%s: the %s version of scan %s goes to the trash.\nOther versions and the raw data stay." % (self.disp(name), dict(clean="prepared copy", scanner="scanner's model", pcfused="PC build", edited="cleaned model")[key], node)): return
         self.set_status("Moving to the trash…")
         def _done(ok):
             self.set_status("")
@@ -4403,16 +4741,34 @@ class App(ctk.CTk):
                 ctk.CTkLabel(hdr, text=(("Marked: no base to cut ✓" if pl.get("skip") else "Base removed ✓ — reapplied when combining") if hasp else "Base not cut yet"), text_color=(OK if hasp else WARN), font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=12)
             ctk.CTkFrame(hdr, fg_color="transparent", height=8).pack()
             if vs:
-                ctk.CTkLabel(pp, text="Versions: the scanner's model (One-tap on the device), the PC build (from raw data), a prepared copy. Tick the one to use.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=230).pack(fill="x", padx=6, pady=(8,2))
-                for key,label,path in vs:
-                    is_cur=(cur and cur[0]==key)
-                    chip=ctk.CTkFrame(pp, fg_color=("#15304d" if is_cur else CARD2), corner_radius=9); chip.pack(fill="x", padx=6, pady=2)
-                    b=ctk.CTkButton(chip, text=("✓ " if is_cur else "")+label+"  ·  "+human(os.path.getsize(path)), height=24, corner_radius=9, fg_color="transparent", hover_color=STROKE, anchor="w",
-                                    text_color=(AC if is_cur else TX), font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key: self._proc_set_current(n, nd, k)); b.pack(side="left", fill="x", expand=True, padx=(6,0))
-                    self._tip(b, ("This is the version the preview and exports use." if is_cur else "Click to make this the version the preview and exports use. Nothing is changed or deleted.")+"\n"+os.path.basename(path))
-                    x=ctk.CTkButton(chip, text="✕", width=24, height=24, corner_radius=9, fg_color="transparent", hover_color="#3a2530", text_color=MUT, font=ctk.CTkFont(size=11),
-                                    command=lambda n=name,nd=node,k=key,pth=path: self._proc_delete_version(n, nd, k, pth)); x.pack(side="right", padx=(0,5))
-                    self._tip(x, "Delete this version (asks first; it goes to the trash)")
+                # One model, shown plainly - the scan rides on ONE identity so the preview, points and
+                # export never feel like different objects. Extra versions hide behind "Other versions".
+                def _sz(pth):
+                    try: return "  ·  "+human(os.path.getsize(pth))
+                    except Exception: return ""
+                if cur:
+                    ck,clabel,cpath=cur
+                    mchip=ctk.CTkFrame(pp, fg_color="#15304d", corner_radius=9); mchip.pack(fill="x", padx=6, pady=(8,2))
+                    ml=ctk.CTkLabel(mchip, text="Model:  "+clabel+_sz(cpath), height=26, anchor="w", text_color=AC, font=ctk.CTkFont(size=12, weight="bold"))
+                    ml.pack(side="left", fill="x", expand=True, padx=(10,0), pady=3)
+                    self._tip(ml, "The one model this scan uses everywhere (preview, points, export): %s" % os.path.basename(cpath))
+                others=[(k,l,p) for (k,l,p) in vs if not (cur and k==cur[0])]
+                if others:
+                    alt_open=node in getattr(self, "_alt_ver_open", set())
+                    tgl=ctk.CTkButton(pp, text=("Hide other versions ▴" if alt_open else "Other versions (%d) ▾" % len(others)),
+                                      height=22, corner_radius=8, fg_color="transparent", hover_color=CARD2, border_width=0,
+                                      text_color=MUT, font=ctk.CTkFont(size=11), anchor="w",
+                                      command=lambda nd=node: self._toggle_alt_versions(nd)); tgl.pack(fill="x", padx=6, pady=(0,2))
+                    self._tip(tgl, "Other builds of this same scan. Switch only if you want a different one for export.")
+                    if alt_open:
+                        for key,label,path in others:
+                            chip=ctk.CTkFrame(pp, fg_color=CARD2, corner_radius=9); chip.pack(fill="x", padx=6, pady=2)
+                            b=ctk.CTkButton(chip, text=label+_sz(path), height=24, corner_radius=9, fg_color="transparent", hover_color=STROKE, anchor="w",
+                                            text_color=TX, font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key: self._proc_set_current(n, nd, k)); b.pack(side="left", fill="x", expand=True, padx=(6,0))
+                            self._tip(b, "Make this the model this scan uses. Nothing is changed or deleted.\n"+os.path.basename(path))
+                            x=ctk.CTkButton(chip, text="✕", width=24, height=24, corner_radius=9, fg_color="transparent", hover_color="#3a2530", text_color=MUT, font=ctk.CTkFont(size=11),
+                                            command=lambda n=name,nd=node,k=key,pth=path: self._proc_delete_version(n, nd, k, pth)); x.pack(side="right", padx=(0,5))
+                            self._tip(x, "Delete this version (asks first; it goes to the trash)")
             else: ctk.CTkLabel(pp, text="No 3D model yet", text_color=WARN, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6, pady=(6,0))
             combined_exists=("combined" in nodes and node!="combined")
             primary="build" if (raw and not vs) else ("cut" if (vs and node!="combined" and node not in self._base_planes(name)) else (None if combined_exists else ("prepare" if (vs and not has_prep) else ("export" if vs else None))))
@@ -4439,7 +4795,8 @@ class App(ctk.CTk):
         act("⇆  Compare versions…", lambda: self._compare_dialog(name), "Two 3D views side by side, any scan or version in each, turning together.")
         act("⧉  Combine scans…", lambda: self._align_dialog(name), "Scanned each side separately? Line the scans up and build one model from all of them.")
         act("⚙  Build all models", self.on_process_pc, "Build the 3D model of every scan that has raw data.")
-        act("▤  All scans as cards…", lambda: self._set_mode("Process"), "The detail page: every scan with its versions and actions.")
+        # "All scans as cards…" removed 2026-09-16: it was a near-empty duplicate of this page (hero +
+        # filmstrip + these same actions already live here). Build detail lives in Settings.
         act("🗑  Delete project from this PC", self._proc_delete_project, "Everything in its folder goes to the trash. The scanner copy is not touched.", danger=True)
     def _proc_progress(self, node, frac, text):
         r=self._proc_rows.get(node)
@@ -4705,7 +5062,11 @@ class App(ctk.CTk):
                         st=None
                         try: st=os.path.getsize(tmp)
                         except Exception: pass
-                        status.configure(text="Done: %s → %s. Turn the views to compare, then Save prepared version or Discard." % (human(os.path.getsize(src)), human(st or 0)), text_color=TX)
+                        warn=getattr(self, "_last_clean_warnings", None)
+                        if warn:
+                            status.configure(text="Done, but %s didn't run (see Help > Log). %s → %s. Compare, then Save or Discard." % (" and ".join(warn), human(os.path.getsize(src)), human(st or 0)), text_color=WARN)
+                        else:
+                            status.configure(text="Done: %s → %s. Turn the views to compare, then Save prepared version or Discard." % (human(os.path.getsize(src)), human(st or 0)), text_color=TX)
                         show(1, tmp, "Loading the result…"); keepb.pack(side="right", padx=6); discb.pack(side="right", padx=6)
                     else: status.configure(text="Could not prepare this scan (see Help > Log).", text_color=WARN); loads[1].configure(text="No result")
                 self.q.put(("call", done))
@@ -6463,7 +6824,9 @@ class App(ctk.CTk):
         for node in self._proc_nodes(name):
             cur=self._proc_current(name, node)
             if cur and cur[2] and os.path.exists(cur[2]): out.append(cur[2])
-        return sorted(set(out)) or self._project_meshes(base, name)
+        # No silent fall-back to every version: if a "current" scope resolves nothing, the caller reports an
+        # empty export rather than quietly shipping ALL versions the user didn't ask for (2026-09-16 review).
+        return sorted(set(out))
     def _zip_worker(self, sel, dest, mode, scope="current"):
         import zipfile
         # everything is inside the try, incl. makedirs: a bad destination must post a zipfail and clear
@@ -6518,7 +6881,8 @@ class App(ctk.CTk):
                             fp=os.path.join(root,f); files.append((fp, os.path.join(name, os.path.relpath(fp, base))))
             if not files:
                 self.q.put(("zipfail", ("%d conversion(s) failed, nothing to zip - see Help > Log" % zfails) if zfails
-                            else "no matching files (try importing with that format first)")); return
+                            else ("no current model version to export - pick a model for each scan, or choose All versions" if scope=="current"
+                                  else "no matching files (try importing with that format first)"))); return
             total=len(files)
             with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
                 for i,(fp,arc) in enumerate(files):
