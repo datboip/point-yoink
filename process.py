@@ -230,23 +230,30 @@ def main():
                 except Exception as e:
                     warnings.append("hole fill"); emit("warn", step="fill-holes-fallback", err=str(e)[:200])
         if a.smooth_times > 0:
+            # Save the pre-smoothing vertices and a length scale, so we can undo the runaways (below).
+            V0 = np.asarray(m.vertices, dtype=np.float64).copy()
+            try:
+                F0 = np.asarray(m.faces)
+                el = np.linalg.norm(V0[F0[:, [0, 1, 2]]] - V0[F0[:, [1, 2, 0]]], axis=2)
+                med_edge = float(np.median(el)) if el.size else 0.0
+            except Exception: med_edge = 0.0
             try: trimesh.smoothing.filter_humphrey(m, iterations=int(a.smooth_times))
             except Exception as e:
                 warnings.append("smoothing"); emit("warn", step="smooth", err=str(e)[:200])
             # Humphrey/Laplacian smoothing is unstable on these open-boundary scan meshes: it drags a few
-            # percent of vertices far off the surface, spawning long sliver triangles that render as
-            # "shredded" garbage (measured max edge 97 vs a 0.27 median on a real scan; even 1 pass does it,
-            # and pinning the boundary does not stop it). The slivers are a runaway artifact, not surface, so
-            # drop any face with an edge far above the median. Guard so a mesh with no slivers is untouched.
+            # percent of vertices far off the surface (measured displacement up to ~100x the median edge).
+            # The OLD fix DELETED the resulting sliver faces, which tore holes and lost real geometry. Instead,
+            # REVERT only the runaway vertices to where they were before smoothing: topology is untouched (no
+            # faces removed, no holes), while the well-behaved 97% keep their smoothing.
             try:
-                V = np.asarray(m.vertices); F = np.asarray(m.faces)
-                if len(F):
-                    emax = np.linalg.norm(V[F[:, [0, 1, 2]]] - V[F[:, [1, 2, 0]]], axis=2).max(axis=1)
-                    keep = emax < float(np.median(emax)) * 8.0
-                    if 0 < keep.sum() < len(F):
-                        m = trimesh.Trimesh(V, F[keep], process=False); m.remove_unreferenced_vertices()
-                        emit("desliver", dropped=int(len(F) - int(keep.sum())), faces=len(m.faces))
-            except Exception: pass
+                V = np.asarray(m.vertices, dtype=np.float64)
+                if med_edge > 0 and len(V) == len(V0):
+                    bad = np.linalg.norm(V - V0, axis=1) > med_edge * 3.0   # a real smoothing step moves << one edge; 3x is a wide margin
+                    if bad.any():
+                        V[bad] = V0[bad]; m.vertices = V                    # pin the runaways back, keep every face
+                        emit("desliver", reverted=int(bad.sum()), faces=len(m.faces))
+            except Exception as e:
+                emit("warn", step="desliver", err=str(e)[:200])
         if 0 < a.simplify_pct < 100:
             import fast_simplification
             v, f = fast_simplification.simplify(np.asarray(m.vertices, np.float32), np.asarray(m.faces, np.int32), target_reduction=1.0 - a.simplify_pct / 100.0)

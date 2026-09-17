@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.145-pre"
+APP = "PointYoink"; VERSION = "0.9.147-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3277,6 +3277,9 @@ class App(ctk.CTk):
         for t,b in getattr(self, "_edit_tool_btns", {}).items():
             try: b.configure(fg_color=(AC if t==tool else "transparent"), text_color=("#04121f" if t==tool else TX))
             except Exception: pass
+        if tool=="magic" and not _init:   # Magic needs scipy for a true connected-region grow; say so if it's missing
+            try: import scipy.spatial  # noqa: F401
+            except Exception: self.set_banner("Magic is limited without SciPy (it grabs a radius, not the connected region). Install python3-scipy for the full tool.", WARN)
         try: self.big_hint.configure(text={
             "lasso":"Lasso: trace around points to select · Shift adds, Ctrl removes · then Delete",
             "rect":"Box: drag a rectangle to select · Shift adds, Ctrl removes · then Delete",

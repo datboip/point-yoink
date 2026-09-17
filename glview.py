@@ -77,6 +77,7 @@ class GLView(OpenGLFrame):
         self.edit_target = "points"    # "points" (clean cloud -> rebuild) or "mesh" (delete faces on the built model, no rebuild)
         self._medit_faces = None; self._medit_undo = []; self._selfbo = None; self._sel_face_n = 0   # mesh face editing: faces, undo, selected-face overlay buffer
         self.visible_only = False      # selection: True = only what faces the camera (depth-tested); False = select through (default keeps old behaviour)
+        self._magic_degraded = False   # set True if Magic had to fall back to a plain ball (no scipy)
         self._depth_buf = None; self._depth_valid = False   # cached GL depth buffer for visible-only; invalidated on camera/geometry change
         self._keep_view = False        # set True before a load to keep the current camera (Mesh<->Points toggles in place)
         self.edit_tool = None          # None = orbit; "lasso"/"rect"/"brush"/"magic" = drag selects points instead of rotating
@@ -343,8 +344,7 @@ class GLView(OpenGLFrame):
         try:
             _, _, vw, vh = self._vp; vw = int(vw); vh = int(vh)
             buf = GL.glReadPixels(0, 0, vw, vh, GL.GL_DEPTH_COMPONENT, GL.GL_FLOAT)
-            self._depth_buf = np.frombuffer(buf, dtype=np.float32).reshape(vh, vw)
-            self._depth_valid = True
+            self._depth_buf = np.asarray(buf, dtype=np.float32).reshape(vh, vw); self._depth_valid = True
         except Exception:
             self._depth_buf = None; self._depth_valid = False
     def _visible_mask(self, scr, front, winz):
@@ -357,7 +357,12 @@ class GLView(OpenGLFrame):
             px = np.clip(scr[:, 0].astype(np.int32), 0, vw - 1)
             py = np.clip((vh - scr[:, 1]).astype(np.int32), 0, vh - 1)   # Tk top-left y -> GL bottom-left row
             nearest = db[py, px]
-            return front & (winz <= nearest + 0.0025)                    # small tolerance so the front surface itself counts
+            # Perspective crushes the whole model into a tiny depth window near 1.0, so a fixed tolerance lets
+            # the back through. Scale it to the model's own on-screen depth span instead.
+            fw = winz[front]
+            zr = float(fw.max() - fw.min()) if fw.size else 0.0
+            tol = max(zr * 0.02, 1e-6)
+            return front & (winz <= nearest + tol)                       # keep the front surface (winz ~= nearest); drop what's behind it
         except Exception:
             return front
     def set_visible_only(self, on):
@@ -482,17 +487,28 @@ class GLView(OpenGLFrame):
         else: self._pts_sel[grown] = True
         self._pts_recolor(); self._display()
     def _region_grow(self, seed):
-        """Connected points within magic_thresh of the growing set, from a seed. KDTree BFS, capped."""
+        """Connected points near the growing set, from a seed. The step size ADAPTS to the cloud's own point
+        spacing (not a fixed constant), so Magic behaves the same on dense and sparse scans. KDTree BFS, capped."""
         pts = self._pts_v
         try:
             from scipy.spatial import cKDTree
         except Exception:
-            d = np.linalg.norm(pts - pts[seed], axis=1)      # no scipy: a plain ball around the seed
-            return np.where(d <= self.magic_thresh * 5)[0]
-        tree = cKDTree(pts); thr = float(self.magic_thresh)
-        visited = np.zeros(len(pts), dtype=bool); visited[seed] = True
-        frontier = [seed]; cap = min(len(pts), 300000)
-        for _ in range(200):                                  # cap iterations so a runaway grow can't hang
+            # no scipy on this machine: fall back to a plain ball around the seed. That is NOT a connected-region
+            # grow, so flag it - the app tells the user Magic is degraded here.
+            self._magic_degraded = True
+            d = np.linalg.norm(pts - pts[seed], axis=1)
+            return np.where(d <= (self.magic_thresh or 0.02) * 8)[0]
+        self._magic_degraded = False
+        tree = cKDTree(pts); n = len(pts)
+        # spacing = median distance to the nearest OTHER point (from a sample); a grow step spans a few of those
+        samp = pts if n <= 4000 else pts[np.random.RandomState(0).choice(n, 4000, replace=False)]
+        try:
+            dd, _ = tree.query(samp, k=2); spacing = float(np.median(dd[:, 1])) if dd.ndim > 1 and dd.shape[1] > 1 else 0.0
+        except Exception: spacing = 0.0
+        thr = spacing * 3.0 if spacing > 0 else float(self.magic_thresh)
+        visited = np.zeros(n, dtype=bool); visited[seed] = True
+        frontier = [seed]; cap = min(n, 300000)
+        for _ in range(400):                                  # cap iterations so a runaway grow can't hang
             if not frontier: break
             nbrs = tree.query_ball_point(pts[frontier], thr)
             nxt = []
