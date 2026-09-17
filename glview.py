@@ -72,6 +72,8 @@ class GLView(OpenGLFrame):
         self._drag = None; self._gen = 0; self._pending = None; self._n = 0; self._vbo = None
         self._nw = 0; self._src = None; self._wire_gen = None    # set again by _upload; must exist before the first upload (Wireframe clicked early)
         self._pvbo = None; self._pts_n = 0; self._pending_pts = None   # point-cloud view (Fused points): separate, additive path; never touches the mesh draw
+        self._pcvbo = None; self._pts_v = None; self._pts_sel = None; self._pts_undo = []   # point editing: colour vbo, view-space points, selection mask, undo stack
+        self.on_points_change = None                                   # callback(kept_count) after an edit, for the editor UI
         self.animate = 0
         self.tf = None                         # orientation transform of the loaded mesh (shade.load_oriented_tf)
         self.markers = []                      # [(xyz in view coords, (r,g,b))] drawn as dots
@@ -215,11 +217,18 @@ class GLView(OpenGLFrame):
         if not self._mapped(): self._pending_pts = (v, on_ready); return
         try:
             self.tkMakeCurrent()
-            if self._pvbo is not None:
-                try: GL.glDeleteBuffers(1, [int(self._pvbo)])
-                except Exception: pass
+            for _b in ("_pvbo", "_pcvbo"):
+                if getattr(self, _b, None) is not None:
+                    try: GL.glDeleteBuffers(1, [int(getattr(self, _b))])
+                    except Exception: pass
+                    setattr(self, _b, None)
             self._pvbo = int(GL.glGenBuffers(1))
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._pvbo); GL.glBufferData(GL.GL_ARRAY_BUFFER, v.nbytes, v, GL.GL_STATIC_DRAW)
+            self._pts_v = v                                   # keep the view-space points for selection/edit
+            self._pts_sel = np.zeros(len(v), dtype=bool)      # per-point selection mask
+            self._pts_undo = []                               # stack of prior point arrays for Undo
+            self._pcvbo = int(GL.glGenBuffers(1))             # per-point colour (blue, red where selected)
+            self._pts_recolor()                               # fills _pcvbo from _pts_sel
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
             self._pts_n = int(len(v)); self._n = 0            # points mode: mesh branch stays off
             self._zmax = float(v[:, 2].max()) if len(v) else 0.0; self._src = None
@@ -228,6 +237,94 @@ class GLView(OpenGLFrame):
         except Exception as e:
             self.failed = True; self._err = e
             (on_ready and on_ready(False))
+    # ---- point editing (select / delete / undo) ----
+    def _pts_recolor(self):
+        """Per-point colour VBO from _pts_sel: blue normally, red where selected."""
+        if self._pts_v is None or self._pcvbo is None: return
+        col = np.empty((len(self._pts_v), 3), dtype=np.float32); col[:] = (0.36, 0.66, 1.0)
+        if self._pts_sel is not None and self._pts_sel.any(): col[self._pts_sel] = (1.0, 0.28, 0.30)
+        try:
+            self.tkMakeCurrent()
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._pcvbo); GL.glBufferData(GL.GL_ARRAY_BUFFER, col.nbytes, col, GL.GL_STATIC_DRAW)
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
+        except Exception: pass
+    def _project_all(self):
+        """Screen (x,y) in Tk top-left coords for every point, plus an in-front mask. Vectorised, with a
+        one-point gluProject check so it is right whatever matrix layout PyOpenGL hands back."""
+        if self._pts_v is None or not len(self._pts_v) or getattr(self, "_mv_m", None) is None: return None
+        try:
+            mv = np.asarray(self._mv_m, dtype=np.float64); pj = np.asarray(self._pj_m, dtype=np.float64)
+            _, _, vw, vh = self._vp
+            P = np.column_stack([self._pts_v.astype(np.float64), np.ones(len(self._pts_v))])
+            def run(m, p):
+                clip = (P @ m) @ p; w = clip[:, 3].copy(); w[np.abs(w) < 1e-12] = 1e-12
+                ndc = clip[:, :3] / w[:, None]
+                sx = (ndc[:, 0] * 0.5 + 0.5) * vw; sy = (0.5 - ndc[:, 1] * 0.5) * vh
+                return np.column_stack([sx, sy]), (w > 0)
+            scr, front = run(mv, pj)
+            # calibrate against gluProject on the first point; if the vectorised result is off, transpose
+            try:
+                p0 = self._pts_v[0]; gx, gy, _ = GLU.gluProject(float(p0[0]), float(p0[1]), float(p0[2]), self._mv_m, self._pj_m, self._vp)
+                if abs(scr[0, 0] - gx) + abs(scr[0, 1] - (vh - gy)) > 4.0:
+                    scr, front = run(mv.T, pj.T)
+            except Exception: pass
+            return scr, front
+        except Exception:
+            return None
+    @staticmethod
+    def _in_poly(pts, poly):
+        """Vectorised crossing-number point-in-polygon. pts: Nx2, poly: Mx2. Returns bool N."""
+        x = pts[:, 0]; y = pts[:, 1]; inside = np.zeros(len(pts), dtype=bool)
+        n = len(poly); j = n - 1
+        for i in range(n):
+            xi, yi = poly[i]; xj, yj = poly[j]
+            cond = ((yi > y) != (yj > y)) & (x < (xj - xi) * (y - yi) / ((yj - yi) + 1e-12) + xi)
+            inside ^= cond; j = i
+        return inside
+    def select_region(self, polygon, mode="replace", front_only=True):
+        """Select points whose screen projection is inside polygon (list of (x,y) Tk coords). mode:
+        replace / add / subtract. front_only drops points facing away/behind (w<=0)."""
+        if self._pts_v is None or self._pts_sel is None: return 0
+        pr = self._project_all()
+        if pr is None: return 0
+        scr, front = pr
+        hit = self._in_poly(scr, np.asarray(polygon, dtype=float))
+        if front_only: hit &= front
+        if mode == "add": self._pts_sel |= hit
+        elif mode == "subtract": self._pts_sel &= ~hit
+        else: self._pts_sel = hit
+        self._pts_recolor(); self._display()
+        return int(self._pts_sel.sum())
+    def clear_selection(self):
+        if self._pts_sel is not None: self._pts_sel[:] = False; self._pts_recolor(); self._display()
+    def invert_selection(self):
+        if self._pts_sel is not None: self._pts_sel = ~self._pts_sel; self._pts_recolor(); self._display()
+    def delete_selected(self):
+        """Remove selected points. Pushes the current cloud to the undo stack first."""
+        if self._pts_v is None or self._pts_sel is None or not self._pts_sel.any(): return
+        self._pts_undo.append(self._pts_v.copy())
+        if len(self._pts_undo) > 12: self._pts_undo.pop(0)
+        keep = ~self._pts_sel
+        self._pts_v = np.ascontiguousarray(self._pts_v[keep]); self._reupload_points()
+    def undo_points(self):
+        if not self._pts_undo: return
+        self._pts_v = self._pts_undo.pop(); self._reupload_points()
+    def _reupload_points(self):
+        """Re-push _pts_v after an edit and refresh selection/colours."""
+        try:
+            self.tkMakeCurrent()
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._pvbo); GL.glBufferData(GL.GL_ARRAY_BUFFER, self._pts_v.nbytes, self._pts_v, GL.GL_STATIC_DRAW)
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
+            self._pts_n = int(len(self._pts_v)); self._pts_sel = np.zeros(self._pts_n, dtype=bool)
+            self._pts_recolor(); self._display()
+            if callable(self.on_points_change): self.on_points_change(self._pts_n)
+        except Exception as e:
+            self._err = e
+    def points_world(self):
+        """Current edited points back in the scan's own mm coordinates (for saving / re-meshing)."""
+        if self._pts_v is None or self.tf is None: return None
+        try: return shade.view_to_world(self._pts_v.astype(np.float64), self.tf)
+        except Exception: return None
     def _upload_wire(self, wv, wf):
         GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[3]); GL.glBufferData(GL.GL_ARRAY_BUFFER, wv.nbytes, wv, GL.GL_STATIC_DRAW)
         GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[4]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, wf.nbytes, wf, GL.GL_STATIC_DRAW)
@@ -294,10 +391,16 @@ class GLView(OpenGLFrame):
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0); GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
             GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
         if self._pts_n and self._pvbo is not None:      # Fused-points view (drawn instead of the mesh)
-            GL.glDisable(GL.GL_LIGHTING); GL.glColor3f(0.36, 0.66, 1.0); GL.glPointSize(2.0)
+            GL.glDisable(GL.GL_LIGHTING); GL.glPointSize(2.0)
             GL.glEnableClientState(GL.GL_VERTEX_ARRAY)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._pvbo); GL.glVertexPointer(3, GL.GL_FLOAT, 0, None)
+            if self._pcvbo is not None:                 # per-point colour (red = selected for editing)
+                GL.glEnableClientState(GL.GL_COLOR_ARRAY)
+                GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._pcvbo); GL.glColorPointer(3, GL.GL_FLOAT, 0, None)
+            else:
+                GL.glColor3f(0.36, 0.66, 1.0)
             GL.glDrawArrays(GL.GL_POINTS, 0, self._pts_n)
+            if self._pcvbo is not None: GL.glDisableClientState(GL.GL_COLOR_ARRAY)
             GL.glDisableClientState(GL.GL_VERTEX_ARRAY); GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
             GL.glPointSize(1.0); GL.glEnable(GL.GL_LIGHTING)
         for L in self.layers:                  # tinted overlays (another scan, for alignment checks)
