@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.174-pre"
+APP = "PointYoink"; VERSION = "0.9.175-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -5074,7 +5074,8 @@ class App(ctk.CTk):
             ("scanner-onetap-edit",)),
            ("Cut base", "cut-base", "Every scan carries the table under the part. Drag one line above it and apply. The cut is remembered for that scan and applied again when scans are combined, so the table never gets fused in.", ()),
            ("Combine", "combine", "Scanned each side separately? Pick a base scan, click three to five matching spots on it and on another scan, Line up, check the orange overlay, Keep. Repeat for each side, then Build one model from all their frames at once. Your points stay editable.", ()),
-           ("Prepare", "prepare", "Remove floating pieces, smooth, fill small holes, reduce triangles. It runs on a copy and shows before and after; Keep or Discard. Once Combined exists, prepare that one.", ()),
+           ("Prepare", "prepare", "Remove floating pieces, smooth, fill small holes, reduce triangles. It runs on a copy and shows before and after; Keep or Discard. Once Combined exists, prepare that one.",
+            ("scanner-isolation", "scanner-smooth")),
            ("Export", "export", "Pick the version, the format (STL for slicers, OBJ, GLB, PLY) and the folder. The size and a mesh check are shown first: open edges are gaps in the surface; separate pieces are disconnected chunks (not the same thing).", ()))
     def _when_ready(self, fn):
         """Run fn once the splash is gone and the main window is on screen. A dialog opened earlier is attached to the
