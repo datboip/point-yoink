@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.161-pre"
+APP = "PointYoink"; VERSION = "0.9.162-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -674,7 +674,7 @@ def human(n):
 
 def _ply_element_count(path, element):
     """Read a PLY header (ascii, at the top of any PLY) for 'element <element> N'. Cheap: no full parse.
-    Returns N or None. Used to tell if editing loaded a REDUCED version of a big scan (Codex #3)."""
+    Returns N or None. Used to tell if editing loaded a REDUCED version of a big scan."""
     try:
         with open(path, "rb") as f:
             for _ in range(300):
@@ -2511,15 +2511,28 @@ class App(ctk.CTk):
         except Exception: pass
         self._handoff_tick()
 
+    def _handoff_busy(self):
+        """Never hand off while there's work that closing would lose or corrupt: unsaved editor edits, a
+        save in flight, or an import/build running. The newer instance then times out on the lock and
+        shows the ordinary 'already running' window instead of yanking this one out from under the work."""
+        return bool(getattr(self, "_edit_dirty", False) or getattr(self, "_edit_saving", False)
+                    or getattr(self, "_fusing", False) or getattr(self, "pulling", False))
+
     def _handoff_tick(self):
         if getattr(self, "_handoff_requested", False):
-            self._handoff_close(); return
+            self._handoff_requested = False
+            if self._handoff_busy():
+                try: log_line("handoff-refused: busy (unsaved edits or an operation is running)")
+                except Exception: pass
+            else:
+                self._handoff_close(); return
         try: self.after(300, self._handoff_tick)
         except Exception: pass
 
     def _handoff_close(self):
-        """A newer build is taking over. Bow out without prompting (the guard would block the hand-off),
-        but still run the real device cleanup so we don't leave the scanner or a stream busy."""
+        """A newer build is taking over. Bow out without prompting (only reached when nothing is in
+        flight, per _handoff_busy), but still run the real device cleanup so we don't leave the scanner
+        or a stream busy."""
         try: log_line("handoff-close: newer build took over")
         except Exception: pass
         try:
@@ -2542,7 +2555,7 @@ class App(ctk.CTk):
         os._exit(0)
 
     def on_close(self):
-        if not self._guard_unsaved_edits(): return   # don't let closing the app silently drop unsaved editor edits (Codex #1)
+        if not self._guard_unsaved_edits(): return   # don't let closing the app silently drop unsaved editor edits
         try:
             if self._wifi: self._wifi.stop()
         except Exception: pass
@@ -3144,7 +3157,7 @@ class App(ctk.CTk):
         clears edit mode, so a clean exit tidies up too. Blocks while a save is in flight."""
         if not getattr(self, "_in_edit_mode", False):
             return True                            # not in the editor: nothing to guard or clear
-        if getattr(self, "_edit_saving", False):   # a save is running: don't let the view move out from under it (Codex #3)
+        if getattr(self, "_edit_saving", False):   # a save is running: don't let the view move out from under it
             self._alert("Still saving", "Hang on - still saving your edited model. Try again in a moment.")
             return False
         if getattr(self, "_edit_dirty", False):
@@ -3154,8 +3167,8 @@ class App(ctk.CTk):
             if choice=="keep":
                 self._edit_keep(); return False    # save + land on the new model; the pending nav is abandoned
             if choice!="discard":
-                return False                       # Cancel, or closed with X (returns None): abort, never treat as discard (Codex #1)
-        # proceed (clean exit OR explicit Discard): always clear edit mode so it never lingers (Codex #2)
+                return False                       # Cancel, or closed with X (returns None): abort, never treat as discard
+        # proceed (clean exit OR explicit Discard): always clear edit mode so it never lingers
         self._edit_dirty=False; self._in_edit_mode=False
         try: self._editmode_chrome(False); self.mv.set_edit_tool(None); self._hide_edit_palette()
         except Exception: pass
@@ -3182,7 +3195,7 @@ class App(ctk.CTk):
     def _enter_edit_mode(self):
         """Enter the Edit tab: same camera/object, show the tools. Edits the built Mesh (cut faces) or the
         Points (clean + rebuild), per the Edit: switch."""
-        if getattr(self, "_edit_saving", False): return   # a save is in flight: don't reload the editor under it (Codex #2)
+        if getattr(self, "_edit_saving", False): return   # a save is in flight: don't reload the editor under it
         name=self.selected; node=getattr(self, "_film_sel", None)
         if not (name and node) or node=="combined":
             self.set_banner("Open a scan first - Edit works on that scan's model or points.", MUT)
@@ -3210,7 +3223,7 @@ class App(ctk.CTk):
         self._editmode_chrome(True)                                    # hide the view switches: this is the editing workspace
         try: self.edit_target_sw.set(tgt)
         except Exception: pass
-        # reset selection settings ONCE per edit session (not on every palette show - Codex)
+        # reset selection settings ONCE per edit session (not on every palette show)
         try:
             if getattr(self,"sel_mode_sw",None): self.sel_mode_sw.set("Replace")
             if getattr(self,"depth_sw",None): self.depth_sw.set("Through object")
@@ -3257,7 +3270,7 @@ class App(ctk.CTk):
                 self.big_hint.configure(text="Couldn't open this model for editing (see Help > Log)."); return
             try:
                 self._edit_orig_n=int(len(self.mv._medit_faces)); self._edit_cur_n=self._edit_orig_n
-                full=_ply_element_count(src, "face")   # Codex #3: warn if the model was too big and got decimated for editing
+                full=_ply_element_count(src, "face")   # warn if the model was too big and got decimated for editing
                 if full and self._edit_orig_n and self._edit_orig_n < full-1000:
                     self.set_banner("Editing a reduced model: %s of %s faces (the saved model uses this resolution)." % (_kfmt(self._edit_orig_n), _kfmt(full)), WARN)
                 self.mv.on_points_change=self._edit_points_changed
@@ -3276,7 +3289,7 @@ class App(ctk.CTk):
         def _revert():
             try: self.edit_target_sw.set(prev)
             except Exception: pass
-        if getattr(self, "_edit_saving", False):   # block target switch mid-save (Codex #2)
+        if getattr(self, "_edit_saving", False):   # block target switch mid-save
             _revert(); self._alert("Still saving", "Hang on - still saving your edited model. Try again in a moment."); return
         if getattr(self, "_edit_dirty", False):
             choice=self._modal("Unsaved edits",
@@ -3284,7 +3297,7 @@ class App(ctk.CTk):
                                [("Save as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
             if choice=="keep":
                 _revert(); self._edit_keep(); return     # save first; user can switch again after
-            if choice!="discard":                        # cancel or X (None): stay put, revert the switch (Codex #1)
+            if choice!="discard":                        # cancel or X (None): stay put, revert the switch
                 _revert(); return
             self._edit_dirty=False
         self._enter_edit_mode()                 # reload the newly-chosen target
@@ -3376,7 +3389,7 @@ class App(ctk.CTk):
         self._mv_key=None                                      # the interactive view now shows points, not the tracked mesh: so toggling back to Mesh actually reloads it (else _mv_start short-circuits and stays on points)
         try: self.mv._keep_view=True                           # show the points at the mesh's current camera, not the default
         except Exception: pass
-        real_cloud=not str(cloud).endswith("fuse_mesh.ply")   # Codex #5: the last-resort fallback is a MESH's vertices, not a real fused cloud - label it honestly
+        real_cloud=not str(cloud).endswith("fuse_mesh.ply")   # the last-resort fallback is a MESH's vertices, not a real fused cloud - label it honestly
         self._mv_loading=True; self._preview_busy("Loading the fused points" if real_cloud else "Loading the model's points")
         def ready(ok):
             self._mv_loading=False; self._preview_idle()
@@ -3393,7 +3406,7 @@ class App(ctk.CTk):
                                                   else "No separate point cloud for this scan - these are the model's own vertices · Select and Delete, then Save as new model"))
                     try:
                         self._edit_orig_n=int(self.mv._pts_n or 0); self._edit_cur_n=self._edit_orig_n   # baseline: edits are dirty once we drop below this
-                        full=_ply_element_count(cloud, "vertex")   # Codex #3: if the cloud was capped, say so - the save uses this reduced set
+                        full=_ply_element_count(cloud, "vertex")   # if the cloud was capped, say so - the save uses this reduced set
                         if full and self._edit_orig_n and self._edit_orig_n < full-1000:
                             self.set_banner("Editing a reduced set: %s of %s points (the saved model uses this resolution)." % (_kfmt(self._edit_orig_n), _kfmt(full)), WARN)
                         self.mv.on_points_change=self._edit_points_changed; self.mv.set_edit_tool(None)
@@ -3470,7 +3483,7 @@ class App(ctk.CTk):
                       command=lambda: self.tabs.set("3D Preview", True)).pack(fill="x", padx=6, pady=(6,12))
     def _show_edit_palette(self):
         # just swaps the panel into view - the session reset lives in _enter_edit_mode so re-showing
-        # the palette (e.g. after a load completes) never wipes what the user just set (Codex).
+        # the palette (e.g. after a load completes) never wipes what the user just set.
         try: self.projpanel.grid_remove(); self.editpanel.grid(); self.editpanel.lift()
         except Exception: pass
         try: self.update_summary()   # bottom bar -> "Editing <project>"
@@ -3497,7 +3510,7 @@ class App(ctk.CTk):
             if getattr(self,"_brush_val",None): self._brush_val.configure(text="%d px" % int(v))
         except Exception: pass
     def _on_brush_size(self, px):
-        """Scroll on the model resized the brush - keep the palette slider and number in sync (Codex)."""
+        """Scroll on the model resized the brush - keep the palette slider and number in sync."""
         try:
             if getattr(self,"_brush_slider",None): self._brush_slider.set(float(px))
             if getattr(self,"_brush_val",None): self._brush_val.configure(text="%d px" % int(px))
@@ -3612,7 +3625,7 @@ class App(ctk.CTk):
             if removed: parts.append("%s removed" % _kfmt(removed))
             self.edit_count.configure(text="  ·  ".join(parts))
         except Exception: pass
-        # Codex: if Visible only was on but the depth read failed, we silently selected through - say so once.
+        # if Visible only was on but the depth read failed, we silently selected through - say so once.
         try:
             if getattr(self.mv, "visible_only", False) and getattr(self.mv, "_depth_failed", False) and not getattr(self, "_vis_warned", False):
                 self._vis_warned=True
@@ -3656,7 +3669,7 @@ class App(ctk.CTk):
         out=os.path.join(local, "%s_%s_edited.ply" % (name, node))
         def work():
             try:
-                if os.path.exists(out) and os.path.getsize(out)>1024:   # keep the previous edited model (Codex #4)
+                if os.path.exists(out) and os.path.getsize(out)>1024:   # keep the previous edited model
                     # if we can't back it up, ABORT rather than overwrite it - the old edited version must not be lost
                     vdir=os.path.join(local, ".versions"); os.makedirs(vdir, exist_ok=True)
                     shutil.copy2(out, os.path.join(vdir, "%s_edited_%s.ply" % (node, time.strftime("%Y%m%d-%H%M%S"))))
@@ -3667,7 +3680,7 @@ class App(ctk.CTk):
                     tmp=out+".tmp.ply"; m.export(tmp); os.replace(tmp, out)
                     ok=(os.path.exists(out) and os.path.getsize(out)>1024); err=None if ok else "empty result"
                 else:
-                    # rebuild in a memory-capped child (Codex #6): write the cleaned points, reconstruct there
+                    # rebuild in a memory-capped child: write the cleaned points, reconstruct there
                     tmpc=out+".pts.ply"; _write_ply_points(tmpc, payload)
                     env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "10")
                     r=self._run_child([_sys.executable, os.path.join(HERE, "process.py"), tmpc, out, "--rebuild-points"], timeout=1800, env=env)
@@ -3687,7 +3700,7 @@ class App(ctk.CTk):
             self._edit_sync_dirty()
             self.set_banner("Couldn't save the edited model (%s). Your edits are still on screen." % (err or "see Help > Log"), WARN); return
         self._mesh_stats={}; self.gallery_cache.pop(name, None); self.projects_sig=None
-        # Codex #3: decide BEFORE touching the view. If the user moved on (even to another scan in the same
+        # decide BEFORE touching the view. If the user moved on (even to another scan in the same
         # project), record the version WITHOUT calling _proc_set_current - that would switch the view back.
         moved = (self.selected!=name or getattr(self, "_film_sel", None)!=node)
         if moved:
@@ -4846,22 +4859,38 @@ class App(ctk.CTk):
         threading.Thread(target=work, daemon=True).start()
     STEPS=("Build", "Cut base", "Combine", "Prepare", "Export")
     def _base_planes(self, name): return self.records.get(name,{}).get("base_plane",{}) or {}
+    def _base_sig(self, path):
+        try: st=os.stat(path); return (st.st_mtime, st.st_size)
+        except OSError: return None
+    def _base_verdict(self, path):
+        """Cached table verdict for the CURRENT contents of `path`, or None if not computed yet / stale.
+        The cache key carries mtime+size so a replaced model (Prepare, Restore) isn't answered from the old
+        file's result. The returned dict's 'present' is True (table), False (none) or None (couldn't tell)."""
+        if not path: return None
+        e=self._base_geom.get(path)
+        if e is not None and e.get("sig")==self._base_sig(path): return e
+        return None
     def _table_ruled_out(self, name, node):
-        """True when the geometry says this scan's current model has no table plane (scanner already trimmed
-        it), so we should not nag to Cut base. Unknown/undetected -> False (fall back to offering the cut)."""
+        """True only when the geometry positively found NO table on this scan's current model (scanner
+        already trimmed it), so we don't nag to Cut base. Unknown/undetected/still-checking -> False, i.e.
+        fall back to offering the cut."""
         cur=self._proc_current(name, node)
         if not cur: return False
-        bg=self._base_geom.get(cur[2])
-        return bool(bg is not None and not bg.get("present"))
+        e=self._base_verdict(cur[2])
+        return bool(e is not None and e.get("present") is False)
     def _want_base(self, path):
-        """Compute the table verdict for a model file once, in the background, then refresh the panel."""
-        if not path or path in self._base_geom or path in self._base_busy: return
+        """Compute the table verdict for `path` once (per file version), in the background, then refresh."""
+        if not path or path in self._base_busy: return
+        sig=self._base_sig(path)
+        if sig is None: return
+        e=self._base_geom.get(path)
+        if e is not None and e.get("sig")==sig: return   # already have a fresh verdict for this exact file
         self._base_busy.add(path)
         def work():
             r=None
             try: r=detect_base(path)
-            except Exception as e: log_error("detect_base", e)
-            self.q.put(("base_geom", path, r))
+            except Exception as e2: log_error("detect_base", e2)
+            self.q.put(("base_geom", path, sig, r))
         threading.Thread(target=work, daemon=True).start()
     def _proc_next(self, name, nodes, local):
         """What to do now for this project: (title, detail, button text, command, step index into STEPS)."""
@@ -5129,14 +5158,17 @@ class App(ctk.CTk):
                     btxt=("Marked: no base to cut ✓" if pl.get("skip") else "Base removed ✓ - reapplied when combining"); bcol=OK; btip=None
                 else:      # ask the geometry whether the table is still on (the scanner may have cut it already)
                     cpath=cur[2] if cur else None
-                    bg=self._base_geom.get(cpath) if cpath else None
-                    if cpath and bg is None: self._want_base(cpath)   # compute once in the background, then refresh
-                    if bg is None:
+                    e=self._base_verdict(cpath) if cpath else None
+                    if cpath and e is None: self._want_base(cpath)   # compute once in the background, then refresh
+                    present=e.get("present") if e is not None else "pending"
+                    if present=="pending":
                         btxt="Base: checking the model…"; bcol=MUT; btip="Looking at the geometry to see if the table/turntable is still attached."
-                    elif bg.get("present"):
+                    elif present is True:
                         btxt="Table still attached - use Remove base"; bcol=WARN; btip="A large flat plane sits under the part, so the table looks like it's still in the scan."
-                    else:
-                        btxt="No table found - base already off ✓"; bcol=OK; btip="No large flat base plane in the model, so the scanner most likely trimmed the table already. Remove base is still there if you disagree."
+                    elif present is False:
+                        btxt="No obvious table detected"; bcol=MUT; btip="No large flat base plane found, so the scanner most likely trimmed the table already. This is a guess from the geometry, not proof - Remove base is still there if a table is left."
+                    else:      # couldn't tell (tiny model / load failed)
+                        btxt="Couldn't check for a base"; bcol=MUT; btip="Not enough geometry to tell whether a table is attached. Use Remove base if the table is still on the part."
                 bl=ctk.CTkLabel(hdr, text=btxt, text_color=bcol, font=ctk.CTkFont(size=11), anchor="w"); bl.pack(fill="x", padx=12)
                 if btip: self._tip(bl, btip)
             ctk.CTkFrame(hdr, fg_color="transparent", height=8).pack()
@@ -5178,9 +5210,8 @@ class App(ctk.CTk):
             else: ctk.CTkLabel(pp, text="No 3D model yet", text_color=WARN, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6, pady=(6,0))
             combined_exists=("combined" in nodes and node!="combined")
             # only push Cut base as the next step when the geometry hasn't ruled a table out. If detection
-            # says there's no table (scanner already trimmed it), skip straight to Prepare/Export - no nag.
-            _bg=self._base_geom.get(cur[2]) if cur else None
-            _need_cut=(vs and node!="combined" and node not in self._base_planes(name) and not (_bg is not None and not _bg.get("present")))
+            # positively found no table (scanner already trimmed it), skip straight to Prepare/Export - no nag.
+            _need_cut=(vs and node!="combined" and node not in self._base_planes(name) and not self._table_ruled_out(name, node))
             primary="build" if (raw and not vs) else ("cut" if _need_cut else (None if combined_exists else ("prepare" if (vs and not has_prep) else ("export" if vs else None))))
             _mkicon={"build":"build","cut":"cut-base","prepare":"prepare","export":"export"}
             def mk(kind, text, enabled, cmd, tip):
@@ -7445,8 +7476,10 @@ class App(ctk.CTk):
                     key,st=rest; self._mesh_stats[key]=st
                     if self._shade_key and key==self._shade_key[0]: self._show_stats(st)
                 elif kind=="base_geom":
-                    path,r=rest; self._base_busy.discard(path)
-                    if r is not None: self._base_geom[path]=r
+                    path,sig,r=rest; self._base_busy.discard(path)
+                    # always cache, even an unknown (r is None): otherwise a tiny/failed model re-triggers
+                    # detection on every panel refresh. 'present' None == couldn't tell.
+                    self._base_geom[path]={"sig": sig, "present": (r.get("present") if r else None)}
                     if self.page=="projects" and not getattr(self, "_in_edit_mode", False):
                         self._next_refresh(); self._panel_refresh()   # the table verdict changes the NEXT step and the card line
                 elif kind=="gallery": n,items=rest; self.gallery_cache[n]=items; self.render_gallery(n,items)

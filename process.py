@@ -85,7 +85,7 @@ def main():
 
     if a.rebuild_points:
         # Ball-pivoting on purpose over Poisson: it spans only where points are, so real openings stay open.
-        # Runs here (subprocess) under RLIMIT_AS, so a pathological cloud dies alone (Codex #6).
+        # Runs here (subprocess) under RLIMIT_AS, so a pathological cloud dies alone.
         if not a.outfile: print("outfile required"); sys.exit(2)
         import open3d as o3d
         emit("load", file=os.path.basename(a.infile))
