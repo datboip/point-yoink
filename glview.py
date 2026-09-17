@@ -74,6 +74,7 @@ class GLView(OpenGLFrame):
         self._pvbo = None; self._pts_n = 0; self._pending_pts = None   # point-cloud view (Fused points): separate, additive path; never touches the mesh draw
         self._pcvbo = None; self._pts_v = None; self._pts_sel = None; self._pts_undo = []   # point editing: colour vbo, view-space points, selection mask, undo stack
         self.on_points_change = None                                   # callback(kept_count) after an edit, for the editor UI
+        self._keep_view = False        # set True before a load to keep the current camera (Mesh<->Points toggles in place)
         self.animate = 0
         self.tf = None                         # orientation transform of the loaded mesh (shade.load_oriented_tf)
         self.markers = []                      # [(xyz in view coords, (r,g,b))] drawn as dots
@@ -163,7 +164,9 @@ class GLView(OpenGLFrame):
         if isinstance(res, Exception) or self.failed:
             (on_ready and on_ready(False)); return
         v, n, f, wire = res
-        self.markers = []; self.plane = None; self._ncol = 0; self._split_req = None; self.clear_layers(draw=False); self.reset(draw=False)
+        self.markers = []; self.plane = None; self._ncol = 0; self._split_req = None; self.clear_layers(draw=False)
+        if not self._keep_view: self.reset(draw=False)     # keep the camera when just toggling representation
+        self._keep_view = False
         if self.ready: self._upload(v, n, f, wire, on_ready)
         else: self._pending = (v, n, f, wire, on_ready)   # on_ready fires later, from _upload(), once it actually runs (initgl() or _on_map())
     def _upload(self, v, n, f, wire, on_ready=None):
@@ -210,7 +213,9 @@ class GLView(OpenGLFrame):
         if isinstance(res, Exception) or self.failed:
             (on_ready and on_ready(False)); return
         self.markers = []; self.plane = None; self._ncol = 0; self._split_req = None
-        self.clear_layers(draw=False); self.reset(draw=False)
+        self.clear_layers(draw=False)
+        if not self._keep_view: self.reset(draw=False)     # keep the camera when just toggling Mesh<->Points
+        self._keep_view = False
         if self.ready: self._upload_points(res, on_ready)
         else: self._pending_pts = (res, on_ready)
     def _upload_points(self, v, on_ready=None):
