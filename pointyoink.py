@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.169-pre"
+APP = "PointYoink"; VERSION = "0.9.170-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -803,10 +803,10 @@ class TabStrip(ctk.CTkFrame):
             if line: tk.Frame(self, bg=STROKE, height=1, bd=0, highlightthickness=0).grid(row=1,column=0, sticky="ew")
             self.body=ctk.CTkFrame(self, fg_color="transparent"); self.body.grid(row=2,column=0, sticky="nsew")
             self.body.grid_columnconfigure(0, weight=1); self.body.grid_rowconfigure(0, weight=1)
-    def add(self, name, tag=None, icon=None):
+    def add(self, name, tag=None, icon=None, img=None):
         cell=ctk.CTkFrame(self.bar, fg_color="transparent"); cell.pack(side="left", padx=(0,4))
-        f=ctk.CTkFont(size=self._size, weight="bold"); text=((icon+"  ") if icon else "")+name
-        b=ctk.CTkButton(cell, text=text, width=f.measure(text)+22, height=30, corner_radius=6, fg_color="transparent",
+        f=ctk.CTkFont(size=self._size, weight="bold"); text=(("  "+name) if img else (((icon+"  ") if icon else "")+name))
+        b=ctk.CTkButton(cell, text=text, image=img, compound="left", width=f.measure(text)+22+(20 if img else 0), height=30, corner_radius=6, fg_color="transparent",
                         hover_color=CARD2, text_color=MUT, font=f, command=lambda n=name: self.set(n, True))
         b.grid(row=0,column=0, padx=(4,0))
         if tag:
@@ -1580,11 +1580,12 @@ class App(ctk.CTk):
         self._tip(vl, "Build %s - the git commit this app is running (a trailing + means uncommitted changes). Match it to `git log --oneline -1` to know it's current." % BUILD)
         self._modes=TabStrip(h, command=lambda lab: self._set_mode(HEADER_KEY.get(lab, lab)), content=False, base=CARD, size=13)
         self._modes.grid(row=0,column=2, sticky="w", padx=(26,0), pady=(8,0))
-        self._modes.add("Import", icon="⬇"); self._modes.add("Projects", icon="▤"); self._modes.add("Captures", icon="▣")
-        self._modes.add("Live view", tag="Planned", icon="◉")
+        self._modes.add("Import", img=_icon("import","default",16)); self._modes.add("Projects", img=_icon("projects","default",16)); self._modes.add("Captures", img=_icon("captures","default",16))
+        self._modes.add("Live view", tag="Planned", img=_icon("live-view","default",16))
         self.mode_sw=_ModeSwitch(self._modes)
         btns=ctk.CTkFrame(h, fg_color="transparent"); btns.grid(row=0,column=3, sticky="e", padx=(0,14)); self._hbtns=btns
-        mb=ctk.CTkButton(btns, text="≡", width=36, height=30, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT,
+        _mic=_icon("menu","muted",18)
+        mb=ctk.CTkButton(btns, text=("" if _mic else "≡"), image=_mic, width=36, height=30, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT,
                          font=ctk.CTkFont(size=18, weight="bold"), command=self._app_menu); mb.pack(side="left", padx=2); self._menu_btn=mb
         self._tip(mb, "Settings, how it works, help, about")
         tk.Frame(h, bg=STROKE, height=1, bd=0, highlightthickness=0).place(x=0, rely=1.0, y=-1, relwidth=1.0)
