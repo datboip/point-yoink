@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.127-pre"
+APP = "PointYoink"; VERSION = "0.9.128-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2931,6 +2931,7 @@ class App(ctk.CTk):
             return
         self._map_mv_under_still()                             # the GL view must be mapped to upload
         tf=getattr(self.mv, "tf", None)                        # align the points to the mesh if it's loaded
+        self._mv_key=None                                      # the interactive view now shows points, not the tracked mesh: so toggling back to Mesh actually reloads it (else _mv_start short-circuits and stays on points)
         self._mv_loading=True; self._preview_busy("Loading the fused points")
         def ready(ok):
             self._mv_loading=False; self._preview_idle()
