@@ -76,6 +76,8 @@ class GLView(OpenGLFrame):
         self.on_points_change = None                                   # callback(kept_count) after an edit, for the editor UI
         self.edit_target = "points"    # "points" (clean cloud -> rebuild) or "mesh" (delete faces on the built model, no rebuild)
         self._medit_faces = None; self._medit_undo = []; self._selfbo = None; self._sel_face_n = 0   # mesh face editing: faces, undo, selected-face overlay buffer
+        self.visible_only = False      # selection: True = only what faces the camera (depth-tested); False = select through (default keeps old behaviour)
+        self._depth_buf = None; self._depth_valid = False   # cached GL depth buffer for visible-only; invalidated on camera/geometry change
         self._keep_view = False        # set True before a load to keep the current camera (Mesh<->Points toggles in place)
         self.edit_tool = None          # None = orbit; "lasso"/"rect"/"brush"/"magic" = drag selects points instead of rotating
         self.edit_mode = "replace"     # replace / add / subtract (Shift adds, Ctrl subtracts)
@@ -311,8 +313,9 @@ class GLView(OpenGLFrame):
             try: self.on_points_change(len(self._pts_v))    # live point/selection count for the editor
             except Exception: pass
     def _project_all(self):
-        """Screen (x,y) in Tk top-left coords for every point, plus an in-front mask. Vectorised, with a
-        one-point gluProject check so it is right whatever matrix layout PyOpenGL hands back."""
+        """Screen (x,y) in Tk top-left coords for every point, an in-front mask, and window depth [0,1].
+        Vectorised, with a one-point gluProject check so it is right whatever matrix layout PyOpenGL hands
+        back. Returns (scr Nx2, front N bool, winz N)."""
         if self._pts_v is None or not len(self._pts_v) or getattr(self, "_mv_m", None) is None: return None
         try:
             mv = np.asarray(self._mv_m, dtype=np.float64); pj = np.asarray(self._pj_m, dtype=np.float64)
@@ -322,17 +325,43 @@ class GLView(OpenGLFrame):
                 clip = (P @ m) @ p; w = clip[:, 3].copy(); w[np.abs(w) < 1e-12] = 1e-12
                 ndc = clip[:, :3] / w[:, None]
                 sx = (ndc[:, 0] * 0.5 + 0.5) * vw; sy = (0.5 - ndc[:, 1] * 0.5) * vh
-                return np.column_stack([sx, sy]), (w > 0)
-            scr, front = run(mv, pj)
+                wz = ndc[:, 2] * 0.5 + 0.5                        # NDC z [-1,1] -> window depth [0,1]
+                return np.column_stack([sx, sy]), (w > 0), wz
+            scr, front, winz = run(mv, pj)
             # calibrate against gluProject on the first point; if the vectorised result is off, transpose
             try:
                 p0 = self._pts_v[0]; gx, gy, _ = GLU.gluProject(float(p0[0]), float(p0[1]), float(p0[2]), self._mv_m, self._pj_m, self._vp)
                 if abs(scr[0, 0] - gx) + abs(scr[0, 1] - (vh - gy)) > 4.0:
-                    scr, front = run(mv.T, pj.T)
+                    scr, front, winz = run(mv.T, pj.T)
             except Exception: pass
-            return scr, front
+            return scr, front, winz
         except Exception:
             return None
+    def _capture_depth(self):
+        """Read the window depth buffer once after the base geometry is drawn (before selection overlays),
+        for visible-only selection. Row 0 is the bottom of the screen (GL convention)."""
+        try:
+            _, _, vw, vh = self._vp; vw = int(vw); vh = int(vh)
+            buf = GL.glReadPixels(0, 0, vw, vh, GL.GL_DEPTH_COMPONENT, GL.GL_FLOAT)
+            self._depth_buf = np.frombuffer(buf, dtype=np.float32).reshape(vh, vw)
+            self._depth_valid = True
+        except Exception:
+            self._depth_buf = None; self._depth_valid = False
+    def _visible_mask(self, scr, front, winz):
+        """True where a point is the front-most surface at its pixel (not hidden behind the object). Falls
+        back to `front` (select-through) if visible-only is off or the depth read failed."""
+        db = self._depth_buf
+        if not self.visible_only or db is None: return front
+        try:
+            vh, vw = db.shape
+            px = np.clip(scr[:, 0].astype(np.int32), 0, vw - 1)
+            py = np.clip((vh - scr[:, 1]).astype(np.int32), 0, vh - 1)   # Tk top-left y -> GL bottom-left row
+            nearest = db[py, px]
+            return front & (winz <= nearest + 0.0025)                    # small tolerance so the front surface itself counts
+        except Exception:
+            return front
+    def set_visible_only(self, on):
+        self.visible_only = bool(on); self._depth_valid = False; self.draw()
     @staticmethod
     def _in_poly(pts, poly):
         """Vectorised crossing-number point-in-polygon. pts: Nx2, poly: Mx2. Returns bool N."""
@@ -349,9 +378,9 @@ class GLView(OpenGLFrame):
         if self._pts_v is None or self._pts_sel is None: return 0
         pr = self._project_all()
         if pr is None: return 0
-        scr, front = pr
+        scr, front, winz = pr
         hit = self._in_poly(scr, np.asarray(polygon, dtype=float))
-        if front_only: hit &= front
+        if front_only: hit &= self._visible_mask(scr, front, winz)   # visible-only drops points hidden behind the object
         if mode == "add": self._pts_sel |= hit
         elif mode == "subtract": self._pts_sel &= ~hit
         else: self._pts_sel = hit
@@ -385,6 +414,7 @@ class GLView(OpenGLFrame):
             GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[2]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, f.nbytes, f, GL.GL_STATIC_DRAW)
             GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
             self._n = int(f.size); self._wire_gen = None            # wireframe cache is stale after a face change
+            self._depth_valid = False                               # geometry changed: visible-only depth is stale
             if self._pts_sel is None or len(self._pts_sel) != len(self._pts_v):
                 self._pts_sel = np.zeros(len(self._pts_v), dtype=bool)
             self._mesh_recolor(); self._display()
@@ -403,6 +433,7 @@ class GLView(OpenGLFrame):
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._pvbo); GL.glBufferData(GL.GL_ARRAY_BUFFER, self._pts_v.nbytes, self._pts_v, GL.GL_STATIC_DRAW)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
             self._pts_n = int(len(self._pts_v)); self._pts_sel = np.zeros(self._pts_n, dtype=bool)
+            self._depth_valid = False                               # geometry changed: visible-only depth is stale
             self._pts_recolor(); self._display()
             if callable(self.on_points_change): self.on_points_change(self._pts_n)
         except Exception as e:
@@ -420,7 +451,7 @@ class GLView(OpenGLFrame):
         empty margins (so a left-drag there orbits instead - no tool switch needed)."""
         pr = self._project_all()
         if pr is None: return True
-        scr, front = pr
+        scr, front, _winz = pr
         s = scr[front]
         if not len(s): return True
         m = 45.0                        # margin so you can lasso just outside the silhouette
@@ -430,8 +461,9 @@ class GLView(OpenGLFrame):
         if self._pts_v is None or self._pts_sel is None: return
         pr = self._project_all()
         if pr is None: return
-        scr, front = pr
-        hit = ((scr[:, 0] - x) ** 2 + (scr[:, 1] - y) ** 2 <= self.brush_px ** 2) & front
+        scr, front, winz = pr
+        vis = self._visible_mask(scr, front, winz)
+        hit = ((scr[:, 0] - x) ** 2 + (scr[:, 1] - y) ** 2 <= self.brush_px ** 2) & vis
         if mode == "subtract": self._pts_sel &= ~hit
         else: self._pts_sel |= hit
         self._pts_recolor(); self._display()
@@ -440,9 +472,9 @@ class GLView(OpenGLFrame):
         if self._pts_v is None or self._pts_sel is None: return
         pr = self._project_all()
         if pr is None: return
-        scr, front = pr
+        scr, front, winz = pr
         d2 = (scr[:, 0] - x) ** 2 + (scr[:, 1] - y) ** 2
-        cand = np.where(front & (d2 <= (self.brush_px * 1.5) ** 2))[0]
+        cand = np.where(self._visible_mask(scr, front, winz) & (d2 <= (self.brush_px * 1.5) ** 2))[0]   # seed from a visible point
         if not len(cand): return
         seed = int(cand[np.argmin(d2[cand])])
         grown = self._region_grow(seed)
@@ -501,6 +533,10 @@ class GLView(OpenGLFrame):
         self._mult_rot()
         GL.glTranslatef(0, 0, -0.5 * getattr(self, "_zmax", 0.0))
         self._mv_m = GL.glGetDoublev(GL.GL_MODELVIEW_MATRIX); self._pj_m = GL.glGetDoublev(GL.GL_PROJECTION_MATRIX); self._vp = (0, 0, w, h)
+        try:                                   # invalidate the visible-only depth cache when the camera moves
+            _sig = (float(self.azim), float(self.elev), float(self.zoom), float(self.pan[0]), float(self.pan[1]), w, h, hash(self.rot.tobytes()))
+            if _sig != getattr(self, "_depth_cam", None): self._depth_valid = False; self._depth_cam = _sig
+        except Exception: self._depth_valid = False
         # floor grid
         GL.glDisable(GL.GL_LIGHTING); GL.glColor3f(26 / 255.0, 33 / 255.0, 48 / 255.0); GL.glBegin(GL.GL_LINES)
         for t in np.linspace(-1.1, 1.1, 11):
@@ -535,6 +571,7 @@ class GLView(OpenGLFrame):
                 if use_col: GL.glDisableClientState(GL.GL_COLOR_ARRAY); GL.glDisable(GL.GL_COLOR_MATERIAL)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0); GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
             GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
+            if self.edit_tool and self.visible_only and not self._depth_valid: self._capture_depth()   # base mesh depth, before the red overlay
             if self.edit_target == "mesh" and self._sel_face_n and self._selfbo is not None and self._vbo is not None:
                 GL.glDisable(GL.GL_LIGHTING); GL.glEnable(GL.GL_POLYGON_OFFSET_FILL); GL.glPolygonOffset(-1.0, -1.0)
                 GL.glColor3f(1.0, 0.28, 0.30)                # the faces that Delete will remove, painted red on top
@@ -556,6 +593,7 @@ class GLView(OpenGLFrame):
             if self._pcvbo is not None: GL.glDisableClientState(GL.GL_COLOR_ARRAY)
             GL.glDisableClientState(GL.GL_VERTEX_ARRAY); GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
             GL.glPointSize(1.0); GL.glEnable(GL.GL_LIGHTING)
+            if self.edit_tool and self.visible_only and not self._depth_valid: self._capture_depth()   # point-cloud depth (colour doesn't affect it)
         for L in self.layers:                  # tinted overlays (another scan, for alignment checks)
             GL.glEnable(GL.GL_LIGHTING); GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
             GL.glMaterialfv(GL.GL_FRONT_AND_BACK, GL.GL_AMBIENT_AND_DIFFUSE, L["colour"] + (1.0,))

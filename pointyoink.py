@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.144-pre"
+APP = "PointYoink"; VERSION = "0.9.145-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1663,6 +1663,11 @@ class App(ctk.CTk):
         _mktool("brush","● Brush","Paint over points to select · scroll to size the brush")
         _mktool("magic","✦ Magic","Click a spot: grabs everything connected to it (the whole base, a whole stray blob)")
         tk.Frame(self.edit_bar, bg=STROKE, width=1, bd=0, highlightthickness=0).pack(side="left", fill="y", padx=5, pady=5)
+        self.vis_only=ctk.BooleanVar(value=False)
+        _vis=ctk.CTkCheckBox(self.edit_bar, text="Visible only", variable=self.vis_only, command=self._toggle_visible_only,
+                             font=ctk.CTkFont(size=11), text_color=TX, checkbox_width=16, checkbox_height=16, corner_radius=4)
+        _vis.pack(side="left", padx=(4,4)); self._tip(_vis, "On: selection only grabs what faces you, not points/faces hidden behind the object. Off: selects through.")
+        tk.Frame(self.edit_bar, bg=STROKE, width=1, bd=0, highlightthickness=0).pack(side="left", fill="y", padx=5, pady=5)
         for label,tip,cmd in (("🗑 Delete","Delete the selected (red) points",self._edit_delete),
                               ("↶ Undo","Undo the last delete",self._edit_undo),
                               ("Invert","Select everything except what's selected",lambda:self.mv.invert_selection()),
@@ -3260,6 +3265,9 @@ class App(ctk.CTk):
         try: self.mv.load_points(cloud, ready, tf=tf, max_points=6_000_000)
         except Exception as e:
             log_error("load-points", e); self._mv_loading=False; self._preview_idle()
+    def _toggle_visible_only(self):
+        try: self.mv.set_visible_only(bool(self.vis_only.get()))
+        except Exception as e: log_error("visible-only", e)
     def _set_edit_tool(self, tool, _init=False):
         """Pick a point-selection tool (or click the active one / pass None to go back to orbit)."""
         cur=getattr(self.mv, "edit_tool", None)
