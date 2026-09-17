@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.170-pre"
+APP = "PointYoink"; VERSION = "0.9.171-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -103,21 +103,23 @@ for d in (THUMBS, CFG_DIR): os.makedirs(d, exist_ok=True)
 
 _INSTANCE_LOCK = None
 _SIGTERM_PENDING = False
+_SIGTERM_TIME = 0.0
 
 def _early_sigterm(*_a):
     """Between acquiring the lock and the App installing its real handler, a newer build could SIGTERM us.
-    Catch it here so the default action can't kill us abruptly; App._install_handoff picks up the flag and
-    hands off cleanly once it's up."""
-    global _SIGTERM_PENDING
+    Catch it here so the default action can't kill us abruptly; App._install_handoff picks up the flag AND
+    the real receipt time (monotonic) so a request that arrived during a long startup is correctly aged."""
+    global _SIGTERM_PENDING, _SIGTERM_TIME
+    if not _SIGTERM_PENDING: _SIGTERM_TIME = time.monotonic()   # keep the FIRST arrival time
     _SIGTERM_PENDING = True
 
 def _ver_key(v):
     """Order two version strings. A release ('0.9.156') outranks the same-numbered pre ('0.9.156-pre'),
     so relaunching a dev build never kicks a real release of the same number, and two identical builds
     tie (neither is 'newer', so no take-over ping-pong)."""
-    v = (v or "").strip()
+    v = (v or "").strip().split("+", 1)[0]       # drop +build metadata FIRST (so a '-' in it can't look like a pre-release)
     is_release = 1 if "-" not in v else 0
-    base = v.split("-", 1)[0].split("+", 1)[0]   # drop any -pre suffix and +build metadata before the numeric compare
+    base = v.split("-", 1)[0]
     parts = []
     for p in base.split("."):
         try: parts.append(int(p))
@@ -166,10 +168,12 @@ def _acquire_single_instance():
                     time.sleep(0.1)
             else:
                 return False                     # it never let go: don't fight it
+        # Install the guard BEFORE publishing our pid/version: once the version is on disk another launcher
+        # can read it and SIGTERM us, so the handler must already be in place or the default action kills us.
+        try: signal.signal(signal.SIGTERM, _early_sigterm)
+        except Exception: pass
         _INSTANCE_LOCK.seek(0); _INSTANCE_LOCK.truncate()
         _INSTANCE_LOCK.write("%s\n%s\n" % (os.getpid(), VERSION)); _INSTANCE_LOCK.flush()
-        try: signal.signal(signal.SIGTERM, _early_sigterm)   # cover the window before App installs its real handler
-        except Exception: pass
         return True
     except Exception:
         return True   # never block a real launch over a lock-file problem
@@ -837,6 +841,7 @@ class TabStrip(ctk.CTkFrame):
                     if n!=name and self._tabs[n]["cell"].winfo_manager(): self.set(n); break
     def set(self, name, fire=False):
         if name not in self._tabs: return
+        if name==self._cur: return   # already here: re-selecting must not re-grid frames (a tab like Edit shows a shared frame the app manages) or re-fire the command
         self._cur=name
         for n,t in self._tabs.items():
             on=(n==name)
@@ -1200,9 +1205,16 @@ class App(ctk.CTk):
     def _popen(self, cmd, watch=False, **kwargs):
         if os.name=="posix": kwargs.setdefault("start_new_session", True)
         proc=subprocess.Popen(cmd, **kwargs)
+        # Register under the same lock _terminate_children uses. If a shutdown/handoff already snapshotted the
+        # child set (self._closing), this child would be orphaned - so kill it right back instead of tracking it.
+        reap=False
         try:
-            with self._children_lock: self._children.add(proc)
+            with self._children_lock:
+                if getattr(self, "_closing", False): reap=True
+                else: self._children.add(proc)
         except Exception: pass
+        if reap:
+            self._terminate_proc(proc, kill=True); return proc
         if watch: self._start_thread(self._watch_child, proc, name="watch-child")
         return proc
 
@@ -2543,13 +2555,18 @@ class App(ctk.CTk):
         """When a newer build launches, _acquire_single_instance SIGTERMs the running one. Catch it and
         close cleanly. The periodic tick also keeps the Python interpreter ticking so the signal handler
         actually runs while Tk owns the main loop."""
-        self._handoff_requested = _SIGTERM_PENDING   # a SIGTERM during startup was caught by _early_sigterm
-        self._handoff_req_time = time.time() if _SIGTERM_PENDING else 0.0
+        self._handoff_requested = False; self._handoff_req_mono = 0.0
         def _on_term(*_a):
-            self._handoff_requested = True; self._handoff_req_time = time.time()
+            if not self._handoff_requested: self._handoff_req_mono = time.monotonic()   # keep the FIRST arrival
+            self._handoff_requested = True
+        # Install the real handler FIRST, then fold in anything the early handler already caught. A signal
+        # landing between these lines is safe: after this line it hits _on_term; before it, _SIGTERM_PENDING
+        # is set and we read it just below - so no request is lost.
         try:
             signal.signal(signal.SIGTERM, _on_term)
         except Exception: pass
+        if _SIGTERM_PENDING:
+            self._handoff_requested = True; self._handoff_req_mono = _SIGTERM_TIME or time.monotonic()
         self._handoff_tick()
 
     def _handoff_busy(self):
@@ -2559,7 +2576,8 @@ class App(ctk.CTk):
         if getattr(self, "_edit_dirty", False) or getattr(self, "_edit_saving", False): return True   # unsaved editor edits / a save in flight
         if getattr(self, "_fusing", False) or getattr(self, "pulling", False): return True             # a build or an import/zip
         if getattr(self, "_wifi", None): return True          # a WiFi receive is in progress (set before 'pulling')
-        if getattr(self, "_range_on", False): return True     # a live camera stream is up
+        if getattr(self, "_mounting", False): return True     # mounting the device over MTP
+        if getattr(self, "_range_on", False) or getattr(self, "_range_busy", False): return True   # a live stream is up OR connecting/disconnecting
         try:
             with self._children_lock:
                 if self._children: return True                # a heavy subprocess (Prepare / Build / Combine / cut) is running
@@ -2569,11 +2587,13 @@ class App(ctk.CTk):
     def _handoff_tick(self):
         if getattr(self, "_handoff_requested", False):
             self._handoff_requested = False
-            age = time.time() - getattr(self, "_handoff_req_time", 0.0)
-            if age > 7.5:
-                # the requester waits ~8s for the lock then gives up and shows 'already running'. If we only
-                # got here now (a long-blocked tick or slow cleanup), closing would kill us after our
-                # replacement already bailed - leaving nothing open. Ignore the stale request.
+            age = time.monotonic() - getattr(self, "_handoff_req_mono", 0.0)
+            if age > 6.0:
+                # the requester waits ~8s for the lock then gives up and shows 'already running'. Only accept
+                # a request young enough to leave room for our own cleanup before that timeout; an older one
+                # (a long-blocked tick or slow startup) is stale - honouring it would close us after our
+                # replacement already bailed, leaving nothing open. Monotonic clock so a wall-clock jump can't
+                # make a fresh request look stale or vice versa.
                 try: log_line("handoff-ignored: request %.1fs old (requester has given up)" % age)
                 except Exception: pass
             elif self._handoff_busy():
@@ -2588,6 +2608,7 @@ class App(ctk.CTk):
         """A newer build is taking over. Bow out without prompting (only reached when nothing is in
         flight, per _handoff_busy), but still run the real device cleanup so we don't leave the scanner
         or a stream busy."""
+        self._closing = True   # from here on _popen reaps any child it starts instead of orphaning it past _terminate_children
         try: log_line("handoff-close: newer build took over")
         except Exception: pass
         try:
@@ -2616,6 +2637,7 @@ class App(ctk.CTk):
 
     def on_close(self):
         if not self._guard_unsaved_edits(): return   # don't let closing the app silently drop unsaved editor edits
+        self._closing = True   # _popen reaps any child started from here on, so nothing outlives _terminate_children
         try:
             if self._wifi: self._wifi.stop()
         except Exception: pass
@@ -5280,9 +5302,10 @@ class App(ctk.CTk):
                             self._tip(x, "Delete this version (asks first; it goes to the trash)")
             else: ctk.CTkLabel(pp, text="No 3D model yet", text_color=WARN, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6, pady=(6,0))
             combined_exists=("combined" in nodes and node!="combined")
-            # only push Cut base as the next step when the geometry hasn't ruled a table out. If detection
-            # positively found no table (scanner already trimmed it), skip straight to Prepare/Export - no nag.
-            _need_cut=(vs and node!="combined" and node not in self._base_planes(name) and not self._table_ruled_out(name, node))
+            # Cut base stays the primary step until it's actually cut or the user skips it - the same as the
+            # NEXT bar, which (when no table is detected) leads with a one-click 'skip base cut'. Detection is
+            # advisory here too: it never silently drops the step, so the sidebar and NEXT never disagree.
+            _need_cut=(vs and node!="combined" and node not in self._base_planes(name))
             primary="build" if (raw and not vs) else ("cut" if _need_cut else (None if combined_exists else ("prepare" if (vs and not has_prep) else ("export" if vs else None))))
             _mkicon={"build":"build","cut":"cut-base","prepare":"prepare","export":"export"}
             def mk(kind, text, enabled, cmd, tip):
