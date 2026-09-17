@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.172-pre"
+APP = "PointYoink"; VERSION = "0.9.173-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2609,12 +2609,12 @@ class App(ctk.CTk):
         flight, per _handoff_busy), but still run the real device cleanup so we don't leave the scanner
         or a stream busy."""
         self._closing = True   # from here on _popen refuses to spawn a child that would outlive us
-        try: log_line("handoff-close: newer build took over")
-        except Exception: pass
-        # Bound our exit: even if cleanup below stalls (e.g. _persist on a slow/hung filesystem), a watchdog
-        # forces the exit so we can't linger past the newer instance's lock wait and strand the handoff. The
-        # newer instance waits longer than this bound (see _acquire_single_instance) so it always gets the lock.
+        # Arm the exit watchdog FIRST, before log_line or any other call that could touch a slow/hung
+        # filesystem: even if everything below stalls, this forces the exit so we can't linger past the newer
+        # instance's lock wait and strand the handoff (it waits longer than this bound, see _acquire...).
         try: threading.Thread(target=lambda: (time.sleep(4.0), os._exit(0)), daemon=True).start()
+        except Exception: pass
+        try: log_line("handoff-close: newer build took over")
         except Exception: pass
         try:
             if self._wifi: self._wifi.stop()
