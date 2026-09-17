@@ -352,12 +352,14 @@ class GLView(OpenGLFrame):
         except Exception:
             self._depth_buf = None; self._depth_valid = False
     def _visible_mask(self, scr, front, winz):
-        """True where a point is the front-most surface at its pixel (not hidden behind the object). Falls
-        back to `front` (select-through) if visible-only is off or the depth read failed."""
-        db = self._depth_buf
+        """True where a point is the front-most surface at its pixel (not hidden behind the object). When
+        visible-only is off, `front` (select-through). When it is ON but we can't read/compare depth, ABORT
+        the selection (empty mask) rather than select through: 'only what I can see' must never silently
+        grab hidden back geometry that Delete would then remove. _depth_failed flags it so the UI can warn."""
         if not self.visible_only: return front
-        if db is None:                                       # wanted visible-only but the depth read failed: flag it, still select
-            self._depth_failed = True; return front
+        db = self._depth_buf
+        if db is None:                                       # wanted visible-only but the depth read failed
+            self._depth_failed = True; return np.zeros(len(front), dtype=bool)
         try:
             vh, vw = db.shape
             px = np.clip(scr[:, 0].astype(np.int32), 0, vw - 1)
@@ -370,7 +372,7 @@ class GLView(OpenGLFrame):
             tol = max(zr * 0.02, 1e-6)
             return front & (winz <= nearest + tol)                       # keep the front surface (winz ~= nearest); drop what's behind it
         except Exception:
-            return front
+            self._depth_failed = True; return np.zeros(len(front), dtype=bool)   # can't compare depth: abort, don't select through
     def set_visible_only(self, on):
         self.visible_only = bool(on); self._depth_valid = False; self.draw()
     @staticmethod

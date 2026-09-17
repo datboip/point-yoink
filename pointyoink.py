@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.168-pre"
+APP = "PointYoink"; VERSION = "0.9.169-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -102,14 +102,22 @@ VID = "2207"
 for d in (THUMBS, CFG_DIR): os.makedirs(d, exist_ok=True)
 
 _INSTANCE_LOCK = None
+_SIGTERM_PENDING = False
+
+def _early_sigterm(*_a):
+    """Between acquiring the lock and the App installing its real handler, a newer build could SIGTERM us.
+    Catch it here so the default action can't kill us abruptly; App._install_handoff picks up the flag and
+    hands off cleanly once it's up."""
+    global _SIGTERM_PENDING
+    _SIGTERM_PENDING = True
 
 def _ver_key(v):
     """Order two version strings. A release ('0.9.156') outranks the same-numbered pre ('0.9.156-pre'),
     so relaunching a dev build never kicks a real release of the same number, and two identical builds
     tie (neither is 'newer', so no take-over ping-pong)."""
     v = (v or "").strip()
-    base = v.split("-", 1)[0]
     is_release = 1 if "-" not in v else 0
+    base = v.split("-", 1)[0].split("+", 1)[0]   # drop any -pre suffix and +build metadata before the numeric compare
     parts = []
     for p in base.split("."):
         try: parts.append(int(p))
@@ -142,9 +150,12 @@ def _acquire_single_instance():
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             hpid, hver = _read_lock_holder(_INSTANCE_LOCK)
-            if not (hpid and _ver_key(VERSION) > _ver_key(hver)):
-                return False   # same/older build, or unknown holder: leave the running window alone
-            try: log_line("single-instance-takeover %s > %s (pid %s)" % (VERSION, hver or "?", hpid))
+            # Only take over a holder that recorded a VERSION: that proves it's a build new enough to catch
+            # the SIGTERM and hand off cleanly. A pid-only record is a pre-handoff build (or a partial write)
+            # - SIGTERM would just kill it and lose its work, so we refuse and show 'already running' instead.
+            if not (hpid and hver and _ver_key(VERSION) > _ver_key(hver)):
+                return False
+            try: log_line("single-instance-takeover %s > %s (pid %s)" % (VERSION, hver, hpid))
             except Exception: pass
             try: os.kill(hpid, signal.SIGTERM)   # ask the older instance to close cleanly
             except Exception: pass
@@ -157,6 +168,8 @@ def _acquire_single_instance():
                 return False                     # it never let go: don't fight it
         _INSTANCE_LOCK.seek(0); _INSTANCE_LOCK.truncate()
         _INSTANCE_LOCK.write("%s\n%s\n" % (os.getpid(), VERSION)); _INSTANCE_LOCK.flush()
+        try: signal.signal(signal.SIGTERM, _early_sigterm)   # cover the window before App installs its real handler
+        except Exception: pass
         return True
     except Exception:
         return True   # never block a real launch over a lock-file problem
@@ -2529,23 +2542,40 @@ class App(ctk.CTk):
         """When a newer build launches, _acquire_single_instance SIGTERMs the running one. Catch it and
         close cleanly. The periodic tick also keeps the Python interpreter ticking so the signal handler
         actually runs while Tk owns the main loop."""
-        self._handoff_requested = False
+        self._handoff_requested = _SIGTERM_PENDING   # a SIGTERM during startup was caught by _early_sigterm
+        self._handoff_req_time = time.time() if _SIGTERM_PENDING else 0.0
+        def _on_term(*_a):
+            self._handoff_requested = True; self._handoff_req_time = time.time()
         try:
-            signal.signal(signal.SIGTERM, lambda *a: setattr(self, "_handoff_requested", True))
+            signal.signal(signal.SIGTERM, _on_term)
         except Exception: pass
         self._handoff_tick()
 
     def _handoff_busy(self):
-        """Never hand off while there's work that closing would lose or corrupt: unsaved editor edits, a
-        save in flight, or an import/build running. The newer instance then times out on the lock and
-        shows the ordinary 'already running' window instead of yanking this one out from under the work."""
-        return bool(getattr(self, "_edit_dirty", False) or getattr(self, "_edit_saving", False)
-                    or getattr(self, "_fusing", False) or getattr(self, "pulling", False))
+        """Never hand off while there's work that closing would lose or corrupt. The newer instance then
+        times out on the lock and shows the ordinary 'already running' window instead of yanking this one
+        out from under the work."""
+        if getattr(self, "_edit_dirty", False) or getattr(self, "_edit_saving", False): return True   # unsaved editor edits / a save in flight
+        if getattr(self, "_fusing", False) or getattr(self, "pulling", False): return True             # a build or an import/zip
+        if getattr(self, "_wifi", None): return True          # a WiFi receive is in progress (set before 'pulling')
+        if getattr(self, "_range_on", False): return True     # a live camera stream is up
+        try:
+            with self._children_lock:
+                if self._children: return True                # a heavy subprocess (Prepare / Build / Combine / cut) is running
+        except Exception: pass
+        return False
 
     def _handoff_tick(self):
         if getattr(self, "_handoff_requested", False):
             self._handoff_requested = False
-            if self._handoff_busy():
+            age = time.time() - getattr(self, "_handoff_req_time", 0.0)
+            if age > 7.5:
+                # the requester waits ~8s for the lock then gives up and shows 'already running'. If we only
+                # got here now (a long-blocked tick or slow cleanup), closing would kill us after our
+                # replacement already bailed - leaving nothing open. Ignore the stale request.
+                try: log_line("handoff-ignored: request %.1fs old (requester has given up)" % age)
+                except Exception: pass
+            elif self._handoff_busy():
                 try: log_line("handoff-refused: busy (unsaved edits or an operation is running)")
                 except Exception: pass
             else:
@@ -2562,12 +2592,17 @@ class App(ctk.CTk):
         try:
             if self._wifi: self._wifi.stop()
         except Exception: pass
-        try:
-            if getattr(self, "_range_on", False) and self._range:
-                self._range.projector(False)
+        # independent stops: a failure turning the projector off must NOT skip stopping the streams, which
+        # are separate processes range.py spawns outside our tracked child set.
+        if getattr(self, "_range_on", False) and getattr(self, "_range", None):
+            try: self._range.projector(False)
+            except Exception: pass
+            try:
                 if self._range_color: self._range_color.stop()
+            except Exception: pass
+            try:
                 if self._range_stream: self._range_stream.stop()
-        except Exception: pass
+            except Exception: pass
         try: self._terminate_children()
         except Exception: pass
         try: self._persist()   # flush config so the newer build opens on the same state
@@ -2583,14 +2618,18 @@ class App(ctk.CTk):
         try:
             if self._wifi: self._wifi.stop()
         except Exception: pass
-        try:   # projector off while still streaming, then actually stop the streams: os._exit(0) does NOT
-               # kill child processes, so a live v4l2-ctl stream would otherwise outlive the GUI and keep
-               # the camera busy. Bounded (~10s worst case) - only pays that cost if something's live.
-            if getattr(self, "_range_on", False) and self._range:
-                self._range.projector(False)
+        # projector off, then stop the streams: os._exit(0) does NOT kill child processes, so a live
+        # v4l2-ctl stream would otherwise outlive the GUI and keep the camera busy. Independent try blocks
+        # so a projector-off failure can't skip the stream stops. Bounded (~10s worst case) if live.
+        if getattr(self, "_range_on", False) and getattr(self, "_range", None):
+            try: self._range.projector(False)
+            except Exception: pass
+            try:
                 if self._range_color: self._range_color.stop()
+            except Exception: pass
+            try:
                 if self._range_stream: self._range_stream.stop()
-        except Exception: pass
+            except Exception: pass
         try: self._terminate_children()
         except Exception as e: log_error("child-cleanup", e)
         self._persist()
@@ -3202,6 +3241,7 @@ class App(ctk.CTk):
         view (same camera, same object) and just turns on the point tools, so editing feels like the same
         thing you were looking at, not a separate place."""
         if name=="Edit":
+            if getattr(self, "_in_edit_mode", False): return   # already editing: re-clicking Edit must NOT re-enter (that reloads the model and drops unsaved edits)
             try: self._edit_tab.grid_remove(); self._preview_tab.grid()   # hide the empty Edit frame, keep the live view
             except Exception: pass
             self._enter_edit_mode(); return
@@ -3496,7 +3536,8 @@ class App(ctk.CTk):
         drow=ctk.CTkFrame(p, fg_color="transparent"); drow.pack(fill="x", padx=6, pady=(2,0))
         self.edit_delete_btn=ctk.CTkButton(drow, text="  Delete selected", image=_icon("delete","danger"), compound="left", height=34, corner_radius=8, fg_color="#3a2530", hover_color="#4a2f3c", text_color="#ff9db0", font=ctk.CTkFont(size=12, weight="bold"), command=self._edit_delete, state="disabled")
         self.edit_delete_btn.pack(side="left", expand=True, fill="x", padx=(0,2)); self._tip(self.edit_delete_btn, "Delete the selected (red) part")
-        self.edit_undo_btn=ctk.CTkButton(drow, text="", image=_icon("undo","default"), width=44, height=34, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, command=self._edit_undo, state="disabled")
+        _undo_ic=_icon("undo","default")   # icon-only, so fall back to a text label if the icon asset is missing (a control that renders blank is worse than a wide one)
+        self.edit_undo_btn=ctk.CTkButton(drow, text=("" if _undo_ic else "Undo"), image=_undo_ic, width=(44 if _undo_ic else 70), height=34, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, command=self._edit_undo, state="disabled")
         self.edit_undo_btn.pack(side="left", padx=(2,0)); self._tip(self.edit_undo_btn, "Undo the last delete")
         self._hr(p, pady=(12,6))
         self.edit_keep=ctk.CTkButton(p, text="  Save as new model", image=_icon("save-version","muted"), compound="left", height=40, corner_radius=8, fg_color=CARD2, hover_color=AC_H, text_color=DIM, font=ctk.CTkFont(size=13, weight="bold"), command=self._edit_keep, state="disabled")
@@ -4921,7 +4962,7 @@ class App(ctk.CTk):
         scans=[n for n in nodes if n!="combined"]
         unbuilt=[n for n in scans if not self._proc_versions(name, n) and self._has_raw_frames(local, n)]
         built=[n for n in scans if self._proc_versions(name, n)]
-        planes=self._base_planes(name); nobase=[n for n in built if n not in planes and not self._table_ruled_out(name, n)]
+        planes=self._base_planes(name); nobase=[n for n in built if n not in planes]
         sel=self._film_sel if self._film_sel in scans else None   # the scan you're looking at
         # SELECTION-FIRST: if the scan you're looking at is raw, NEXT is to build THAT scan
         if sel is not None and sel in unbuilt:
@@ -4935,8 +4976,14 @@ class App(ctk.CTk):
             n0=sel if sel in nobase else nobase[0]
             def go(n=n0): self._pick_scan_by_node(name, n); self.on_remove_base(n)
             def skip(n=n0): self._skip_base(name, n)
-            # geometry rules a table out (detect_base) when it clearly isn't there; while detection is
-            # pending or a plane is found we still suggest the cut, with "No base - skip" to opt out.
+            if self._table_ruled_out(name, n0):
+                # geometry found no flat table on this scan. Detection can miss a sparse table, so don't
+                # decide for the user: lead with a one-click skip they confirm (recorded, never asked again),
+                # and keep "cut anyway" as the fallback for a table the detector may have missed.
+                return ("No table detected on %s" % self._scan_label(name, n0),
+                        "The geometry shows no flat table under this scan, so there is probably nothing to cut. Skip it (the scanner most likely trimmed it already), or cut anyway if a table is still on the part.",
+                        "✓  Looks clear - skip base cut", skip, 1,
+                        ("Cut base anyway", go))
             return ("Cut the base off %s" % self._scan_label(name, n0),
                     "%d of %d scan%s may still have the table under the part. Drag one line above it and apply, or skip if this scan has no base. The cut is remembered and applied when the scans are combined." % (len(nobase), len(built), "" if len(built)==1 else "s"),
                     "✂  Remove base on %s" % self._scan_label(name, n0), go, 1,
