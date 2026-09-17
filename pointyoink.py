@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.148-pre"
+APP = "PointYoink"; VERSION = "0.9.150-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2975,7 +2975,7 @@ class App(ctk.CTk):
         if getattr(self, "_edit_dirty", False):
             choice=self._modal("Unsaved edits",
                                "You've edited this scan but haven't saved.\nKeep it as a new model, or throw the edits away?",
-                               [("Keep as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
+                               [("Save as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
             if choice=="keep":
                 self._edit_keep(); return False    # save + land on the new model; the pending nav is abandoned
             if choice!="discard":
@@ -3081,7 +3081,7 @@ class App(ctk.CTk):
                 self.mv.set_edit_tool(None); self._set_edit_tool(None, _init=True)
                 self._show_edit_palette()
                 self.renders_lbl.configure(text="Editing the model")
-                self.big_hint.configure(text="Select the junk and Delete to cut it off · “Keep as model” saves it · Discard reverts")
+                self.big_hint.configure(text="Select the junk and Delete to cut it off · “Save as new model” saves it · Discard reverts")
             except Exception as e: log_error("mesh-edit-bar", e)
         try: self.mv.load(src, ready, max_faces=faces)
         except Exception as e:
@@ -3098,7 +3098,7 @@ class App(ctk.CTk):
         if getattr(self, "_edit_dirty", False):
             choice=self._modal("Unsaved edits",
                                "Keep your current edits before switching what you edit?",
-                               [("Keep as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
+                               [("Save as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
             if choice=="keep":
                 _revert(); self._edit_keep(); return     # save first; user can switch again after
             if choice!="discard":                        # cancel or X (None): stay put, revert the switch (Codex #1)
@@ -3131,7 +3131,7 @@ class App(ctk.CTk):
             if getattr(self, "_edit_dirty", False) and not getattr(self, "_edit_saving", False):
                 choice=self._modal("Unsaved point edits",
                                    "You've cleaned some points but haven't saved them.\nKeep them as a new model, or throw the edits away?",
-                                   [("Keep as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
+                                   [("Save as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
                 if choice=="cancel":
                     try: self.pts_sw.set("Points")   # stay in the editor
                     except Exception: pass
@@ -3206,8 +3206,8 @@ class App(ctk.CTk):
                 try: self.renders_lbl.configure(text="Fused points · scanner" if real_cloud else "Model vertices · no separate cloud")
                 except Exception: pass
                 if getattr(self, "_in_edit_mode", False):
-                    self.big_hint.configure(text=("Select and Delete to clean · then “Keep as model” to save it (holes stay open) · Discard to revert" if real_cloud
-                                                  else "No separate point cloud for this scan - these are the model's own vertices · Select and Delete, then Keep as model"))
+                    self.big_hint.configure(text=("Select and Delete to clean · then “Save as new model” to save it (holes stay open) · Discard to revert" if real_cloud
+                                                  else "No separate point cloud for this scan - these are the model's own vertices · Select and Delete, then Save as new model"))
                     try:
                         self._edit_orig_n=int(self.mv._pts_n or 0); self._edit_cur_n=self._edit_orig_n   # baseline: edits are dirty once we drop below this
                         full=_ply_element_count(cloud, "vertex")   # Codex #3: if the cloud was capped, say so - the save uses this reduced set
@@ -3241,20 +3241,31 @@ class App(ctk.CTk):
                                                    fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=12))
         self.edit_target_sw.pack(fill="x", padx=6); self.edit_target_sw.set("Mesh")
         ctk.CTkLabel(p, text="Mesh: cut junk off the built model. Points: clean the raw capture, then rebuild.", font=ctk.CTkFont(size=10), text_color=DIM, anchor="w", justify="left", wraplength=250).pack(fill="x", padx=6, pady=(2,10))
-        ctk.CTkLabel(p, text="SELECT WITH", font=ctk.CTkFont(size=10, weight="bold"), text_color=MUT, anchor="w").pack(fill="x", padx=6, pady=(2,2))
+        ctk.CTkLabel(p, text="SELECT WITH", font=ctk.CTkFont(size=10, weight="bold"), text_color=MUT, anchor="w").pack(fill="x", padx=6, pady=(2,3))
+        grid=ctk.CTkFrame(p, fg_color="transparent"); grid.pack(fill="x", padx=6)
+        grid.grid_columnconfigure((0,1), weight=1, uniform="tool")
         self._edit_tool_btns={}
-        def _mktool(tool, label, tip):
-            b=ctk.CTkButton(p, text=label, height=32, corner_radius=8, fg_color="transparent", hover_color=CARD2, text_color=TX, anchor="w", font=ctk.CTkFont(size=12), command=lambda t=tool: self._set_edit_tool(t))
-            b.pack(fill="x", padx=6, pady=2); self._tip(b, tip); self._edit_tool_btns[tool]=b
-        _mktool("lasso","➰  Lasso","Trace a freehand loop around what to select")
-        _mktool("rect","▭  Box","Drag a rectangle to select")
-        _mktool("brush","🖌  Brush","Paint over what to select · scroll to size the brush")
-        _mktool("magic","🪄  Magic","Click one spot to grab everything connected to it")
+        tools=(("lasso","◯","Lasso","Trace a freehand loop around what to select"),
+               ("rect","▭","Box","Drag a rectangle to select"),
+               ("brush","✎","Brush","Paint over what to select · scroll to size the brush"),
+               ("magic","✦","Magic","Click one spot to grab everything connected to it"))
+        for i,(tool,icon,label,tip) in enumerate(tools):
+            b=ctk.CTkButton(grid, text="%s  %s" % (icon, label), height=46, corner_radius=10, fg_color=CARD, hover_color=STROKE,
+                            text_color=TX, font=ctk.CTkFont(size=13), command=lambda t=tool: self._set_edit_tool(t))
+            b.grid(row=i//2, column=i%2, sticky="ew", padx=2, pady=2); self._tip(b, tip); self._edit_tool_btns[tool]=b
+        # settings for the active tool (brush size, magic reach, or a hint) - filled by _refresh_tool_settings
+        self.tool_settings=ctk.CTkFrame(p, fg_color="transparent"); self.tool_settings.pack(fill="x", padx=6, pady=(6,2))
+        # add / remove from the selection (Shift and Ctrl still work, but you don't have to know that)
+        ctk.CTkLabel(p, text="SELECTION MODE", font=ctk.CTkFont(size=10, weight="bold"), text_color=MUT, anchor="w").pack(fill="x", padx=6, pady=(6,2))
+        self.sel_mode_sw=ctk.CTkSegmentedButton(p, values=["Replace","Add","Subtract"], command=self._sel_mode_changed, height=28, corner_radius=8,
+                                                fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=11))
+        self.sel_mode_sw.pack(fill="x", padx=6); self.sel_mode_sw.set("Replace")
+        ctk.CTkLabel(p, text="REACH", font=ctk.CTkFont(size=10, weight="bold"), text_color=MUT, anchor="w").pack(fill="x", padx=6, pady=(8,2))
         self.vis_only=ctk.BooleanVar(value=False)
-        _vis=ctk.CTkCheckBox(p, text="Only what I can see", variable=self.vis_only, command=self._toggle_visible_only,
-                             font=ctk.CTkFont(size=12), text_color=TX, checkbox_width=18, checkbox_height=18, corner_radius=4)
-        _vis.pack(anchor="w", padx=6, pady=(10,0)); self._tip(_vis, "On: selection ignores the hidden back side (good for trimming). Off: selects straight through the object.")
-        ctk.CTkLabel(p, text="Skips faces/points hidden behind the object.", font=ctk.CTkFont(size=10), text_color=DIM, anchor="w", justify="left", wraplength=250).pack(fill="x", padx=6, pady=(0,8))
+        self.depth_sw=ctk.CTkSegmentedButton(p, values=["Through object","Visible only"], command=self._depth_mode_changed, height=28, corner_radius=8,
+                                             fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=11))
+        self.depth_sw.pack(fill="x", padx=6); self.depth_sw.set("Through object")
+        ctk.CTkLabel(p, text="Visible only skips whatever is hidden behind the object.", font=ctk.CTkFont(size=10), text_color=DIM, anchor="w", justify="left", wraplength=250).pack(fill="x", padx=6, pady=(2,8))
         self._hr(p, pady=(2,6))
         srow=ctk.CTkFrame(p, fg_color="transparent"); srow.pack(fill="x", padx=6)
         for label,cmd,tip in (("Invert", lambda:self.mv.invert_selection(), "Select everything except what's selected"),
@@ -3263,19 +3274,24 @@ class App(ctk.CTk):
             bb.pack(side="left", expand=True, fill="x", padx=2); self._tip(bb, tip)
         self.edit_count=ctk.CTkLabel(p, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w"); self.edit_count.pack(fill="x", padx=6, pady=(4,2))
         drow=ctk.CTkFrame(p, fg_color="transparent"); drow.pack(fill="x", padx=6, pady=(2,0))
-        db=ctk.CTkButton(drow, text="🗑  Delete selected", height=34, corner_radius=8, fg_color="#3a2530", hover_color="#4a2f3c", text_color="#ff9db0", font=ctk.CTkFont(size=12, weight="bold"), command=self._edit_delete)
-        db.pack(side="left", expand=True, fill="x", padx=(0,2)); self._tip(db, "Delete the selected (red) part")
-        ub=ctk.CTkButton(drow, text="↶", width=44, height=34, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=13), command=self._edit_undo)
-        ub.pack(side="left", padx=(2,0)); self._tip(ub, "Undo the last delete")
+        self.edit_delete_btn=ctk.CTkButton(drow, text="🗑  Delete selected", height=34, corner_radius=8, fg_color="#3a2530", hover_color="#4a2f3c", text_color="#ff9db0", font=ctk.CTkFont(size=12, weight="bold"), command=self._edit_delete, state="disabled")
+        self.edit_delete_btn.pack(side="left", expand=True, fill="x", padx=(0,2)); self._tip(self.edit_delete_btn, "Delete the selected (red) part")
+        self.edit_undo_btn=ctk.CTkButton(drow, text="↶", width=44, height=34, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=13), command=self._edit_undo, state="disabled")
+        self.edit_undo_btn.pack(side="left", padx=(2,0)); self._tip(self.edit_undo_btn, "Undo the last delete")
         self._hr(p, pady=(12,6))
-        self.edit_keep=ctk.CTkButton(p, text="✓  Save as new model", height=40, corner_radius=8, fg_color=OK, hover_color="#35b57c", text_color="#04140d", font=ctk.CTkFont(size=13, weight="bold"), command=self._edit_keep, state="disabled")
+        self.edit_keep=ctk.CTkButton(p, text="Save as new model", height=40, corner_radius=8, fg_color=CARD2, hover_color=AC_H, text_color=DIM, font=ctk.CTkFont(size=13, weight="bold"), command=self._edit_keep, state="disabled")
         self.edit_keep.pack(fill="x", padx=6, pady=(0,4)); self._tip(self.edit_keep, "Save your edits as a new model version. The original is kept.")
         self.edit_discard=ctk.CTkButton(p, text="Discard edits", height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=self._edit_discard, state="disabled")
         self.edit_discard.pack(fill="x", padx=6, pady=(0,2)); self._tip(self.edit_discard, "Throw the edits away and reload the original.")
         ctk.CTkButton(p, text="‹  Done editing", height=28, corner_radius=8, fg_color="transparent", border_width=0, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11),
                       command=lambda: self.tabs.set("3D Preview", True)).pack(fill="x", padx=6, pady=(6,12))
     def _show_edit_palette(self):
-        try: self.projpanel.grid_remove(); self.editpanel.grid(); self.editpanel.lift()
+        try:
+            self.projpanel.grid_remove(); self.editpanel.grid(); self.editpanel.lift()
+            if getattr(self, "sel_mode_sw", None): self.sel_mode_sw.set("Replace")   # fresh session defaults
+            if getattr(self, "depth_sw", None): self.depth_sw.set("Through object")
+            try: self.vis_only.set(False); self.mv.set_visible_only(False); self.mv.edit_mode="replace"
+            except Exception: pass
         except Exception: pass
     def _hide_edit_palette(self):
         try:
@@ -3285,24 +3301,69 @@ class App(ctk.CTk):
     def _toggle_visible_only(self):
         try: self.mv.set_visible_only(bool(self.vis_only.get()))
         except Exception as e: log_error("visible-only", e)
+    def _depth_mode_changed(self, v):
+        try: self.vis_only.set(v=="Visible only"); self._toggle_visible_only()
+        except Exception: pass
+    def _sel_mode_changed(self, v):
+        try: self.mv.edit_mode={"Replace":"replace","Add":"add","Subtract":"subtract"}.get(v,"replace")
+        except Exception: pass
+    def _brush_size_changed(self, v):
+        try:
+            self.mv.brush_px=float(v)
+            if getattr(self,"_brush_val",None): self._brush_val.configure(text="%d px" % int(v))
+        except Exception: pass
+    def _magic_reach_changed(self, v):
+        try:
+            self.mv.magic_k=float(v)
+            if getattr(self,"_magic_val",None): self._magic_val.configure(text="%.1f×" % float(v))
+        except Exception: pass
+    def _refresh_tool_settings(self, tool):
+        """Fill the tool-settings box under the tools with controls for the active tool."""
+        ts=getattr(self, "tool_settings", None)
+        if ts is None: return
+        for w in ts.winfo_children():
+            try: w.destroy()
+            except Exception: pass
+        self._brush_val=None; self._magic_val=None
+        if tool=="brush":
+            row=ctk.CTkFrame(ts, fg_color="transparent"); row.pack(fill="x")
+            ctk.CTkLabel(row, text="Brush size", text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left")
+            self._brush_val=ctk.CTkLabel(row, text="%d px" % int(self.mv.brush_px), text_color=TX, font=ctk.CTkFont(size=11)); self._brush_val.pack(side="right")
+            s=ctk.CTkSlider(ts, from_=6, to=120, number_of_steps=114, command=self._brush_size_changed); s.set(float(self.mv.brush_px)); s.pack(fill="x", pady=(2,0))
+            ctk.CTkLabel(ts, text="Scroll on the model also sizes it.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w").pack(fill="x")
+        elif tool=="magic":
+            row=ctk.CTkFrame(ts, fg_color="transparent"); row.pack(fill="x")
+            ctk.CTkLabel(row, text="Magic reach", text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left")
+            self._magic_val=ctk.CTkLabel(row, text="%.1f×" % float(getattr(self.mv,"magic_k",3.0)), text_color=TX, font=ctk.CTkFont(size=11)); self._magic_val.pack(side="right")
+            s=ctk.CTkSlider(ts, from_=1.0, to=8.0, number_of_steps=70, command=self._magic_reach_changed); s.set(float(getattr(self.mv,"magic_k",3.0))); s.pack(fill="x", pady=(2,0))
+            ctk.CTkLabel(ts, text="Higher jumps bigger gaps between points.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=250).pack(fill="x")
+        elif tool in ("lasso","rect"):
+            ctk.CTkLabel(ts, text=("Trace a loop around the part to select." if tool=="lasso" else "Drag a rectangle over the part to select."),
+                         text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=250).pack(fill="x")
+        else:
+            ctk.CTkLabel(ts, text="Pick a tool, then drag on the model.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=250).pack(fill="x")
     def _set_edit_tool(self, tool, _init=False):
         """Pick a point-selection tool (or click the active one / pass None to go back to orbit)."""
         cur=getattr(self.mv, "edit_tool", None)
         if not _init and cur==tool: tool=None
         try: self.mv.set_edit_tool(tool)
         except Exception: pass
+        try:   # set_edit_tool resets edit_mode to replace; re-apply the palette's Replace/Add/Subtract choice
+            if getattr(self, "sel_mode_sw", None): self.mv.edit_mode={"Replace":"replace","Add":"add","Subtract":"subtract"}.get(self.sel_mode_sw.get(),"replace")
+        except Exception: pass
         for t,b in getattr(self, "_edit_tool_btns", {}).items():
-            try: b.configure(fg_color=(AC if t==tool else "transparent"), text_color=("#04121f" if t==tool else TX))
+            try: b.configure(fg_color=(AC if t==tool else CARD), text_color=("#04121f" if t==tool else TX))   # active cell = accent, others = card
             except Exception: pass
+        self._refresh_tool_settings(tool)
         if tool=="magic" and not _init:   # Magic needs scipy for a true connected-region grow; say so if it's missing
             try: import scipy.spatial  # noqa: F401
             except Exception: self.set_banner("Magic is limited without SciPy (it grabs a radius, not the connected region). Install python3-scipy for the full tool.", WARN)
         try: self.big_hint.configure(text={
-            "lasso":"Lasso: trace around points to select · Shift adds, Ctrl removes · then Delete",
-            "rect":"Box: drag a rectangle to select · Shift adds, Ctrl removes · then Delete",
-            "brush":"Brush: paint over points · scroll to size · Ctrl to erase selection · then Delete",
-            "magic":"Magic: click a spot to grab everything connected to it · then Delete",
-        }.get(tool, "Fused points - pick a tool to clean it, then switch to Mesh"))
+            "lasso":"Trace a loop around the part · then Delete",
+            "rect":"Drag a box over the part · then Delete",
+            "brush":"Paint over the part · scroll to size the brush · then Delete",
+            "magic":"Click a spot to grab everything connected · then Delete",
+        }.get(tool, "Pick a tool on the right, then drag on the model"))
         except Exception: pass
     def _edit_delete(self):
         try:
@@ -3315,28 +3376,50 @@ class App(ctk.CTk):
             self._edit_sync_dirty()
         except Exception as e: log_error("edit-undo", e)
     def _edit_sync_dirty(self):
-        """Dirty = fewer points/faces than we loaded. Drives Keep/Discard. Works for both edit targets
+        """Dirty = fewer points/faces than we loaded. Drives Save/Discard. Works for both edit targets
         (mesh mode has _pts_n=0, so we track the count via _edit_cur_n from on_points_change)."""
         try:
             n=int(getattr(self, "_edit_cur_n", 0) or 0); orig=int(getattr(self, "_edit_orig_n", 0) or 0)
             dirty=bool(orig and n<orig and not getattr(self, "_edit_saving", False))
             self._edit_dirty=dirty
             st="normal" if dirty else "disabled"
-            for w in (getattr(self,"edit_keep",None), getattr(self,"edit_discard",None)):
-                try: w.configure(state=st)
-                except Exception: pass
+            try: self.edit_keep.configure(state=st, fg_color=(AC if dirty else CARD2), text_color=("#04121f" if dirty else DIM))   # muted when nothing to save
+            except Exception: pass
+            try: self.edit_discard.configure(state=st)
+            except Exception: pass
+        except Exception: pass
+    def _edit_del_faces(self):
+        """How many the current Delete would remove: faces (all 3 verts selected) in Mesh mode, else points."""
+        try:
+            sel=getattr(self.mv, "_pts_sel", None)
+            if sel is None or not sel.any(): return 0
+            if getattr(self.mv, "edit_target", "points")=="mesh" and getattr(self.mv, "_medit_faces", None) is not None:
+                return int(sel[self.mv._medit_faces].all(axis=1).sum())
+            return int(sel.sum())
+        except Exception: return 0
+    def _edit_update_actions(self):
+        """Enable Delete only when the selection would actually remove something; Undo only when there's history."""
+        try:
+            can_del=bool(getattr(self, "_edit_del_count", 0))
+            mesh=getattr(self.mv, "edit_target", "points")=="mesh"
+            can_undo=bool(self.mv._medit_undo if mesh else self.mv._pts_undo)
+            if getattr(self, "edit_delete_btn", None): self.edit_delete_btn.configure(state="normal" if can_del else "disabled")
+            if getattr(self, "edit_undo_btn", None): self.edit_undo_btn.configure(state="normal" if can_undo else "disabled")
         except Exception: pass
     def _edit_points_changed(self, n):
         """Live count (fired by glview after a select or edit). n is points or faces per the edit target."""
         self._edit_cur_n=int(n or 0)
         try:
-            unit="faces" if getattr(self.mv, "edit_target", "points")=="mesh" else "pts"
-            sel=int(self.mv._pts_sel.sum()) if getattr(self.mv, "_pts_sel", None) is not None else 0
+            mesh=getattr(self.mv, "edit_target", "points")=="mesh"
+            unit="faces" if mesh else "points"
+            deln=self._edit_del_faces(); self._edit_del_count=deln   # what Delete will actually remove
             orig=int(getattr(self, "_edit_orig_n", 0) or 0)
             removed=(orig-n) if (orig and n<orig) else 0
-            txt=("%s %s" % (_kfmt(n), unit)) + (" · %s selected" % _kfmt(sel) if sel else "") + (" · %s cut" % _kfmt(removed) if removed else "")
-            self.edit_count.configure(text=txt)
+            parts=["%s %s" % (_kfmt(n), unit), "%s selected" % _kfmt(deln)]
+            if removed: parts.append("%s removed" % _kfmt(removed))
+            self.edit_count.configure(text="  ·  ".join(parts))
         except Exception: pass
+        self._edit_update_actions()
         self._edit_sync_dirty()
     def _edit_discard(self):
         """Throw away the edits: reload the current target (mesh or points) fresh from disk."""
@@ -3398,7 +3481,7 @@ class App(ctk.CTk):
         threading.Thread(target=work, daemon=True).start()
     def _edit_keep_done(self, name, node, out, ok, err):
         self._edit_saving=False; self._preview_idle()
-        try: self.edit_keep.configure(text="✓ Keep as model")
+        try: self.edit_keep.configure(text="Save as new model")
         except Exception: pass
         if not ok:
             self._edit_sync_dirty()

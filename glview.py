@@ -84,7 +84,8 @@ class GLView(OpenGLFrame):
         self.edit_mode = "replace"     # replace / add / subtract (Shift adds, Ctrl subtracts)
         self._sel_path = None          # screen-space points of the in-progress lasso/rect/brush stroke
         self.brush_px = 24.0           # brush radius in screen pixels
-        self.magic_thresh = 0.02       # magic-wand grow distance (view-space units; ~2% of the model)
+        self.magic_thresh = 0.02       # magic-wand grow distance fallback (view units) when spacing is unknown
+        self.magic_k = 3.0             # magic reach = this many median point-spacings (tunable in the palette)
         self._edit_orbit = False       # a left-drag that started in the empty margin: orbit, don't select
         self.animate = 0
         self.tf = None                         # orientation transform of the loaded mesh (shade.load_oriented_tf)
@@ -192,6 +193,7 @@ class GLView(OpenGLFrame):
             self._n = int(f.size); self._nw = 0; self._zmax = float(v[:, 2].max()); self._src = (v, f); self._wire_gen = None
             self._pts_n = 0                                              # leaving points mode: don't draw stale points over the mesh
             self.edit_target = "points"; self._medit_faces = None; self._sel_face_n = 0   # a freshly loaded mesh is view-only until begin_mesh_edit()
+            self._depth_valid = False                                   # new geometry: the visible-only depth cache is stale
             if self._split is not None:                                 # index sets belong to the old vertices: drop them
                 try: GL.glDeleteBuffers(2, [int(self._split[0]), int(self._split[3])])
                 except Exception: pass
@@ -236,7 +238,7 @@ class GLView(OpenGLFrame):
             self.tkMakeCurrent()
             # entering points mode: drop any mesh-edit state so selection/delete/save use the CLOUD, not
             # stale faces, and so _pts_recolor() below takes the point path not _mesh_recolor() (Codex #1).
-            self.edit_target = "points"; self._medit_faces = None; self._medit_undo = []; self._sel_face_n = 0
+            self.edit_target = "points"; self._medit_faces = None; self._medit_undo = []; self._sel_face_n = 0; self._depth_valid = False
             for _b in ("_pvbo", "_pcvbo"):
                 if getattr(self, _b, None) is not None:
                     try: GL.glDeleteBuffers(1, [int(getattr(self, _b))])
@@ -483,6 +485,9 @@ class GLView(OpenGLFrame):
         if not len(cand): return
         seed = int(cand[np.argmin(d2[cand])])
         grown = self._region_grow(seed)
+        if self.visible_only:                                  # don't let the grow spill onto the hidden back side
+            vis = self._visible_mask(scr, front, winz)
+            grown = grown[vis[grown]]
         if mode == "subtract": self._pts_sel[grown] = False
         else: self._pts_sel[grown] = True
         self._pts_recolor(); self._display()
@@ -505,7 +510,7 @@ class GLView(OpenGLFrame):
         try:
             dd, _ = tree.query(samp, k=2); spacing = float(np.median(dd[:, 1])) if dd.ndim > 1 and dd.shape[1] > 1 else 0.0
         except Exception: spacing = 0.0
-        thr = spacing * 3.0 if spacing > 0 else float(self.magic_thresh)
+        thr = spacing * float(getattr(self, "magic_k", 3.0)) if spacing > 0 else float(self.magic_thresh)
         visited = np.zeros(n, dtype=bool); visited[seed] = True
         frontier = [seed]; cap = min(n, 300000)
         for _ in range(400):                                  # cap iterations so a runaway grow can't hang
