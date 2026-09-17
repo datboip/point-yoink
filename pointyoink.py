@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.185-pre"
+APP = "PointYoink"; VERSION = "0.9.186-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2904,8 +2904,8 @@ class App(ctk.CTk):
                 var=ctk.BooleanVar(value=False); var.trace_add("write", lambda *a: self.update_summary())
             self.pull_sel[name]=var
             if q and q not in (self.disp(name)+" "+name).lower(): continue
-            _sel=(name==self.selected)   # selected = a crisp accent outline on a neutral card, so the blue "on this PC" badge doesn't blend into a blue fill
-            card=ctk.CTkFrame(self.llist, fg_color=(CARD if _sel else ROW), corner_radius=10, border_width=(2 if _sel else 0), border_color=AC)
+            _sel=(name==self.selected)   # selected = a lifted (lighter) card with a soft neutral edge, NOT a blue outline: a blue outline collided with the blue "on this PC" badge sitting inside it
+            card=ctk.CTkFrame(self.llist, fg_color=("#252b37" if _sel else ROW), corner_radius=10, border_width=(1 if _sel else 0), border_color="#3d4a63")
             card.grid(row=2*shown, column=0, sticky="ew", pady=(2,0), padx=4); card.grid_columnconfigure(2, weight=1)
             self.rows[name]=card
             if self.page=="import":
@@ -5089,10 +5089,10 @@ class App(ctk.CTk):
                 caption="Choose One-tap Edit for the simplest workflow."),
            dict(name="Cut base", icon="cut-base", title="Cut the base off",
                 purpose="If the table or turntable is still attached, remove it here.",
-                steps=[("In PointYoink", "Drag one line just above the part and apply."),
+                steps=[("In PointYoink", "Adjust the cut height until only the table is red, then Apply cut."),
                        ("Remembered", "PointYoink keeps the cut and reuses it when scans are combined.")],
                 info=None, where="In PointYoink",
-                shots=[("Remove base", "app-cutbase")], caption="Grey stays, red goes; drag the height until only the table is red."),
+                shots=[("Remove base", "app-cutbase")], caption="Grey stays, red goes; only the table should be red."),
            dict(name="Combine", icon="combine", title="Combine the sides",
                 purpose="Scanned each side separately? Line them up into one model.",
                 steps=[("In PointYoink", "Pick 3-5 matching spots on two scans, line up, Keep."),
@@ -5126,6 +5126,10 @@ class App(ctk.CTk):
         """Pop a big, dismissible view of a screenshot - walkthrough thumbnails are small to read, so any
         image is click-to-enlarge. Click the image or press Esc to close."""
         try:
+            im=Image.open(path); im.load(); iw,ih=im.size      # load the image FIRST: if it fails, no empty window is left behind
+        except Exception as e:
+            log_error("zoom-image", e); return
+        try:
             top=tk.Toplevel(self); top.configure(bg="#05070a"); top.title(os.path.basename(path))
             try: top.attributes("-topmost", True)
             except Exception: pass
@@ -5136,8 +5140,7 @@ class App(ctk.CTk):
                 mx=self.winfo_rootx(); my=self.winfo_rooty()
             except Exception:
                 mw,mh,mx,my=1600,1000,120,120
-            maxw=min(1500, int(mw*0.92)); maxh=min(920, int(mh*0.92))
-            im=Image.open(path); iw,ih=im.size
+            maxw=min(1500, max(1,int(mw*0.92))); maxh=min(920, max(1,int(mh*0.92)))
             scale=min(maxw/iw, maxh/ih, 1.0)                    # fit the window; never upscale past the source
             w,h=max(1,int(iw*scale)), max(1,int(ih*scale))
             img=ctk.CTkImage(dark_image=im, light_image=im, size=(w,h)); top._zimg=img
@@ -5151,6 +5154,8 @@ class App(ctk.CTk):
             top.bind("<Escape>", lambda e: top.destroy())
         except Exception as e:
             log_error("zoom-image", e)
+            try: top.destroy()          # don't leave a half-built window if something after Toplevel() failed
+            except Exception: pass
     def _clickimg(self, parent, path, w, **cellkw):
         """An image in a card that enlarges on click (hand cursor + click binding)."""
         cell=ctk.CTkFrame(parent, fg_color="#0a0c10", corner_radius=10, border_width=1, border_color=STROKE); cell.pack(**cellkw)
@@ -5221,7 +5226,12 @@ class App(ctk.CTk):
             if shots:
                 si=max(0, min(self._guide_shot, len(shots)-1)); path=os.path.join(adir, shots[si][1]+".png")
                 ctk.CTkButton(wl, text="⤢  Enlarge", height=26, corner_radius=8, fg_color="transparent", hover_color=CARD2, text_color=AC, font=ctk.CTkFont(size=13), command=lambda p=path: self._zoom_image(p)).pack(side="right")
-                self._clickimg(rightw, path, 620, pady=(8,0))
+                # fit to BOTH a max width and a max height: PointYoink's own screens are near-square and would
+                # otherwise be tall enough to push the footer buttons off the dialog.
+                try: iw,ih=Image.open(path).size
+                except Exception: iw,ih=2,1
+                scale=min(620.0/iw, 400.0/ih); w=max(220, int(iw*scale))
+                self._clickimg(rightw, path, w, pady=(8,0))
                 if len(shots)>1:
                     tabs=ctk.CTkFrame(rightw, fg_color="transparent"); tabs.pack(fill="x", pady=(12,0))
                     for k,(lab,s) in enumerate(shots):
@@ -5819,7 +5829,7 @@ class App(ctk.CTk):
         if not vs: return
         cur=self._proc_current(name, node) or vs[0]
         _home=os.path.expanduser("~")
-        def _tilde(p): return ("~"+p[len(_home):]) if p and p.startswith(_home) else p   # show ~/... not /home/<user>/...
+        def _tilde(p): return ("~"+p[len(_home):]) if p and (p==_home or p.startswith(_home+os.sep)) else p   # show ~/... not /home/<user>/... (dir boundary, so /home/rick_x isn't matched)
         t=self._top("Export · %s" % self._scan_label(name, node), 640, 360, key="export")
         if t is None: return
         card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
