@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.150-pre"
+APP = "PointYoink"; VERSION = "0.9.151-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1661,11 +1661,11 @@ class App(ctk.CTk):
         tk.Frame(pm, bg=STROKE, width=1, bd=0, highlightthickness=0).grid(row=0,column=3, sticky="ns")
         self.side=ctk.CTkFrame(pm, fg_color="transparent", width=278); self.side.grid(row=0,column=4, sticky="nsew")
         self.side.grid_propagate(False); self.side.grid_columnconfigure(0, weight=1); self.side.grid_rowconfigure(0, weight=1)
-        self.opts=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.opts.grid(row=0,column=0, sticky="nsew", padx=(6,0)); self._autohide(self.opts)
+        self.opts=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.opts.grid(row=0,column=0, sticky="nsew", padx=(6,12)); self._autohide(self.opts)
         self.opts.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.opts, "vertical"), add="+")
-        self.projpanel=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.projpanel.grid(row=0,column=0, sticky="nsew", padx=(6,0)); self.projpanel.grid_remove(); self._autohide(self.projpanel)
+        self.projpanel=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.projpanel.grid(row=0,column=0, sticky="nsew", padx=(6,12)); self.projpanel.grid_remove(); self._autohide(self.projpanel)
         self.projpanel.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.projpanel, "vertical"), add="+")
-        self.editpanel=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.editpanel.grid(row=0,column=0, sticky="nsew", padx=(6,0)); self.editpanel.grid_remove(); self._autohide(self.editpanel)
+        self.editpanel=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.editpanel.grid(row=0,column=0, sticky="nsew", padx=(6,12)); self.editpanel.grid_remove(); self._autohide(self.editpanel)
         self._build_edit_palette(self.editpanel)   # the point/mesh editor tools live here (shown in place of the project panel while editing)
         self.rail_btns={}; self.rail_bars={}
 
