@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.153-pre"
+APP = "PointYoink"; VERSION = "0.9.155-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -72,6 +72,18 @@ CFG_DIR = os.path.join(HOME, ".config", "pointyoink"); CFG = os.path.join(CFG_DI
 if os.environ.get("POINTYOINK_CONFIG"):
     CFG = os.environ["POINTYOINK_CONFIG"]; CFG_DIR = os.path.dirname(CFG) or CFG_DIR
 HERE = os.path.dirname(os.path.abspath(__file__)); ICON = os.path.join(HERE, "icon.png")
+_ICON_ROOT = os.path.join(HERE, "assets", "icons", "png"); _icon_cache = {}
+def _icon(name, state="default", size=18):
+    """Load a PointYoink line icon as a CTkImage (states: default/accent/muted/danger/on-accent). Uses the
+    2x (size*2) PNG so it stays crisp. Returns None if the file is missing, so callers keep their text label."""
+    key=(name, state, size)
+    if key in _icon_cache: return _icon_cache[key]
+    try:
+        p=os.path.join(_ICON_ROOT, state, str(size*2), name+".png")
+        img=Image.open(p); ci=ctk.CTkImage(dark_image=img, light_image=img, size=(size, size))
+    except Exception:
+        ci=None
+    _icon_cache[key]=ci; return ci
 def _build_id():
     """A short stamp so two builds of the same VERSION are tellable apart: the git short hash while
     running from the repo (with '+' if there are uncommitted changes), else the source file's date-time."""
@@ -750,9 +762,24 @@ class TabStrip(ctk.CTkFrame):
         frame=None
         if self.body is not None:
             frame=ctk.CTkFrame(self.body, fg_color="transparent"); frame.grid(row=0,column=0, sticky="nsew"); frame.grid_remove()
-        self._tabs[name]={"btn":b,"ul":ul,"frame":frame}
+        self._tabs[name]={"btn":b,"ul":ul,"frame":frame,"cell":cell}
         if self._cur is None: self.set(name)
         return frame
+    def set_tab_visible(self, name, on, before=None):
+        """Show or hide a whole tab (its button + underline). If the active tab is hidden, switch to the first."""
+        t=self._tabs.get(name)
+        if not t: return
+        cell=t["cell"]
+        if on:
+            if not cell.winfo_manager():
+                kw={"side":"left","padx":(0,4)}
+                if before and before in self._tabs: kw["before"]=self._tabs[before]["cell"]
+                cell.pack(**kw)
+        else:
+            cell.pack_forget()
+            if self._cur==name:
+                for n in self._tabs:
+                    if n!=name and self._tabs[n]["cell"].winfo_manager(): self.set(n); break
     def set(self, name, fire=False):
         if name not in self._tabs: return
         self._cur=name
@@ -1557,17 +1584,22 @@ class App(ctk.CTk):
         b2=ctk.CTkButton(lh, text="all", width=36, height=22, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT,
                       font=ctk.CTkFont(size=10), command=self.select_all); b2.pack(side="right")
         self.list_selbtns=[b1, b2]
-        se=ctk.CTkEntry(left, placeholder_text="⌕  Search projects…", height=34, corner_radius=8,
+        srow=ctk.CTkFrame(left, fg_color="transparent"); srow.grid(row=1,column=0, sticky="ew", padx=18, pady=(0,6)); srow.grid_columnconfigure(0, weight=1)
+        se=ctk.CTkEntry(srow, placeholder_text="⌕  Search projects…", height=34, corner_radius=8,
                         fg_color="#0d0f14", border_color=STROKE, text_color=TX, placeholder_text_color=MUT, font=ctk.CTkFont(size=12))
-        se.grid(row=1,column=0, sticky="ew", padx=18, pady=(0,6))
-        se.bind("<KeyRelease>", lambda e: self.search.set(se.get()))
+        se.grid(row=0,column=0, sticky="ew"); self._search_entry=se
+        se.bind("<KeyRelease>", lambda e: (self.search.set(se.get()), self._sync_search_clear()))
+        self.search_clear=ctk.CTkButton(srow, text="✕", width=30, height=34, corner_radius=8, fg_color="transparent",
+                                        hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=13), command=self._clear_search)
+        self._tip(self.search_clear, "Clear the search")   # shown only while there's text (see _sync_search_clear)
         self.llist=ctk.CTkScrollableFrame(left, fg_color="transparent"); self.llist.grid(row=2,column=0, sticky="nsew", padx=(8,2), pady=0); self._autohide(self.llist)
         self.llist.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.llist, "vertical"), add="+")
         self.llist.grid_columnconfigure(0, weight=1)
         self.list_empty=None   # the "No projects yet" panel, created by render_list; kept as tall as the list's visible area
         self.llist._parent_canvas.bind("<Configure>", lambda e: self._fit_empty("list_empty", self.llist), add="+")
-        self.sel_lbl=ctk.CTkLabel(left, text="No projects selected", text_color=MUT, anchor="w", font=ctk.CTkFont(size=12))
-        self.sel_lbl.grid(row=3,column=0, sticky="ew", padx=18, pady=(8,12))
+        tk.Frame(left, bg=STROKE, height=1, bd=0, highlightthickness=0).grid(row=3,column=0, sticky="ew", padx=12, pady=(6,0))   # footer divider so the status line isn't floating
+        self.sel_lbl=ctk.CTkLabel(left, text="No projects selected", text_color=MUT, anchor="w", font=ctk.CTkFont(size=11))
+        self.sel_lbl.grid(row=4,column=0, sticky="ew", padx=18, pady=(7,12))
         tk.Frame(pm, bg=STROKE, width=1, bd=0, highlightthickness=0).grid(row=0,column=1, sticky="ns")
 
         # -- centre: title, tabs (3D preview | Files), preview, scan strip --
@@ -1592,6 +1624,8 @@ class App(ctk.CTk):
         self.next_strip=ctk.CTkFrame(self.projbar, fg_color="#0f1a2b", corner_radius=12, border_width=1, border_color="#1f3a5f")   # NEXT: shown on the Projects page only
         self.tabs=TabStrip(centre, base=BG, size=13, command=self._on_preview_tab); self.tabs.grid(row=1,column=0, sticky="nsew")
         pv=self.tabs.add("3D Preview"); self._edit_tab=self.tabs.add("✏ Edit"); fl=self.tabs.add("Files")
+        try: self.tabs.set_tab_visible("✏ Edit", False)   # hidden until a local project page shows it (Import can't edit)
+        except Exception: pass
         self._preview_tab=pv   # the Edit tab reuses this same live-view frame (keeps the camera/object); it has no frame of its own
         ctl=ctk.CTkFrame(self.tabs.bar, fg_color="transparent"); ctl.pack(side="right", pady=(0,4)); self._tab_ctl=ctl   # the 3D-only toolbar (View in 3D / Solid-Wireframe / Reset view); hidden for a flat 2D scanner preview
         self.view_btn=ctk.CTkButton(ctl, text="⟳  View in 3D", width=98, height=30, corner_radius=8, fg_color="transparent", border_width=1,
@@ -1896,6 +1930,8 @@ class App(ctk.CTk):
         elif m in self.mode_frames: target=self.mode_frames[m]
         else: return
         self._cur_mode=m   # remember the visible tab so the bottom bar doesn't say "Editing <project>" on Captures/Live
+        try: self.tabs.set_tab_visible("✏ Edit", self.page=="projects", before="Files")   # can't edit scanner projects on the Import page
+        except Exception: pass
         for k,f in self.mode_frames.items():
             if f is target: f.grid()
             else: f.grid_remove()
@@ -2457,7 +2493,20 @@ class App(ctk.CTk):
         self.import_btn.configure(text="Import %d project%s"%(n,s))
     def _search_changed(self):
         self.projects_sig=None
+        self._sync_search_clear()
         if self.projects: self.render_list(self.projects)
+    def _sync_search_clear(self):
+        """Show the search clear (✕) only while there's text to clear."""
+        try:
+            if (self.search.get() or "").strip():
+                if not self.search_clear.winfo_manager(): self.search_clear.grid(row=0,column=1, padx=(4,0))
+            else:
+                self.search_clear.grid_remove()
+        except Exception: pass
+    def _clear_search(self):
+        try:
+            self._search_entry.delete(0,"end"); self.search.set(""); self._sync_search_clear(); self._search_entry.focus_set()
+        except Exception: pass
 
     # ---- polling ----
     def refresh_loop(self):
@@ -3252,15 +3301,15 @@ class App(ctk.CTk):
         ctk.CTkLabel(p, text="SELECT WITH", font=ctk.CTkFont(size=10, weight="bold"), text_color=MUT, anchor="w").pack(fill="x", padx=6, pady=(2,3))
         grid=ctk.CTkFrame(p, fg_color="transparent"); grid.pack(fill="x", padx=6)
         grid.grid_columnconfigure((0,1), weight=1, uniform="tool")
-        self._edit_tool_btns={}
-        tools=(("lasso","◯","Lasso","Trace a freehand loop around what to select"),
-               ("rect","▭","Box","Drag a rectangle to select"),
-               ("brush","✎","Brush","Paint over what to select · scroll to size the brush"),
-               ("magic","✦","Magic","Click one spot to grab everything connected to it"))
-        for i,(tool,icon,label,tip) in enumerate(tools):
-            b=ctk.CTkButton(grid, text="%s  %s" % (icon, label), height=46, corner_radius=10, fg_color=CARD, hover_color=STROKE,
-                            text_color=TX, font=ctk.CTkFont(size=13), command=lambda t=tool: self._set_edit_tool(t))
-            b.grid(row=i//2, column=i%2, sticky="ew", padx=2, pady=2); self._tip(b, tip); self._edit_tool_btns[tool]=b
+        self._edit_tool_btns={}; self._edit_tool_icon={}
+        tools=(("lasso","lasso","Lasso","Trace a freehand loop around what to select"),
+               ("rect","box","Box","Drag a rectangle to select"),
+               ("brush","brush","Brush","Paint over what to select · scroll to size the brush"),
+               ("magic","magic","Magic","Click one spot to grab everything connected to it"))
+        for i,(tool,iname,label,tip) in enumerate(tools):
+            b=ctk.CTkButton(grid, text="  "+label, image=_icon(iname,"default"), compound="left", anchor="w", height=46, corner_radius=10,
+                            fg_color=CARD, hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=13), command=lambda t=tool: self._set_edit_tool(t))
+            b.grid(row=i//2, column=i%2, sticky="ew", padx=2, pady=2); self._tip(b, tip); self._edit_tool_btns[tool]=b; self._edit_tool_icon[tool]=iname
         # settings for the active tool (brush size, magic reach, or a hint) - filled by _refresh_tool_settings
         self.tool_settings=ctk.CTkFrame(p, fg_color="transparent"); self.tool_settings.pack(fill="x", padx=6, pady=(6,2))
         # add / remove from the selection (Shift and Ctrl still work, but you don't have to know that)
@@ -3276,22 +3325,22 @@ class App(ctk.CTk):
         ctk.CTkLabel(p, text="Visible only skips whatever is hidden behind the object.", font=ctk.CTkFont(size=10), text_color=DIM, anchor="w", justify="left", wraplength=250).pack(fill="x", padx=6, pady=(2,8))
         self._hr(p, pady=(2,6))
         srow=ctk.CTkFrame(p, fg_color="transparent"); srow.pack(fill="x", padx=6)
-        for label,cmd,tip in (("Invert", lambda:self.mv.invert_selection(), "Select everything except what's selected"),
-                              ("Clear", lambda:self.mv.clear_selection(), "Unselect everything")):
-            bb=ctk.CTkButton(srow, text=label, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11), command=cmd)
+        for label,iname,cmd,tip in (("Invert","invert-selection", lambda:self.mv.invert_selection(), "Select everything except what's selected"),
+                                    ("Clear","clear-selection", lambda:self.mv.clear_selection(), "Unselect everything")):
+            bb=ctk.CTkButton(srow, text="  "+label, image=_icon(iname,"default"), compound="left", height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11), command=cmd)
             bb.pack(side="left", expand=True, fill="x", padx=2); self._tip(bb, tip)
         self.edit_count=ctk.CTkLabel(p, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w"); self.edit_count.pack(fill="x", padx=6, pady=(4,2))
         drow=ctk.CTkFrame(p, fg_color="transparent"); drow.pack(fill="x", padx=6, pady=(2,0))
-        self.edit_delete_btn=ctk.CTkButton(drow, text="🗑  Delete selected", height=34, corner_radius=8, fg_color="#3a2530", hover_color="#4a2f3c", text_color="#ff9db0", font=ctk.CTkFont(size=12, weight="bold"), command=self._edit_delete, state="disabled")
+        self.edit_delete_btn=ctk.CTkButton(drow, text="  Delete selected", image=_icon("delete","danger"), compound="left", height=34, corner_radius=8, fg_color="#3a2530", hover_color="#4a2f3c", text_color="#ff9db0", font=ctk.CTkFont(size=12, weight="bold"), command=self._edit_delete, state="disabled")
         self.edit_delete_btn.pack(side="left", expand=True, fill="x", padx=(0,2)); self._tip(self.edit_delete_btn, "Delete the selected (red) part")
-        self.edit_undo_btn=ctk.CTkButton(drow, text="↶", width=44, height=34, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=13), command=self._edit_undo, state="disabled")
+        self.edit_undo_btn=ctk.CTkButton(drow, text="", image=_icon("undo","default"), width=44, height=34, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, command=self._edit_undo, state="disabled")
         self.edit_undo_btn.pack(side="left", padx=(2,0)); self._tip(self.edit_undo_btn, "Undo the last delete")
         self._hr(p, pady=(12,6))
-        self.edit_keep=ctk.CTkButton(p, text="Save as new model", height=40, corner_radius=8, fg_color=CARD2, hover_color=AC_H, text_color=DIM, font=ctk.CTkFont(size=13, weight="bold"), command=self._edit_keep, state="disabled")
+        self.edit_keep=ctk.CTkButton(p, text="  Save as new model", image=_icon("save-version","muted"), compound="left", height=40, corner_radius=8, fg_color=CARD2, hover_color=AC_H, text_color=DIM, font=ctk.CTkFont(size=13, weight="bold"), command=self._edit_keep, state="disabled")
         self.edit_keep.pack(fill="x", padx=6, pady=(0,4)); self._tip(self.edit_keep, "Save your edits as a new model version. The original is kept.")
         self.edit_discard=ctk.CTkButton(p, text="Discard edits", height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=self._edit_discard, state="disabled")
         self.edit_discard.pack(fill="x", padx=6, pady=(0,2)); self._tip(self.edit_discard, "Throw the edits away and reload the original.")
-        ctk.CTkButton(p, text="‹  Done editing", height=28, corner_radius=8, fg_color="transparent", border_width=0, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11),
+        ctk.CTkButton(p, text="  Done editing", image=_icon("back","muted"), compound="left", height=28, corner_radius=8, fg_color="transparent", border_width=0, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11),
                       command=lambda: self.tabs.set("3D Preview", True)).pack(fill="x", padx=6, pady=(6,12))
     def _show_edit_palette(self):
         # just swaps the panel into view - the session reset lives in _enter_edit_mode so re-showing
@@ -3363,7 +3412,9 @@ class App(ctk.CTk):
             if getattr(self, "sel_mode_sw", None): self.mv.edit_mode={"Replace":"replace","Add":"add","Subtract":"subtract"}.get(self.sel_mode_sw.get(),"replace")
         except Exception: pass
         for t,b in getattr(self, "_edit_tool_btns", {}).items():
-            try: b.configure(fg_color=(AC if t==tool else CARD), text_color=("#04121f" if t==tool else TX))   # active cell = accent, others = card
+            active=(t==tool)
+            try: b.configure(fg_color=(AC if active else CARD), text_color=("#04121f" if active else TX),
+                             image=_icon(self._edit_tool_icon.get(t,t), "on-accent" if active else "default"))   # icon tint follows the pressed state
             except Exception: pass
         self._refresh_tool_settings(tool)
         if tool=="magic" and not _init:   # Magic needs scipy for a true connected-region grow; say so if it's missing
@@ -3394,7 +3445,8 @@ class App(ctk.CTk):
             dirty=bool(orig and n<orig and not getattr(self, "_edit_saving", False))
             self._edit_dirty=dirty
             st="normal" if dirty else "disabled"
-            try: self.edit_keep.configure(state=st, fg_color=(AC if dirty else CARD2), text_color=("#04121f" if dirty else DIM))   # muted when nothing to save
+            try: self.edit_keep.configure(state=st, fg_color=(AC if dirty else CARD2), text_color=("#04121f" if dirty else DIM),
+                                          image=_icon("save-version", "on-accent" if dirty else "muted"))   # muted when nothing to save
             except Exception: pass
             try: self.edit_discard.configure(state=st)
             except Exception: pass
