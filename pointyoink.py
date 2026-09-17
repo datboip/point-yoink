@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.187-pre"
+APP = "PointYoink"; VERSION = "0.9.188-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -244,6 +244,7 @@ LIVE_QUALITY_LABEL={"low":"Low (fast)", "medium":"Medium", "high":"High (crisp)"
 
 # palette
 BG="#0e1117"; CARD="#171b23"; CARD2="#1d222c"; STROKE="#2a3140"; SELB="#22304a"
+SEL_FILL="#252b37"; SEL_EDGE="#3d4a63"   # a selected project row: a lifted lighter card with a soft neutral edge (not a blue outline, which collided with the blue "on this PC" badge)
 AC="#4aa3ff"; AC_H="#3b8fe6"; OK="#3ecf8e"; WARN="#ffb454"; DANGER="#ff6b6b"
 TX="#eef1f5"; MUT="#98a2b3"
 
@@ -2904,8 +2905,8 @@ class App(ctk.CTk):
                 var=ctk.BooleanVar(value=False); var.trace_add("write", lambda *a: self.update_summary())
             self.pull_sel[name]=var
             if q and q not in (self.disp(name)+" "+name).lower(): continue
-            _sel=(name==self.selected)   # selected = a lifted (lighter) card with a soft neutral edge, NOT a blue outline: a blue outline collided with the blue "on this PC" badge sitting inside it
-            card=ctk.CTkFrame(self.llist, fg_color=("#252b37" if _sel else ROW), corner_radius=10, border_width=(1 if _sel else 0), border_color="#3d4a63")
+            _sel=(name==self.selected)   # selected = a lifted (lighter) card with a soft neutral edge (see SEL_FILL/SEL_EDGE); select_project() must match this exactly
+            card=ctk.CTkFrame(self.llist, fg_color=(SEL_FILL if _sel else ROW), corner_radius=10, border_width=(1 if _sel else 0), border_color=SEL_EDGE)
             card.grid(row=2*shown, column=0, sticky="ew", pady=(2,0), padx=4); card.grid_columnconfigure(2, weight=1)
             self.rows[name]=card
             if self.page=="import":
@@ -2971,7 +2972,7 @@ class App(ctk.CTk):
         if not self._guard_unsaved_edits(): return   # protect unsaved editor edits (even re-selecting reloads the view)
         self.selected=name
         for n,card in self.rows.items():
-            card.configure(fg_color=(SELB if n==name else ROW))
+            s=(n==name); card.configure(fg_color=(SEL_FILL if s else ROW), border_width=(1 if s else 0), border_color=SEL_EDGE)   # match render_list's selection style exactly
         p=next((x for x in self.projects if x["name"]==name), None)
         if not p: return
         if p.get("local") and self.cfg.get("last_open")!=name:   # remember what to warm FIRST next launch (the project you keep reopening)
