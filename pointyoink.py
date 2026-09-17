@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.130-pre"
+APP = "PointYoink"; VERSION = "0.9.131-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -2922,9 +2922,34 @@ class App(ctk.CTk):
             except Exception: pass
             return
         if v!="Points":
-            try: self.mv._keep_view=True                      # switch back to the mesh at the current camera, not the default
-            except Exception: pass
-            self._request_shaded(name, node); return          # back to the mesh
+            # back to the mesh: load it straight into the live view (which is showing points) and swap when
+            # ready, so there's no flash of the still PNG at the default angle. Keep the camera.
+            mesh=self._mesh_for_node(name, node)
+            verkey=(self._proc_current(name, node) or (None,))[0] if node else None
+            key=("%s__%s__%s"%(name, node, verkey or "v")) if node else (name if not node else None)
+            src=mesh if (mesh and not mesh.startswith(PROJECTS)) else (os.path.join(THUMBS, "view", key+"_fuse_mesh.ply") if key else None)
+            if not (src and os.path.exists(src)):
+                try: self.mv._keep_view=True
+                except Exception: pass
+                self._request_shaded(name, node); return      # device mesh with no local copy: normal path (may flash once)
+            self.mv._keep_view=True; self._mv_key=key; self._mv_want=(key, src); self._shade_key=(key, self.shade_mode)
+            self._mv_loading=True; self._preview_busy("Loading the 3D view")
+            faces=LIVE_QUALITY_FACES.get(self.cfg.get("live_quality","medium"), 300000)
+            def mready(ok):
+                self._mv_loading=False; self._preview_idle()
+                if ok:
+                    try: self.big.grid_remove(); self.mv.grid(); self.mv.lift()
+                    except Exception: pass
+                    for _w in (self.view_nav, self.renders_lbl, self.big_hint):
+                        try: _w.lift()
+                        except Exception: pass
+                    self.big_hint.configure(text="Drag to rotate · scroll to zoom · right-drag to pan · double-click to reset")
+                else:
+                    self._request_shaded(name, node)          # fell over: fall back to the still + normal load
+            try: self.mv.load(src, mready, max_faces=faces)
+            except Exception as e:
+                log_error("points-to-mesh", e); self._mv_loading=False; self._request_shaded(name, node)
+            return
         cloud=os.path.join(self.dest.get() or DEFAULT_DEST, name, "%s_%s_cloud.ply" % (name, node))
         if not os.path.exists(cloud):
             self.set_banner("This scan has no fused point cloud on this PC (import the project again to get it).", MUT)
