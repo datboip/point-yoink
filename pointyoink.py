@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.179-pre"
+APP = "PointYoink"; VERSION = "0.9.182-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -73,16 +73,19 @@ if os.environ.get("POINTYOINK_CONFIG"):
     CFG = os.environ["POINTYOINK_CONFIG"]; CFG_DIR = os.path.dirname(CFG) or CFG_DIR
 HERE = os.path.dirname(os.path.abspath(__file__)); ICON = os.path.join(HERE, "icon.png")
 _ICON_ROOT = os.path.join(HERE, "assets", "icons", "png"); _icon_cache = {}
+_ICON_SRC_SIZES=(32, 36, 40, 48)   # the source folders actually shipped
 def _icon(name, state="default", size=18):
-    """Load a PointYoink line icon as a CTkImage (states: default/accent/muted/danger/on-accent). Uses the
-    2x (size*2) PNG so it stays crisp. Returns None if the file is missing, so callers keep their text label."""
+    """Load a PointYoink line icon as a CTkImage (states: default/accent/muted/danger/on-accent). Prefers the
+    2x (size*2) source, but falls back to the largest shipped source and scales, so any display size works
+    (the shipped sources are only 32/36/40/48). Returns None if missing, so callers keep their text label."""
     key=(name, state, size)
     if key in _icon_cache: return _icon_cache[key]
-    try:
-        p=os.path.join(_ICON_ROOT, state, str(size*2), name+".png")
-        img=Image.open(p); ci=ctk.CTkImage(dark_image=img, light_image=img, size=(size, size))
-    except Exception:
-        ci=None
+    ci=None
+    for src in (size*2, 48, 40, 36, 32):   # try exact 2x, then the biggest available down to the smallest
+        try:
+            img=Image.open(os.path.join(_ICON_ROOT, state, str(src), name+".png"))
+            ci=ctk.CTkImage(dark_image=img, light_image=img, size=(size, size)); break
+        except Exception: continue
     _icon_cache[key]=ci; return ci
 def _build_id():
     """A short stamp so two builds of the same VERSION are tellable apart: the git short hash while
@@ -5068,15 +5071,44 @@ class App(ctk.CTk):
         self._film_sel=node; self._mark_scan(node)
         try: self._maybe_schedule_shaded(name, node, 250)
         except Exception: pass
-    HOWTO=(("Import", "import", "Get the project off the scanner: USB lists everything on it, WiFi Share to PC sends one project. Finished models is quick; Full project also brings the raw frames you need for building and combining here.",
-            ("scanner-usb-tab", "scanner-wifi-code")),
-           ("Build", "build", "A scan is raw frames until something fuses them into a 3D model. The scanner does that with One-tap Edit (or Fusion then Mesh by hand); this PC does it with Build, in seconds on a graphics card, using the scanner's own registration. Easiest: One-tap Edit on the scanner when it turns out fine, Build here when it does not.",
-            ("scanner-onetap-edit", "scanner-fusion-panel", "scanner-mesh-panel")),
-           ("Cut base", "cut-base", "Every scan carries the table under the part. Drag one line above it and apply. The cut is remembered for that scan and applied again when scans are combined, so the table never gets fused in.", ()),
-           ("Combine", "combine", "Scanned each side separately? Pick a base scan, click three to five matching spots on it and on another scan, Line up, check the orange overlay, Keep. Repeat for each side, then Build one model from all their frames at once. Your points stay editable.", ()),
-           ("Prepare", "prepare", "Remove floating pieces (Isolation), reduce triangles (Simplify), and smooth the surface. It runs on a copy and shows before and after; Keep or Discard. Once Combined exists, prepare that one.",
-            ("scanner-isolation", "scanner-simplify", "scanner-smooth")),
-           ("Export", "export", "Pick the version, the format (STL for slicers, OBJ, GLB, PLY) and the folder. The size and a mesh check are shown first: open edges are gaps in the surface; separate pieces are disconnected chunks (not the same thing).", ()))
+    # Each step: a purpose line, a couple of short "where / do" cards, an optional info card that jumps to
+    # another step, a where-label for the picture, and a set of labelled screenshots shown one at a time.
+    GUIDE=(dict(name="Import", icon="import", title="Get your scan onto the PC",
+                purpose="Pull the finished scan, or the full project, off the MIRACO over USB or Wi-Fi.",
+                steps=[("On the scanner", "Share to PC, then pick USB Cable or Wi-Fi."),
+                       ("In PointYoink", "Click USB or WiFi here, tick the project, and Import.")],
+                info=None, where="On the scanner",
+                shots=[("USB", "scanner-usb-tab"), ("Wi-Fi", "scanner-wifi-code")],
+                caption="Finished models is quick; Full project also brings the raw frames for Build and Combine."),
+           dict(name="Build", icon="build", title="Build a model",
+                purpose="Turn your captured scan into a surface you can edit and export.",
+                steps=[("On the scanner", "Open your scan and tap One-tap Edit. Fusion + Mesh also works."),
+                       ("In PointYoink", "Import the Full project, then choose Build model.")],
+                info=("Already have a finished model?", "Skip to Cut base", 2), where="On the scanner",
+                shots=[("One-tap Edit", "scanner-onetap-edit"), ("Fusion", "scanner-fusion-panel"), ("Mesh", "scanner-mesh-panel")],
+                caption="Choose One-tap Edit for the simplest workflow."),
+           dict(name="Cut base", icon="cut-base", title="Cut the base off",
+                purpose="If the table or turntable is still attached, remove it here.",
+                steps=[("In PointYoink", "Drag one line just above the part and apply."),
+                       ("Remembered", "PointYoink keeps the cut and reuses it when scans are combined.")],
+                info=None, where="In PointYoink", shots=[], caption=""),
+           dict(name="Combine", icon="combine", title="Combine the sides",
+                purpose="Scanned each side separately? Line them up into one model.",
+                steps=[("In PointYoink", "Pick 3-5 matching spots on two scans, line up, Keep."),
+                       ("Then", "Repeat for each side and build one model from all their frames.")],
+                info=None, where="In PointYoink", shots=[], caption=""),
+           dict(name="Prepare", icon="prepare", title="Prepare the surface",
+                purpose="Remove floating pieces, reduce triangles, and smooth the surface.",
+                steps=[("On the scanner", "Isolation, Simplify and Smooth, one panel each."),
+                       ("In PointYoink", "Prepare runs all three on a copy, with before and after.")],
+                info=None, where="On the scanner",
+                shots=[("Isolation", "scanner-isolation"), ("Simplify", "scanner-simplify"), ("Smooth", "scanner-smooth")],
+                caption="Keep or Discard the result; the original is never changed."),
+           dict(name="Export", icon="export", title="Export for a slicer",
+                purpose="Save the finished model as STL, OBJ, GLB or PLY.",
+                steps=[("In PointYoink", "Pick the version, the format and the folder."),
+                       ("Checked first", "The size and a mesh check are shown before it saves.")],
+                info=None, where="In PointYoink", shots=[], caption=""))
     def _when_ready(self, fn):
         """Run fn once the splash is gone and the main window is on screen. A dialog opened earlier is attached to the
         withdrawn main window and drags it onto the screen half-built."""
@@ -5127,57 +5159,83 @@ class App(ctk.CTk):
         except Exception: pass
         return cell
     def _howto_dialog(self):
-        # A wide, paged walkthrough: one step per page, big screenshots, Back / Next (or the arrow keys),
-        # instead of one long scroll.
-        t=self._top("How PointYoink works", 1000, 680, key="howto")
+        # A guide with a clickable step strip across the top, short scanner/PC instructions on the left, and
+        # one readable screenshot (with tabs for the alternatives) on the right.
+        t=self._top("How PointYoink works", 1180, 640, key="howto")
         if t is None: return
         adir=os.path.join(HERE, "assets", "device")
-        steps=self.HOWTO; N=len(steps); self._howto_i=0
-        hdr=ctk.CTkFrame(t, fg_color="transparent"); hdr.pack(fill="x", padx=24, pady=(16,0))
-        ctk.CTkLabel(hdr, text="How PointYoink works", text_color=TX, font=ctk.CTkFont(size=18, weight="bold")).pack(side="left")
-        ctk.CTkLabel(hdr, text="scan to model, one step at a time  ·  the NEXT bar does each step for you", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left", padx=12, pady=(4,0))
-        body=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); body.pack(fill="both", expand=True, padx=20, pady=14)
-        nav=ctk.CTkFrame(t, fg_color="transparent"); nav.pack(fill="x", padx=24, pady=(0,16))
+        G=self.GUIDE; N=len(G); self._guide_i=0; self._guide_shot=0
+        hdr=ctk.CTkFrame(t, fg_color="transparent"); hdr.pack(fill="x", padx=28, pady=(14,2))
+        ctk.CTkLabel(hdr, text="How PointYoink works", text_color=TX, font=ctk.CTkFont(size=23, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(hdr, text="From scanner to usable model.", text_color=MUT, font=ctk.CTkFont(size=13)).pack(anchor="w")
+        # clickable step strip
+        strip=ctk.CTkFrame(t, fg_color="transparent"); strip.pack(fill="x", padx=22, pady=(8,0))
+        cells=[]
+        for k,g in enumerate(G):
+            c=ctk.CTkFrame(strip, fg_color="transparent"); c.pack(side="left", expand=True, fill="x")
+            top_=ctk.CTkFrame(c, fg_color="transparent"); top_.pack()
+            num=ctk.CTkLabel(top_, text=str(k+1), width=30, height=30, corner_radius=15, fg_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=13, weight="bold")); num.pack(side="left", padx=(0,9))
+            nm=ctk.CTkLabel(top_, text=g["name"], text_color=MUT, font=ctk.CTkFont(size=15, weight="bold")); nm.pack(side="left")
+            ul=tk.Frame(c, bg=BG, height=3, bd=0, highlightthickness=0); ul.pack(fill="x", pady=(8,0))
+            for wg in (c, top_, num, nm): wg.configure(cursor="hand2"); wg.bind("<Button-1>", lambda e,kk=k: jump(kk))
+            cells.append((num, nm, ul))
+        tk.Frame(t, bg=STROKE, height=1, bd=0, highlightthickness=0).pack(fill="x", padx=22)
+        body=ctk.CTkFrame(t, fg_color="transparent"); body.pack(fill="both", expand=True, padx=24, pady=(14,6))
+        body.grid_columnconfigure(0, weight=5, uniform="c"); body.grid_columnconfigure(1, weight=7, uniform="c"); body.grid_rowconfigure(0, weight=1)
+        leftw=ctk.CTkFrame(body, fg_color="transparent"); leftw.grid(row=0, column=0, sticky="nsew", padx=(2,16))
+        rightw=ctk.CTkFrame(body, fg_color="transparent"); rightw.grid(row=0, column=1, sticky="nsew")
+        nav=ctk.CTkFrame(t, fg_color="transparent"); nav.pack(fill="x", padx=28, pady=(0,16))
         def close(): self.cfg["seen_howto"]=True; save_cfg(self.cfg); self._dialogs.pop("howto", None); t.destroy()
-        back_b=ctk.CTkButton(nav, text="‹  Back", width=96, height=36, corner_radius=18, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=lambda: go(-1)); back_b.pack(side="left")
-        got_b=ctk.CTkButton(nav, text="Got it", width=100, height=36, corner_radius=18, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, command=close); got_b.pack(side="right")
-        next_b=ctk.CTkButton(nav, text="Next  ›", width=110, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=lambda: go(1)); next_b.pack(side="right", padx=8)
+        back_b=ctk.CTkButton(nav, text="‹  Back", width=96, height=36, corner_radius=18, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=lambda: jump(self._guide_i-1)); back_b.pack(side="left")
         pg=ctk.CTkLabel(nav, text="", text_color=MUT, font=ctk.CTkFont(size=12)); pg.pack(side="left", padx=16)
+        next_b=ctk.CTkButton(nav, text="Next", height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=lambda: (close() if self._guide_i>=N-1 else jump(self._guide_i+1))); next_b.pack(side="right")
+        ctk.CTkButton(nav, text="Close guide", width=100, height=36, corner_radius=18, fg_color="transparent", hover_color=CARD2, text_color=MUT, command=close).pack(side="right", padx=10)
+        def settab(k): self._guide_shot=k; render()
+        def jump(k): self._guide_i=max(0, min(N-1, k)); self._guide_shot=0; render()
         def render():
-            for w in body.winfo_children(): w.destroy()
-            i=self._howto_i; nm,iname,txt,shots=steps[i]
-            shots=[s for s in (shots or ()) if os.path.exists(os.path.join(adir, s+".png"))]
-            cols=ctk.CTkFrame(body, fg_color="transparent"); cols.pack(fill="both", expand=True, padx=22, pady=18)
-            # LEFT: the words, vertically centred so it reads beside the picture, not stacked above it
-            left=ctk.CTkFrame(cols, fg_color="transparent", width=360); left.pack(side="left", fill="y", padx=(6,20)); left.pack_propagate(False)
-            lc=ctk.CTkFrame(left, fg_color="transparent"); lc.pack(expand=True)
-            hrow=ctk.CTkFrame(lc, fg_color="transparent"); hrow.pack(anchor="w")
-            ic=_icon(iname, "accent", 26)
-            if ic is not None: ctk.CTkLabel(hrow, image=ic, text="").pack(side="left", padx=(0,10))
-            ctk.CTkLabel(hrow, text="STEP %d OF %d" % (i+1, N), text_color=AC, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", pady=(3,0))
-            ctk.CTkLabel(lc, text=nm, text_color=TX, font=ctk.CTkFont(size=25, weight="bold"), anchor="w", justify="left").pack(anchor="w", pady=(4,8))
-            ctk.CTkLabel(lc, text=txt, text_color=MUT, font=ctk.CTkFont(size=13), justify="left", anchor="w", wraplength=340).pack(anchor="w")
-            # RIGHT: one big hero screenshot, with any supporting panels as smaller thumbs beneath it
-            right=ctk.CTkFrame(cols, fg_color="transparent"); right.pack(side="left", fill="both", expand=True)
-            rc=ctk.CTkFrame(right, fg_color="transparent"); rc.pack(expand=True)
+            for k,(num,nm,ul) in enumerate(cells):   # strip highlight
+                on=(k==self._guide_i)
+                num.configure(fg_color=(AC if on else CARD2), text_color=("#04121f" if on else MUT)); nm.configure(text_color=(TX if on else MUT)); ul.configure(bg=(AC if on else BG))
+            for w in leftw.winfo_children(): w.destroy()
+            for w in rightw.winfo_children(): w.destroy()
+            g=G[self._guide_i]
+            shots=[(lab,s) for lab,s in g["shots"] if os.path.exists(os.path.join(adir, s+".png"))]
+            # LEFT: title, purpose, short instruction cards (top-aligned)
+            ctk.CTkLabel(leftw, text=g["title"], text_color=TX, font=ctk.CTkFont(size=28, weight="bold"), anchor="w", justify="left").pack(anchor="w", pady=(6,3))
+            ctk.CTkLabel(leftw, text=g["purpose"], text_color=MUT, font=ctk.CTkFont(size=15), anchor="w", justify="left", wraplength=440).pack(anchor="w", pady=(0,14))
+            for eb, txt in g["steps"]:
+                cf=ctk.CTkFrame(leftw, fg_color=CARD2, corner_radius=10); cf.pack(fill="x", pady=6)
+                ctk.CTkLabel(cf, text=eb.upper(), text_color=AC, font=ctk.CTkFont(size=11, weight="bold"), anchor="w").pack(fill="x", padx=16, pady=(12,0))
+                ctk.CTkLabel(cf, text=txt, text_color=TX, font=ctk.CTkFont(size=15), anchor="w", justify="left", wraplength=410).pack(fill="x", padx=16, pady=(2,13))
+            if g.get("info"):
+                head, link, tgt = g["info"]
+                nf=ctk.CTkFrame(leftw, fg_color="#15304d", corner_radius=10); nf.pack(fill="x", pady=6)
+                ctk.CTkLabel(nf, text=head, text_color=AC, font=ctk.CTkFont(size=12, weight="bold"), anchor="w").pack(fill="x", padx=14, pady=(9,0))
+                ctk.CTkButton(nf, text=link+"  ›", height=24, corner_radius=6, fg_color="transparent", hover_color="#1c3a5a", text_color=AC, font=ctk.CTkFont(size=12, weight="bold"), anchor="w", command=lambda tt=tgt: jump(tt)).pack(fill="x", padx=10, pady=(0,8))
+            # RIGHT: "On the scanner" / "In PointYoink" label + Enlarge, one screenshot, tabs for the rest
+            wl=ctk.CTkFrame(rightw, fg_color="transparent"); wl.pack(fill="x")
+            ctk.CTkLabel(wl, text=g["where"], text_color=MUT, font=ctk.CTkFont(size=13, weight="bold")).pack(side="left")
             if shots:
-                self._clickimg(rc, os.path.join(adir, shots[0]+".png"), 540)
+                si=max(0, min(self._guide_shot, len(shots)-1)); path=os.path.join(adir, shots[si][1]+".png")
+                ctk.CTkButton(wl, text="⤢  Enlarge", height=26, corner_radius=8, fg_color="transparent", hover_color=CARD2, text_color=AC, font=ctk.CTkFont(size=13), command=lambda p=path: self._zoom_image(p)).pack(side="right")
+                self._clickimg(rightw, path, 620, pady=(8,0))
                 if len(shots)>1:
-                    tr=ctk.CTkFrame(rc, fg_color="transparent"); tr.pack(pady=(10,0))
-                    tw=min(258, (560-16*(len(shots)-1))//(len(shots)-1))
-                    for s in shots[1:]: self._clickimg(tr, os.path.join(adir, s+".png"), tw, side="left", padx=6)
-                ctk.CTkLabel(rc, text="click any image to enlarge", text_color=DIM, font=ctk.CTkFont(size=10)).pack(pady=(8,0))
+                    tabs=ctk.CTkFrame(rightw, fg_color="transparent"); tabs.pack(fill="x", pady=(12,0))
+                    for k,(lab,s) in enumerate(shots):
+                        on=(k==si)
+                        ctk.CTkButton(tabs, text=lab, height=38, corner_radius=8, fg_color=(AC if on else CARD2), hover_color=(AC_H if on else STROKE), text_color=("#04121f" if on else TX), font=ctk.CTkFont(size=13, weight="bold"), command=lambda kk=k: settab(kk)).pack(side="left", expand=True, fill="x", padx=3)
+                if g.get("caption"): ctk.CTkLabel(rightw, text=g["caption"], text_color=DIM, font=ctk.CTkFont(size=12), wraplength=620).pack(pady=(10,0))
             else:
-                ph=ctk.CTkFrame(rc, fg_color="#0a0c10", corner_radius=12, border_width=1, border_color=STROKE); ph.pack()
-                bic=_icon(iname, "muted", 52)
-                if bic is not None: ctk.CTkLabel(ph, image=bic, text="").pack(padx=70, pady=(34,8))
-                ctk.CTkLabel(ph, text="This one happens right here in PointYoink.\nThe NEXT bar walks you straight into it.", text_color=MUT, font=ctk.CTkFont(size=12), justify="center").pack(padx=30, pady=(0,34))
-            back_b.configure(state=("disabled" if i==0 else "normal"))
-            next_b.configure(state=("disabled" if i==N-1 else "normal"))
-            pg.configure(text="%d / %d" % (i+1, N))
-        def go(step): self._howto_i=max(0, min(N-1, self._howto_i+step)); render()
+                ph=ctk.CTkFrame(rightw, fg_color=CARD, corner_radius=12); ph.pack(fill="both", expand=True, pady=(8,0))
+                inner=ctk.CTkFrame(ph, fg_color="transparent"); inner.pack(expand=True)
+                pic=_icon(g["icon"], "muted", 54)
+                if pic is not None: ctk.CTkLabel(inner, image=pic, text="").pack(pady=(0,12))
+                ctk.CTkLabel(inner, text="This step happens right here in PointYoink.\nThe NEXT bar walks you straight into it.", text_color=MUT, font=ctk.CTkFont(size=13), justify="center").pack()
+            back_b.configure(state=("disabled" if self._guide_i==0 else "normal"))
+            next_b.configure(text=("Done" if self._guide_i>=N-1 else "Next: %s  ›" % G[self._guide_i+1]["name"]))
+            pg.configure(text="%d of %d" % (self._guide_i+1, N))
         try:
-            t.bind("<Left>", lambda e: go(-1)); t.bind("<Right>", lambda e: go(1)); t.bind("<Escape>", lambda e: close())
+            t.bind("<Left>", lambda e: jump(self._guide_i-1)); t.bind("<Right>", lambda e: jump(self._guide_i+1)); t.bind("<Escape>", lambda e: close())
         except Exception: pass
         t.protocol("WM_DELETE_WINDOW", close)
         render()
