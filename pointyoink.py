@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.173-pre"
+APP = "PointYoink"; VERSION = "0.9.174-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -5068,12 +5068,14 @@ class App(ctk.CTk):
         self._film_sel=node; self._mark_scan(node)
         try: self._maybe_schedule_shaded(name, node, 250)
         except Exception: pass
-    HOWTO=(("Import", "import", "Get the project off the scanner: USB lists everything on it, WiFi Share to PC sends one project. Finished models is quick; Full project also brings the raw frames you need for building and combining here."),
-           ("Build", "build", "A scan is raw frames until something fuses them into a 3D model. The scanner does that with One-tap Edit; this PC does it with Build, in seconds on a graphics card, using the scanner's own registration. Easiest: One-tap Edit on the scanner when it turns out fine, Build here when it does not."),
-           ("Cut base", "cut-base", "Every scan carries the table under the part. Drag one line above it and apply. The cut is remembered for that scan and applied again when scans are combined, so the table never gets fused in."),
-           ("Combine", "combine", "Scanned each side separately? Pick a base scan, click three to five matching spots on it and on another scan, Line up, check the orange overlay, Keep. Repeat for each side, then Build one model from all their frames at once. Your points stay editable."),
-           ("Prepare", "prepare", "Remove floating pieces, smooth, fill small holes, reduce triangles. It runs on a copy and shows before and after; Keep or Discard. Once Combined exists, prepare that one."),
-           ("Export", "export", "Pick the version, the format (STL for slicers, OBJ, GLB, PLY) and the folder. The size and a mesh check are shown first: open edges are gaps in the surface; separate pieces are disconnected chunks (not the same thing)."))
+    HOWTO=(("Import", "import", "Get the project off the scanner: USB lists everything on it, WiFi Share to PC sends one project. Finished models is quick; Full project also brings the raw frames you need for building and combining here.",
+            ("scanner-usb-tab", "scanner-wifi-code")),
+           ("Build", "build", "A scan is raw frames until something fuses them into a 3D model. The scanner does that with One-tap Edit; this PC does it with Build, in seconds on a graphics card, using the scanner's own registration. Easiest: One-tap Edit on the scanner when it turns out fine, Build here when it does not.",
+            ("scanner-onetap-edit",)),
+           ("Cut base", "cut-base", "Every scan carries the table under the part. Drag one line above it and apply. The cut is remembered for that scan and applied again when scans are combined, so the table never gets fused in.", ()),
+           ("Combine", "combine", "Scanned each side separately? Pick a base scan, click three to five matching spots on it and on another scan, Line up, check the orange overlay, Keep. Repeat for each side, then Build one model from all their frames at once. Your points stay editable.", ()),
+           ("Prepare", "prepare", "Remove floating pieces, smooth, fill small holes, reduce triangles. It runs on a copy and shows before and after; Keep or Discard. Once Combined exists, prepare that one.", ()),
+           ("Export", "export", "Pick the version, the format (STL for slicers, OBJ, GLB, PLY) and the folder. The size and a mesh check are shown first: open edges are gaps in the surface; separate pieces are disconnected chunks (not the same thing).", ()))
     def _when_ready(self, fn):
         """Run fn once the splash is gone and the main window is on screen. A dialog opened earlier is attached to the
         withdrawn main window and drags it onto the screen half-built."""
@@ -5091,13 +5093,23 @@ class App(ctk.CTk):
         ctk.CTkLabel(box, text="Scan to model, in five steps", text_color=TX, font=ctk.CTkFont(size=17, weight="bold"), anchor="w").pack(fill="x", padx=10, pady=(6,2))
         ctk.CTkLabel(box, text="The NEXT bar on the Projects page always shows which step you are on and does it with one button. Originals are never changed: every step saves a new version.",
                      text_color=MUT, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=620).pack(fill="x", padx=10, pady=(0,10))
-        for i,(nm,iname,txt) in enumerate(self.HOWTO):
+        adir=os.path.join(HERE, "assets", "device")
+        for i,(nm,iname,txt,shots) in enumerate(self.HOWTO):
             card=ctk.CTkFrame(box, fg_color=CARD, corner_radius=12); card.pack(fill="x", padx=6, pady=4)
             hd=ctk.CTkFrame(card, fg_color="transparent"); hd.pack(fill="x", padx=14, pady=(10,2))
             ic=_icon(iname, "accent", 20)
             if ic is not None: ctk.CTkLabel(hd, image=ic, text="").pack(side="left", padx=(0,8))
             ctk.CTkLabel(hd, text=("%d · %s" % (i, nm) if i else nm), text_color=AC, font=ctk.CTkFont(size=13, weight="bold"), anchor="w").pack(side="left")
-            ctk.CTkLabel(card, text=txt, text_color=TX, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=600).pack(fill="x", padx=14, pady=(0,10))
+            ctk.CTkLabel(card, text=txt, text_color=TX, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=600).pack(fill="x", padx=14, pady=(0,8))
+            shots=[s for s in (shots or ()) if os.path.exists(os.path.join(adir, s+".png"))]   # the scanner's own screens for this step
+            if shots:
+                sr=ctk.CTkFrame(card, fg_color="transparent"); sr.pack(fill="x", padx=12, pady=(0,10))
+                w=min(330, 660//len(shots))
+                for s in shots:
+                    cell=ctk.CTkFrame(sr, fg_color="#0a0c10", corner_radius=8); cell.pack(side="left", padx=4, expand=True, fill="x")
+                    try:
+                        self.imgs["howto_"+s]=cimg(os.path.join(adir, s+".png"), w-16); ctk.CTkLabel(cell, image=self.imgs["howto_"+s], text="").pack(padx=6, pady=6)
+                    except Exception: pass
         row=ctk.CTkFrame(t, fg_color="transparent"); row.pack(fill="x", padx=12, pady=10)
         def ok(): self.cfg["seen_howto"]=True; save_cfg(self.cfg); self._dialogs.pop("howto", None); t.destroy()
         ctk.CTkButton(row, text="Got it", width=110, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=ok).pack(side="right")
