@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.182-pre"
+APP = "PointYoink"; VERSION = "0.9.185-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -5091,12 +5091,14 @@ class App(ctk.CTk):
                 purpose="If the table or turntable is still attached, remove it here.",
                 steps=[("In PointYoink", "Drag one line just above the part and apply."),
                        ("Remembered", "PointYoink keeps the cut and reuses it when scans are combined.")],
-                info=None, where="In PointYoink", shots=[], caption=""),
+                info=None, where="In PointYoink",
+                shots=[("Remove base", "app-cutbase")], caption="Grey stays, red goes; drag the height until only the table is red."),
            dict(name="Combine", icon="combine", title="Combine the sides",
                 purpose="Scanned each side separately? Line them up into one model.",
                 steps=[("In PointYoink", "Pick 3-5 matching spots on two scans, line up, Keep."),
                        ("Then", "Repeat for each side and build one model from all their frames.")],
-                info=None, where="In PointYoink", shots=[], caption=""),
+                info=None, where="In PointYoink",
+                shots=[("Combine scans", "app-combine")], caption="Click the same feature on both scans, then Line up (or Auto)."),
            dict(name="Prepare", icon="prepare", title="Prepare the surface",
                 purpose="Remove floating pieces, reduce triangles, and smooth the surface.",
                 steps=[("On the scanner", "Isolation, Simplify and Smooth, one panel each."),
@@ -5108,7 +5110,8 @@ class App(ctk.CTk):
                 purpose="Save the finished model as STL, OBJ, GLB or PLY.",
                 steps=[("In PointYoink", "Pick the version, the format and the folder."),
                        ("Checked first", "The size and a mesh check are shown before it saves.")],
-                info=None, where="In PointYoink", shots=[], caption=""))
+                info=None, where="In PointYoink",
+                shots=[("Export", "app-export")], caption="STL for slicers; the size and a mesh check are shown before it saves."))
     def _when_ready(self, fn):
         """Run fn once the splash is gone and the main window is on screen. A dialog opened earlier is attached to the
         withdrawn main window and drags it onto the screen half-built."""
@@ -5815,7 +5818,9 @@ class App(ctk.CTk):
         vs=self._proc_versions(name, node)
         if not vs: return
         cur=self._proc_current(name, node) or vs[0]
-        t=self._top("Export · %s" % self._scan_label(name, node), 640, 470, key="export")
+        _home=os.path.expanduser("~")
+        def _tilde(p): return ("~"+p[len(_home):]) if p and p.startswith(_home) else p   # show ~/... not /home/<user>/...
+        t=self._top("Export · %s" % self._scan_label(name, node), 640, 360, key="export")
         if t is None: return
         card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
         def line(label):
@@ -5827,10 +5832,10 @@ class App(ctk.CTk):
         fsel=ctk.StringVar(value=self.cfg.get("export_fmt","STL"))
         r=line("Format"); ctk.CTkOptionMenu(r, values=["STL","OBJ","GLB","PLY"], variable=fsel, width=120, **menu).pack(side="left")
         ctk.CTkLabel(r, text="STL for slicers · OBJ and GLB for other 3D apps · PLY is the original", text_color=DIM, font=ctk.CTkFont(size=10)).pack(side="left", padx=10)
-        dv=ctk.StringVar(value=self.cfg.get("export_dir") or os.path.join(self.dest.get() or DEFAULT_DEST, "exports"))
+        dv=ctk.StringVar(value=_tilde(self.cfg.get("export_dir") or os.path.join(self.dest.get() or DEFAULT_DEST, "exports")))
         r=line("Save to"); ctk.CTkEntry(r, textvariable=dv, height=28, corner_radius=6, fg_color="#0d0f14", border_color=STROKE, text_color=TX).pack(side="left", fill="x", expand=True)
         ctk.CTkButton(r, text="Browse", width=70, height=28, corner_radius=6, fg_color=CARD2, hover_color=STROKE, text_color=TX,
-                      command=lambda: dv.set(filedialog.askdirectory(initialdir=dv.get() or HOME) or dv.get())).pack(side="left", padx=6)
+                      command=lambda: dv.set(_tilde(filedialog.askdirectory(initialdir=os.path.expanduser(dv.get()) or HOME) or os.path.expanduser(dv.get())))).pack(side="left", padx=6)
         base=ctk.StringVar(value="%s_%s" % (self.disp(name).replace(" ","_"), self._scan_label(name, node).replace(" ","")))
         r=line("File name"); ctk.CTkEntry(r, textvariable=base, height=28, corner_radius=6, fg_color="#0d0f14", border_color=STROKE, text_color=TX).pack(side="left", fill="x", expand=True)
         info=ctk.CTkLabel(card, text="Measuring the model…", justify="left", anchor="w", text_color=TX, font=ctk.CTkFont(size=12), wraplength=560); info.pack(fill="x", padx=18, pady=(12,2))
