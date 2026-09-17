@@ -10,14 +10,14 @@ import os, re, json, time, glob, shutil, threading, subprocess, queue, faulthand
 # several seconds (input lag system-wide, even outside this app - GPU video keeps playing since
 # it doesn't need the starved CPU scheduler). setdefault so an explicit user override still wins.
 # RAYON_NUM_THREADS covers fast_simplification (Rust/rayon, used for every mesh-view decimation) -
-# a real gap in the original cap, found 2026-09-14: the BLAS-only vars above never touched it, so a
+# a real gap in the original cap: the BLAS-only vars above never touched it, so a
 # single decimation could still burst every core even with those set.
 for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "RAYON_NUM_THREADS"):
     os.environ.setdefault(_v, "2")
 faulthandler.register(signal.SIGUSR1, all_threads=True)      # kill -USR1 <pid> prints every thread's stack to stderr: for diagnosing a freeze
 # Tk creates a real X window per widget and, with an X Input Method configured (XMODIFIERS=@im=ibus on
 # GNOME), does a synchronous XIM round-trip (XCreateIC -> _XimProtoCreateIC -> _XimRead) to ibus-daemon
-# for EVERY one of them, at ~100 ms a reply. Proven 2026-09-15 with a native stack of the frozen app and a
+# for EVERY one of them, at ~100 ms a reply. Confirmed with a native stack of the frozen app and a
 # plain-tkinter control: 80 widgets took 20+ s with ibus, 0.05 s with the IM disabled. It also stalls
 # keyboard input in every other app while it runs, because ibus is the keyboard path for all of them.
 # Must be set before Tk opens the display; child Tk processes (viewer.py etc.) inherit it.
@@ -34,7 +34,7 @@ from PIL import Image
 # calls _draw() again - which ends with its OWN update_idletasks(), which can trigger yet another
 # instance's redraw, and so on. This chains across every CTkScrollableFrame in the app (list, film
 # strip, options, detail panel, captures, ...), not just recursing on one instance - a per-instance
-# guard doesn't stop a cascade across different instances (proven live 2026-09-15: a per-instance
+# guard doesn't stop a cascade across different instances (a per-instance
 # version of this patch still hung, SIGUSR1 dumps showing the chain hop through
 # _update_dimensions_event on a second scrollbar mid-draw). The actual fix: track nesting globally,
 # and only let the OUTERMOST _draw() call really flush idle tasks. Any _draw() invoked while
@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.163-pre"
+APP = "PointYoink"; VERSION = "0.9.164-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1003,7 +1003,7 @@ def _has_trimesh():
 def _preload():
     """Import the heavy libraries once, on the main thread, before any worker thread exists. A first import of
     trimesh (it pulls in shapely) from a worker thread can garbage-collect a Tk font on that thread, which is a Tk
-    call from the wrong thread: the app then deadlocks on the splash. Seen 2026-09-13."""
+    call from the wrong thread: the app then deadlocks on the splash."""
     try:
         import trimesh, shade  # noqa: F401
     except Exception as e: log_line("preload: %s" % e)
@@ -1014,7 +1014,7 @@ def _has_open3d():
     GUI process never loads it (it would stay resident in the app's memory). Every caller
     of this runs it directly on the UI thread (from a button's own command=), and the
     subprocess spawn has up to a 60s timeout - cache the result so that cost is paid at
-    most once per run instead of on every Build/Combine click (found 2026-09-14)."""
+    most once per run instead of on every Build/Combine click."""
     global _has_open3d_cache
     if _has_open3d_cache is not None: return _has_open3d_cache
     try:
@@ -1360,7 +1360,7 @@ class App(ctk.CTk):
             # Blocking, synchronous, HERE: no other thread and no Tk font has been created yet (that happens in
             # _header/_body, called after this returns), so the first import of trimesh/shapely cannot race a
             # worker thread (e.g. a thumbnail render spawned the moment the project list arrives) and cannot
-            # finalise a Tk object from the wrong thread. That race was a real deadlock, seen 2026-09-13: two
+            # finalise a Tk object from the wrong thread. That race was a real deadlock: two
             # threads both doing "import shapely" for the first time, one hung forever in Font.__del__ while
             # holding the module's import lock, the other blocked forever waiting for that same lock.
             _preload()
@@ -1472,7 +1472,7 @@ class App(ctk.CTk):
         # Multiple self.after(150, self._close_splash) calls can already be queued from the
         # "not ready yet" branch above by the time _first_render_done/_checks_done both flip
         # true - each one reaches here and would otherwise re-run the whole forced-paint+reveal
-        # sequence a second time (proven live 2026-09-15: pointyoink.log shows two full
+        # sequence a second time (pointyoink.log shows two full
         # forced-first-paint passes, 0.159s then 28.473s, same session - a real ~28s extra
         # freeze this guard prevents).
         if getattr(self, "_splash_closing", False): return
@@ -1489,7 +1489,7 @@ class App(ctk.CTk):
             # genuinely done (drawing one widget can queue more idle work), so loop until a pass
             # finds nothing left to do. MUST be update_idletasks(), never plain update(): update()
             # drains every pending X event including raw input (mouse motion, at whatever the
-            # mouse's poll rate is) - proven live 2026-09-15, same machine, same instant:
+            # mouse's poll rate is) - same machine, same instant:
             # update_idletasks() took 0.27s, update() hung 20+s and never returned while the mouse
             # kept moving. update() was the actual bug this whole fix introduced.
             for _pass in range(6):
@@ -1722,11 +1722,11 @@ class App(ctk.CTk):
                                            text_color=TX, font=ctk.CTkFont(size=11))
         self.pts_sw.pack(side="right", padx=(0,8)); self.pts_sw.set("Mesh")   # (no tooltip: CTkSegmentedButton.bind raises, like shade_sw)
         # "Reset view" lived here but it did the same thing as "⌂ Fit" in the bottom-left nav - dropped as a
-        # duplicate (2026-09-17). _reset_view stays (Fit and double-click use it).
+        # duplicate. _reset_view stays (Fit and double-click use it).
         # preview box: the rendered PNG (or the scanner's preview) with a hint line at the bottom
         pv.grid_columnconfigure(0, weight=1); pv.grid_rowconfigure(0, weight=1, minsize=120)
         # corner_radius=0: this panel holds the OpenGL 3D view, which is a real X child window and can't be
-        # clipped to rounded corners - its square edges bled past a rounded frame (reported 2026-09-15). A
+        # clipped to rounded corners - its square edges bled past a rounded frame. A
         # square panel matches the viewport it holds. The rest of the app stays rounded.
         bigwrap=ctk.CTkFrame(pv, fg_color="#0a0c10", corner_radius=0, height=120, border_width=1, border_color=STROKE)
         bigwrap.grid(row=0,column=0, sticky="nsew", pady=(10,8)); bigwrap.grid_propagate(False)
@@ -2200,7 +2200,7 @@ class App(ctk.CTk):
                           text_color=("#04121f" if accent else TX), command=lambda v=val: choose(v)).pack(side="right", padx=6)
         # without this, closing via the window's own X button skips choose() entirely, so
         # wait_window() below can return through the except (or never) with the grab still held
-        # on a dialog that's gone - the whole app then looks frozen (found 2026-09-14).
+        # on a dialog that's gone - the whole app then looks frozen.
         dlg.protocol("WM_DELETE_WINDOW", lambda: choose(None))
         try:
             dlg.grab_set(); dlg.wait_window()
@@ -2778,7 +2778,7 @@ class App(ctk.CTk):
         if sig==self.projects_sig: return
         self.projects_sig=sig; self.projects=projs
         # Unmap the list while its rows are destroyed/rebuilt - see render_gallery for why
-        # (same CTkScrollableFrame redraw-recursion bug, proven live 2026-09-15).
+        # (same CTkScrollableFrame redraw-recursion bug).
         self.llist.grid_remove()
         for w in self.llist.winfo_children(): w.destroy()
         try:
@@ -2936,7 +2936,7 @@ class App(ctk.CTk):
         # Unmap the strip before destroying/rebuilding its cells: CTkScrollableFrame's own
         # <Configure> handler retriggers its scrollbar's set()->_draw()->update_idletasks()
         # on every child added while mapped, and each update_idletasks() call can flush the
-        # NEXT cell's pending <Configure> mid-draw, recursing - proven live 2026-09-15 (SIGUSR1
+        # NEXT cell's pending <Configure> mid-draw, recursing (SIGUSR1
         # dumps caught the main thread stuck in exactly this loop after a project click).
         self.film.grid_remove()
         for w in self.film.winfo_children(): w.destroy()
@@ -3805,12 +3805,12 @@ class App(ctk.CTk):
                 except Exception: pass
         # honour the picked version (_mesh_for_node -> _proc_current) whenever we know the scan; _find_mesh
         # (largest file) was showing the sealed scanner model even when "prepared copy" was ticked - the
-        # "first load sealed, toggle to points and back shows the holey one" bug (2026-09-16).
+        # "first load sealed, toggle to points and back shows the holey one" bug.
         mesh=self._mesh_for_node(name, node) if node else self._find_mesh(name)
         if not mesh:
             # genuinely no fused mesh (only raw frames). Clear the interactive target so clicking the
             # preview doesn't open the PREVIOUS scan's 3D view - that was the "says no model but then
-            # loads" bug (2026-09-15).
+            # loads" bug.
             self._mv_want=None; self._mv_key=None; self._shade_key=None; self._cancel_mv_start()   # reset _shade_key too, or a late mesh_stats for the PREVIOUS scan re-stamps its triangle count here
             try: self.mv.grid_remove(); self.big.grid()
             except Exception: pass
@@ -4048,7 +4048,7 @@ class App(ctk.CTk):
         # The GL view only gets a context, and only uploads the mesh (which is what fires ready()),
         # once it is MAPPED (<Map> -> initgl; a hidden view must never touch GL, see glview.py). It used
         # to be mapped only from ready() - a circular wait: the spinner sat there forever while the
-        # prepared mesh waited in _pending. Found 2026-09-15 on the first real-display test of this
+        # prepared mesh waited in _pending. Surfaced on the first real-display test of this
         # path. So map it now, underneath the still image; it loads out of sight and the swap is instant.
         self._map_mv_under_still()
         def ready(ok, k=key):
@@ -4081,7 +4081,7 @@ class App(ctk.CTk):
                 self.big_hint.configure(text="Drag to rotate · scroll to zoom · right-drag to pan · double-click to reset")
             else:
                 # this used to reuse the exact "...is loading" text shown WHILE still loading, so a real
-                # failure was indistinguishable from a load that's just slow - found 2026-09-14.
+                # failure was indistinguishable from a load that's just slow.
                 log_line("live 3D view failed to load for %s: %s" % (k, getattr(self.mv, "_err", "unknown")))
                 try: self.mv.grid_remove()
                 except Exception: pass
@@ -4089,7 +4089,7 @@ class App(ctk.CTk):
         # GLView's own default cap is 3M faces - for a casual rotate/zoom preview (not the precise
         # cut-plane tool, which already caps at 600k) that meant a 500-650k triangle mesh never got
         # decimated at all, paying full uncapped normal-computation cost every time a scan was
-        # selected: measured 16-37s, consistently, not a one-off - found 2026-09-14.
+        # selected: measured 16-37s, consistently, not a one-off.
         # The cap is now the Settings "Live 3D preview detail" choice (mesh prep measured 0.7 s at 300k).
         self.mv.load(path, ready, max_faces=LIVE_QUALITY_FACES.get(self.cfg.get("live_quality","medium"), 300000))
     def _show_stats(self, st):
@@ -4690,7 +4690,7 @@ class App(ctk.CTk):
         # No explicit pick: anchor on the scanner's model (the device's sealed, nicest result) so a fresh
         # open shows ONE coherent model that matches the thumbnail and the fused points - NOT the holey
         # prepared copy just because it sorts first. The prepared / PC-build versions are alternatives you
-        # switch to on purpose. Coherence fix 2026-09-16: "going back and seeing the other one feels like
+        # switch to on purpose. Coherence fix: "going back and seeing the other one feels like
         # you're editing something else."
         for v in vs:
             if v[0]=="scanner": return v
@@ -5101,7 +5101,7 @@ class App(ctk.CTk):
         """The right column on the Projects page: what to do next, the selected scan's versions and actions, project actions."""
         pp=self.projpanel
         # Unmap while rebuilding - this panel gets a dozen+ widgets on every scan click, the
-        # exact CTkScrollableFrame redraw-recursion trigger proven live 2026-09-15. Safe to
+        # exact CTkScrollableFrame redraw-recursion trigger. Safe to
         # restore visibility unconditionally: this only runs while page=="projects" (checked
         # at every call site), which is the only time projpanel should be gridded anyway.
         pp.grid_remove()
@@ -5111,7 +5111,7 @@ class App(ctk.CTk):
         except Exception as e:
             # this panel is cleared above before being rebuilt - any exception past that point used to
             # leave it permanently blank with nothing in the log (a Tk-callback exception, not caught by
-            # drain_loop). Found 2026-09-14 after a Remove Base completed and the panel went empty.
+            # drain_loop). Surfaced after a Remove Base completed and the panel went empty.
             log_error("panel_refresh", e)
             for w in pp.winfo_children(): w.destroy()
             ctk.CTkLabel(pp, text="Couldn't refresh this panel (see Help > Log). Try selecting the project again.",
@@ -5239,7 +5239,7 @@ class App(ctk.CTk):
         act("  Compare versions…", lambda: self._compare_dialog(name), "Two 3D views side by side, any scan or version in each, turning together.", icon="compare")
         act("  Combine scans…", lambda: self._align_dialog(name), "Scanned each side separately? Line the scans up and build one model from all of them.", icon="combine")
         act("  Build all models", self.on_process_pc, "Build the 3D model of every scan that has raw data.", icon="build")
-        # "All scans as cards…" removed 2026-09-16: it was a near-empty duplicate of this page (hero +
+        # "All scans as cards…" removed: it was a near-empty duplicate of this page (hero +
         # filmstrip + these same actions already live here). Build detail lives in Settings.
         act("  Delete project from this PC", self._proc_delete_project, "Everything in its folder goes to the trash. The scanner copy is not touched.", danger=True, icon="delete")
     def _proc_progress(self, node, frac, text):
@@ -7403,7 +7403,7 @@ class App(ctk.CTk):
                     # splash closing, thumbnails, WiFi/build progress) depends on this loop rescheduling itself.
                     # Before this fix an uncaught exception here propagated out of drain_loop and silently
                     # stopped it forever - the window would sit frozen (the splash never closes, nothing ever
-                    # updates again) with no error visible anywhere but the log. Seen 2026-09-13.
+                    # updates again) with no error visible anywhere but the log.
                     log_error("drain_loop event %r" % (kind,), e)
                 finally:
                     self._slow_watch(kind, _t_ev)

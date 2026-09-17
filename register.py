@@ -46,7 +46,7 @@ def main():
     ap.add_argument("--depth-scale", type=float, default=0.1); ap.add_argument("--max-depth", type=float, default=600.0)
     ap.add_argument("--loop-dist", type=float, default=80.0, help="mm, fragments whose centres are closer than this are tried as loop closures")
     ap.add_argument("--out", default=None)
-    ap.add_argument("--loops", action="store_true", help="also try loop closures (off by default: measured 2026-09-13 against the scanner's own table, loop closures on a rim-shaped part slid the scan 40 mm off; neighbour refinement within 2 mm gave a small gain)")
+    ap.add_argument("--loops", action="store_true", help="also try loop closures (off by default: measured against the scanner's own table, loop closures on a rim-shaped part slid the scan 40 mm off; neighbour refinement within 2 mm gave a small gain)")
     ap.add_argument("--no-loops", action="store_true", help="(default) neighbours only")
     ap.add_argument("--loop-fitness", type=float, default=0.3, help="accept a loop closure only above this overlap share")
     ap.add_argument("--loop-max-shift", type=float, default=1e9, help="mm: reject a loop closure whose fit moves the fragment further than this from where the tracking put it")

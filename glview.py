@@ -203,7 +203,7 @@ class GLView(OpenGLFrame):
             if wire: self._upload_wire(*wire)
             self._display()
             if self._split_req is not None and len(self._split_req[0]) == len(f): self.set_split(*self._split_req)
-            (on_ready and on_ready(True))     # only now is view._src actually set - firing this any earlier is a race (found 2026-09-14)
+            (on_ready and on_ready(True))     # only now is view._src actually set - firing this any earlier is a race
         except Exception as e:
             self.failed = True; self._err = e
             (on_ready and on_ready(False))
@@ -845,7 +845,7 @@ class GLView(OpenGLFrame):
         dx, dy = e.x - self._drag[0], e.y - self._drag[1]; self._drag = (e.x, e.y)
         # Free rotation about the screen's own axes: EVERY angle is reachable and nothing ever locks.
         # This must stay free (not a clamped turntable) - the 3-point base-removal tool needs to orient
-        # the mesh from any direction to place the cut, and clamping the pitch broke it (2026-09-15).
+        # the mesh from any direction to place the cut, and clamping the pitch broke it.
         self.rot = self._axis_rot(dy * 0.5, 1, 0, 0) @ self._axis_rot(dx * 0.5, 0, 1, 0) @ self.rot; self.draw()
     def _pan(self, e):
         if not self._drag: return
