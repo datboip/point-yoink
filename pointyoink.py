@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.143-pre"
+APP = "PointYoink"; VERSION = "0.9.144-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3008,10 +3008,11 @@ class App(ctk.CTk):
             choice=self._modal("Unsaved edits",
                                "You've edited this scan but haven't saved.\nKeep it as a new model, or throw the edits away?",
                                [("Keep as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
-            if choice=="cancel": return False
             if choice=="keep":
                 self._edit_keep(); return False    # save + land on the new model; the pending nav is abandoned
-        # proceed (clean exit OR discard): always clear edit mode so it never lingers (Codex #2)
+            if choice!="discard":
+                return False                       # Cancel, or closed with X (returns None): abort, never treat as discard (Codex #1)
+        # proceed (clean exit OR explicit Discard): always clear edit mode so it never lingers (Codex #2)
         self._edit_dirty=False; self._in_edit_mode=False
         try: self._editmode_chrome(False); self.mv.set_edit_tool(None); self.edit_bar.place_forget()
         except Exception: pass
@@ -3038,6 +3039,7 @@ class App(ctk.CTk):
     def _enter_edit_mode(self):
         """Enter the Edit tab: same camera/object, show the tools. Edits the built Mesh (cut faces) or the
         Points (clean + rebuild), per the Edit: switch."""
+        if getattr(self, "_edit_saving", False): return   # a save is in flight: don't reload the editor under it (Codex #2)
         name=self.selected; node=getattr(self, "_film_sel", None)
         if not (name and node) or node=="combined":
             self.set_banner("Open a scan first - Edit works on that scan's model or points.", MUT)
@@ -3116,16 +3118,20 @@ class App(ctk.CTk):
     def _edit_target_changed(self, v):
         """Edit: Mesh <-> Points. Prompts to keep unsaved edits before reloading the other target."""
         if not getattr(self, "_in_edit_mode", False): return
-        if getattr(self, "_edit_dirty", False) and not getattr(self, "_edit_saving", False):
+        prev="Points" if v=="Mesh" else "Mesh"   # the target we were on before this click
+        def _revert():
+            try: self.edit_target_sw.set(prev)
+            except Exception: pass
+        if getattr(self, "_edit_saving", False):   # block target switch mid-save (Codex #2)
+            _revert(); self._alert("Still saving", "Hang on - still saving your edited model. Try again in a moment."); return
+        if getattr(self, "_edit_dirty", False):
             choice=self._modal("Unsaved edits",
                                "Keep your current edits before switching what you edit?",
                                [("Keep as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
-            if choice=="cancel":
-                try: self.edit_target_sw.set("Points" if v=="Mesh" else "Mesh")   # put the switch back
-                except Exception: pass
-                return
             if choice=="keep":
-                self._edit_keep(); return       # save first; user can switch again after
+                _revert(); self._edit_keep(); return     # save first; user can switch again after
+            if choice!="discard":                        # cancel or X (None): stay put, revert the switch (Codex #1)
+                _revert(); return
             self._edit_dirty=False
         self._enter_edit_mode()                 # reload the newly-chosen target
     def _editmode_chrome(self, on):
@@ -3370,11 +3376,12 @@ class App(ctk.CTk):
             self._edit_sync_dirty()
             self.set_banner("Couldn't save the edited model (%s). Your edits are still on screen." % (err or "see Help > Log"), WARN); return
         self._mesh_stats={}; self.gallery_cache.pop(name, None); self.projects_sig=None
-        # defensive (Codex #3): navigation is blocked during a save, but if we somehow moved on, just record
-        # the new version and don't hijack whatever view is up now.
+        # Codex #3: decide BEFORE touching the view. If the user moved on (even to another scan in the same
+        # project), record the version WITHOUT calling _proc_set_current - that would switch the view back.
         moved = (self.selected!=name or getattr(self, "_film_sel", None)!=node)
-        self._proc_set_current(name, node, "edited")   # records the pick; re-renders the preview only if still on this scan
         if moved:
+            self.records.setdefault(name,{}).setdefault("current",{})[node]="edited"; self._persist()
+            self.after(0, lambda: self._proc_render(name))   # refresh that project's cards, but leave the current view alone
             self.set_banner("Saved a cleaned model of %s." % self._scan_label(name, node), OK); return
         self.set_banner("Saved a cleaned model of %s. Showing it now." % self._scan_label(name, node), OK)
         self._edit_dirty=False; self._in_edit_mode=False; self._editmode_chrome(False)
@@ -3383,6 +3390,7 @@ class App(ctk.CTk):
         try:
             if self.tabs.get()=="✏ Edit": self.tabs.set("3D Preview"); self._preview_tab.grid()   # land on the finished model
         except Exception: pass
+        self._proc_set_current(name, node, "edited")   # still here: switch the shown model to the rebuilt one
     def _reset_view(self, _=None):
         """Reset the live 3D view to its default angle and zoom (same as double-clicking the model)."""
         try:
