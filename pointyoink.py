@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.171-pre"
+APP = "PointYoink"; VERSION = "0.9.172-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -161,7 +161,9 @@ def _acquire_single_instance():
             except Exception: pass
             try: os.kill(hpid, signal.SIGTERM)   # ask the older instance to close cleanly
             except Exception: pass
-            for _ in range(80):                  # wait up to ~8s for it to release the lock
+            # Wait longer than the old instance's bounded exit (it accepts a request up to ~6s old, then a
+            # watchdog forces its exit within ~4s), so a slow but honoured hand-off still lands the lock here.
+            for _ in range(130):                 # ~13s
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); break
                 except BlockingIOError:
@@ -1204,17 +1206,13 @@ class App(ctk.CTk):
 
     def _popen(self, cmd, watch=False, **kwargs):
         if os.name=="posix": kwargs.setdefault("start_new_session", True)
-        proc=subprocess.Popen(cmd, **kwargs)
-        # Register under the same lock _terminate_children uses. If a shutdown/handoff already snapshotted the
-        # child set (self._closing), this child would be orphaned - so kill it right back instead of tracking it.
-        reap=False
-        try:
-            with self._children_lock:
-                if getattr(self, "_closing", False): reap=True
-                else: self._children.add(proc)
-        except Exception: pass
-        if reap:
-            self._terminate_proc(proc, kill=True); return proc
+        # Spawn AND register atomically under the lock the shutdown uses, so there is no window where a child
+        # exists but isn't tracked. If a close has already begun (_closing), refuse to spawn at all - returning
+        # None - rather than create a child that could outlive us. Callers spawn from worker threads, so a None
+        # here only happens during teardown, where the operation is being abandoned anyway.
+        with self._children_lock:
+            if getattr(self, "_closing", False): return None
+            proc=subprocess.Popen(cmd, **kwargs); self._children.add(proc)
         if watch: self._start_thread(self._watch_child, proc, name="watch-child")
         return proc
 
@@ -1255,6 +1253,8 @@ class App(ctk.CTk):
         kwargs.setdefault("stderr", subprocess.PIPE)
         kwargs.setdefault("text", True)
         proc=self._popen(cmd, **kwargs)
+        if proc is None:   # refused because the app is closing (see _popen)
+            return subprocess.CompletedProcess(cmd, 1, "", "app is closing")
         try:
             out,err=proc.communicate(timeout=timeout)
             return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
@@ -2608,8 +2608,13 @@ class App(ctk.CTk):
         """A newer build is taking over. Bow out without prompting (only reached when nothing is in
         flight, per _handoff_busy), but still run the real device cleanup so we don't leave the scanner
         or a stream busy."""
-        self._closing = True   # from here on _popen reaps any child it starts instead of orphaning it past _terminate_children
+        self._closing = True   # from here on _popen refuses to spawn a child that would outlive us
         try: log_line("handoff-close: newer build took over")
+        except Exception: pass
+        # Bound our exit: even if cleanup below stalls (e.g. _persist on a slow/hung filesystem), a watchdog
+        # forces the exit so we can't linger past the newer instance's lock wait and strand the handoff. The
+        # newer instance waits longer than this bound (see _acquire_single_instance) so it always gets the lock.
+        try: threading.Thread(target=lambda: (time.sleep(4.0), os._exit(0)), daemon=True).start()
         except Exception: pass
         try:
             if self._wifi: self._wifi.stop()
