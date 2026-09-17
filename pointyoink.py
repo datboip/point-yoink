@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.126-pre"
+APP = "PointYoink"; VERSION = "0.9.127-pre"
 GITHUB = "https://github.com/datboip/pointyoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1580,8 +1580,7 @@ class App(ctk.CTk):
         self.pts_sw=ctk.CTkSegmentedButton(ctl, values=["Mesh","Points"], command=self._view_mode_changed, height=30, corner_radius=8,
                                            fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE,
                                            text_color=TX, font=ctk.CTkFont(size=11))
-        self.pts_sw.pack(side="right", padx=(0,8)); self.pts_sw.set("Mesh")
-        self._tip(self.pts_sw, "Mesh = the built model. Points = the scanner's fused point cloud it was built from — check here if the mesh looks wrong (e.g. an opening got sealed).")
+        self.pts_sw.pack(side="right", padx=(0,8)); self.pts_sw.set("Mesh")   # (no tooltip: CTkSegmentedButton.bind raises, like shade_sw)
         self.reset_view_btn=ctk.CTkButton(ctl, text="⟲ Reset view", width=96, height=30, corner_radius=8, fg_color="transparent", border_width=1,
                                           border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=12), command=self._reset_view)
         self._tip(self.reset_view_btn, "Reset the 3D view to its default angle and zoom (or double-click the model).")
