@@ -452,7 +452,11 @@ class GLView(OpenGLFrame):
         except Exception: return None
     def set_edit_tool(self, tool, mode="replace"):
         """tool: None (orbit) / 'lasso' / 'rect' / 'brush' / 'magic'. mode: replace/add/subtract."""
-        self.edit_tool = tool; self.edit_mode = mode; self._sel_path = None; self.draw()
+        self.edit_tool = tool; self.edit_mode = mode; self._sel_path = None
+        # the pointer changes so you can tell which tool is live (arrow = orbit, a select cursor per tool)
+        try: self.configure(cursor={"lasso":"pencil", "rect":"crosshair", "brush":"dotbox", "magic":"plus"}.get(tool, ""))
+        except Exception: pass
+        self.draw()
     def _over_content(self, x, y):
         """True if (x, y) is over the object's screen area (so a left-drag there selects); False out in the
         empty margins (so a left-drag there orbits instead - no tool switch needed)."""
