@@ -36,7 +36,9 @@ cp "$ROOT/glview.py"     "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/align.py"      "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/register.py"   "$PKG/usr/lib/pointyoink/"
 cp "$ROOT/icon.png"      "$PKG/usr/lib/pointyoink/"
-mkdir -p "$PKG/usr/lib/pointyoink/assets/device" && cp "$ROOT"/assets/device/*.png "$PKG/usr/lib/pointyoink/assets/device/"
+# whole assets tree: device help screenshots AND the icon set (assets/icons/png/<state>/<size>/*.png + manifest)
+mkdir -p "$PKG/usr/lib/pointyoink/assets" && cp -r "$ROOT"/assets/. "$PKG/usr/lib/pointyoink/assets/"
+find "$PKG/usr/lib/pointyoink/assets" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 cp "$ROOT/icon.png"      "$PKG/usr/share/icons/hicolor/512x512/apps/pointyoink.png"
 cp "$ROOT/LICENSE" "$ROOT/README.md" "$ROOT/CHANGELOG.md" "$PKG/usr/share/doc/pointyoink/" 2>/dev/null || true
 
