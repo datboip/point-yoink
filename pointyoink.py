@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.159-pre"
+APP = "PointYoink"; VERSION = "0.9.161-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1037,6 +1037,42 @@ def _ply_counts(path):
         pass
     return v,f
 
+def detect_base(path):
+    """Does this model still have the table/turntable stuck to it? We can't ask the scanner, so we look at
+    the geometry: RANSAC the single most-populated flat plane and call it a base only when it is BOTH large
+    (a good fraction of the surface lies on it) AND sitting at an extreme of the model (the way a table sits
+    under the part). Deliberately conservative - a genuinely flat-bottomed part is a smaller flat patch, so
+    we would rather say 'no base' than nag about a table that isn't there. Returns {present, frac} or None
+    if we can't tell (too few points / load failed)."""
+    try:
+        import numpy as np, trimesh
+        m = trimesh.load(path, process=False, force="mesh")
+        V = np.asarray(m.vertices, dtype=np.float64)
+    except Exception:
+        return None
+    n = len(V)
+    if n < 3000: return None
+    rng = np.random.default_rng(0)
+    if n > 40000: V = V[rng.choice(n, 40000, replace=False)]; n = len(V)
+    bb = V.max(0) - V.min(0); diag = float(np.linalg.norm(bb)) or 1.0
+    tol = diag * 0.004
+    best_inl = 0; best_n = None; best_p = None
+    for _ in range(150):
+        i = rng.choice(n, 3, replace=False)
+        p0, p1, p2 = V[i]
+        nrm = np.cross(p1 - p0, p2 - p0); L = float(np.linalg.norm(nrm))
+        if L < 1e-9: continue
+        nrm = nrm / L
+        inl = int((np.abs((V - p0) @ nrm) < tol).sum())
+        if inl > best_inl: best_inl = inl; best_n = nrm; best_p = p0
+    if best_n is None: return {"present": False, "frac": 0.0}
+    frac = best_inl / n
+    proj = V @ best_n
+    plane_at = float(proj[np.abs((V - best_p) @ best_n) < tol].mean())
+    span = float(proj.max() - proj.min()) or 1.0
+    at_extreme = min(abs(plane_at - proj.min()), abs(plane_at - proj.max())) < span * 0.12
+    return {"present": bool(frac >= 0.15 and at_extreme), "frac": float(frac)}
+
 def _desktop_scale():
     """Best guess at the desktop UI scale so the app matches other windows.
     Priority: POINTYOINK_SCALE env > GNOME monitors.xml <scale> > None (caller falls back)."""
@@ -1120,6 +1156,7 @@ class App(ctk.CTk):
         self._shade_lock=threading.Lock(); self._shade_want=None; self._shade_running=False; self._shade_key=None
         self._warm_lock=threading.Lock(); self._warm_q=[]; self._warm_running=False   # background preview-cache warmer (open project first)
         self._shade_failed=set(); self._mesh_stats={}
+        self._base_geom={}; self._base_busy=set()   # per-model-file "is the table still on?" verdicts (detect_base), computed in the background
         self._header(); self._statusbar(); self._body(); self._build_options(); self._actions(); self._bottombar()
         self.search.trace_add("write", lambda *a: self._search_changed())
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -4809,12 +4846,29 @@ class App(ctk.CTk):
         threading.Thread(target=work, daemon=True).start()
     STEPS=("Build", "Cut base", "Combine", "Prepare", "Export")
     def _base_planes(self, name): return self.records.get(name,{}).get("base_plane",{}) or {}
+    def _table_ruled_out(self, name, node):
+        """True when the geometry says this scan's current model has no table plane (scanner already trimmed
+        it), so we should not nag to Cut base. Unknown/undetected -> False (fall back to offering the cut)."""
+        cur=self._proc_current(name, node)
+        if not cur: return False
+        bg=self._base_geom.get(cur[2])
+        return bool(bg is not None and not bg.get("present"))
+    def _want_base(self, path):
+        """Compute the table verdict for a model file once, in the background, then refresh the panel."""
+        if not path or path in self._base_geom or path in self._base_busy: return
+        self._base_busy.add(path)
+        def work():
+            r=None
+            try: r=detect_base(path)
+            except Exception as e: log_error("detect_base", e)
+            self.q.put(("base_geom", path, r))
+        threading.Thread(target=work, daemon=True).start()
     def _proc_next(self, name, nodes, local):
         """What to do now for this project: (title, detail, button text, command, step index into STEPS)."""
         scans=[n for n in nodes if n!="combined"]
         unbuilt=[n for n in scans if not self._proc_versions(name, n) and self._has_raw_frames(local, n)]
         built=[n for n in scans if self._proc_versions(name, n)]
-        planes=self._base_planes(name); nobase=[n for n in built if n not in planes]
+        planes=self._base_planes(name); nobase=[n for n in built if n not in planes and not self._table_ruled_out(name, n)]
         sel=self._film_sel if self._film_sel in scans else None   # the scan you're looking at
         # SELECTION-FIRST: if the scan you're looking at is raw, NEXT is to build THAT scan
         if sel is not None and sel in unbuilt:
@@ -4828,8 +4882,8 @@ class App(ctk.CTk):
             n0=sel if sel in nobase else nobase[0]
             def go(n=n0): self._pick_scan_by_node(name, n); self.on_remove_base(n)
             def skip(n=n0): self._skip_base(name, n)
-            # a suggestion, not a diagnosis: whether the scan has a table is not actually detected, so
-            # offer "No base - skip" right here instead of only inside the cut dialog.
+            # geometry rules a table out (detect_base) when it clearly isn't there; while detection is
+            # pending or a plane is found we still suggest the cut, with "No base - skip" to opt out.
             return ("Cut the base off %s" % self._scan_label(name, n0),
                     "%d of %d scan%s may still have the table under the part. Drag one line above it and apply, or skip if this scan has no base. The cut is remembered and applied when the scans are combined." % (len(nobase), len(built), "" if len(built)==1 else "s"),
                     "✂  Remove base on %s" % self._scan_label(name, n0), go, 1,
@@ -5070,8 +5124,21 @@ class App(ctk.CTk):
                 stw, stc = self.STAGE_WORDS[self._device_stage(local, node)]
                 if stw: ctk.CTkLabel(hdr, text="Scanner: "+stw, text_color=stc, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=12, pady=(2,0))
                 hasp=node in self._base_planes(name)
-                pl=self._base_planes(name).get(node)
-                ctk.CTkLabel(hdr, text=(("Marked: no base to cut ✓" if pl.get("skip") else "Base removed ✓ - reapplied when combining") if hasp else "Base not cut yet"), text_color=(OK if hasp else WARN), font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=12)
+                pl=self._base_planes(name).get(node) or {}
+                if hasp:   # the user has already run our Remove base on this scan: that's the strongest signal
+                    btxt=("Marked: no base to cut ✓" if pl.get("skip") else "Base removed ✓ - reapplied when combining"); bcol=OK; btip=None
+                else:      # ask the geometry whether the table is still on (the scanner may have cut it already)
+                    cpath=cur[2] if cur else None
+                    bg=self._base_geom.get(cpath) if cpath else None
+                    if cpath and bg is None: self._want_base(cpath)   # compute once in the background, then refresh
+                    if bg is None:
+                        btxt="Base: checking the model…"; bcol=MUT; btip="Looking at the geometry to see if the table/turntable is still attached."
+                    elif bg.get("present"):
+                        btxt="Table still attached - use Remove base"; bcol=WARN; btip="A large flat plane sits under the part, so the table looks like it's still in the scan."
+                    else:
+                        btxt="No table found - base already off ✓"; bcol=OK; btip="No large flat base plane in the model, so the scanner most likely trimmed the table already. Remove base is still there if you disagree."
+                bl=ctk.CTkLabel(hdr, text=btxt, text_color=bcol, font=ctk.CTkFont(size=11), anchor="w"); bl.pack(fill="x", padx=12)
+                if btip: self._tip(bl, btip)
             ctk.CTkFrame(hdr, fg_color="transparent", height=8).pack()
             if vs:
                 # One model, shown plainly - the scan rides on ONE identity so the preview, points and
@@ -5079,20 +5146,26 @@ class App(ctk.CTk):
                 def _sz(pth):
                     try: return "  ·  "+human(os.path.getsize(pth))
                     except Exception: return ""
+                _vtip=("A version is just another saved copy of this same scan. The scanner's original is what came "
+                       "off the device; every time you Prepare, Remove base or edit, PointYoink saves a NEW copy and "
+                       "leaves the original untouched. This line shows which copy the preview, points and export use.")
                 if cur:
                     ck,clabel,cpath=cur
-                    mchip=ctk.CTkFrame(pp, fg_color="#15304d", corner_radius=9); mchip.pack(fill="x", padx=6, pady=(8,2))
-                    ml=ctk.CTkLabel(mchip, text="Model:  "+clabel+_sz(cpath), height=26, anchor="w", text_color=AC, font=ctk.CTkFont(size=12, weight="bold"))
+                    mchip=ctk.CTkFrame(pp, fg_color="#15304d", corner_radius=9); mchip.pack(fill="x", padx=6, pady=(8,1))
+                    ml=ctk.CTkLabel(mchip, text="Showing:  "+clabel+_sz(cpath), height=26, anchor="w", text_color=AC, font=ctk.CTkFont(size=12, weight="bold"))
                     ml.pack(side="left", fill="x", expand=True, padx=(10,0), pady=3)
-                    self._tip(ml, "The one model this scan uses everywhere (preview, points, export): %s" % os.path.basename(cpath))
+                    self._tip(ml, _vtip+"\n\nFile: "+os.path.basename(cpath))
+                    hint=ctk.CTkLabel(pp, text="ⓘ  A version is another saved copy. The scanner's original is never changed.",
+                                      text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=222); hint.pack(fill="x", padx=8, pady=(0,2))
+                    self._tip(hint, _vtip)
                 others=[(k,l,p) for (k,l,p) in vs if not (cur and k==cur[0])]
                 if others:
                     alt_open=node in getattr(self, "_alt_ver_open", set())
-                    tgl=ctk.CTkButton(pp, text=("Hide other versions ▴" if alt_open else "Other versions (%d) ▾" % len(others)),
+                    tgl=ctk.CTkButton(pp, text=("Hide other copies ▴" if alt_open else "Other copies you've made (%d) ▾" % len(others)),
                                       height=22, corner_radius=8, fg_color="transparent", hover_color=CARD2, border_width=0,
                                       text_color=MUT, font=ctk.CTkFont(size=11), anchor="w",
                                       command=lambda nd=node: self._toggle_alt_versions(nd)); tgl.pack(fill="x", padx=6, pady=(0,2))
-                    self._tip(tgl, "Other builds of this same scan. Switch only if you want a different one for export.")
+                    self._tip(tgl, "Other saved copies of this same scan (prepared, PC build, edited…). Switch only if you want a different one for export.")
                     if alt_open:
                         for key,label,path in others:
                             chip=ctk.CTkFrame(pp, fg_color=CARD2, corner_radius=9); chip.pack(fill="x", padx=6, pady=2)
@@ -5104,7 +5177,11 @@ class App(ctk.CTk):
                             self._tip(x, "Delete this version (asks first; it goes to the trash)")
             else: ctk.CTkLabel(pp, text="No 3D model yet", text_color=WARN, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6, pady=(6,0))
             combined_exists=("combined" in nodes and node!="combined")
-            primary="build" if (raw and not vs) else ("cut" if (vs and node!="combined" and node not in self._base_planes(name)) else (None if combined_exists else ("prepare" if (vs and not has_prep) else ("export" if vs else None))))
+            # only push Cut base as the next step when the geometry hasn't ruled a table out. If detection
+            # says there's no table (scanner already trimmed it), skip straight to Prepare/Export - no nag.
+            _bg=self._base_geom.get(cur[2]) if cur else None
+            _need_cut=(vs and node!="combined" and node not in self._base_planes(name) and not (_bg is not None and not _bg.get("present")))
+            primary="build" if (raw and not vs) else ("cut" if _need_cut else (None if combined_exists else ("prepare" if (vs and not has_prep) else ("export" if vs else None))))
             _mkicon={"build":"build","cut":"cut-base","prepare":"prepare","export":"export"}
             def mk(kind, text, enabled, cmd, tip):
                 if not enabled: return None   # only show what this scan can actually do: a raw scan (no model) shows Build, not greyed Remove base / Prepare / Export
@@ -7367,6 +7444,11 @@ class App(ctk.CTk):
                 elif kind=="mesh_stats":
                     key,st=rest; self._mesh_stats[key]=st
                     if self._shade_key and key==self._shade_key[0]: self._show_stats(st)
+                elif kind=="base_geom":
+                    path,r=rest; self._base_busy.discard(path)
+                    if r is not None: self._base_geom[path]=r
+                    if self.page=="projects" and not getattr(self, "_in_edit_mode", False):
+                        self._next_refresh(); self._panel_refresh()   # the table verdict changes the NEXT step and the card line
                 elif kind=="gallery": n,items=rest; self.gallery_cache[n]=items; self.render_gallery(n,items)
                 elif kind=="film_thumb":                       # a scan's shaded strip thumbnail is ready: swap out the blue preview
                     n,node,out=rest
