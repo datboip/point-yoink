@@ -74,6 +74,8 @@ class GLView(OpenGLFrame):
         self._pvbo = None; self._pts_n = 0; self._pending_pts = None   # point-cloud view (Fused points): separate, additive path; never touches the mesh draw
         self._pcvbo = None; self._pts_v = None; self._pts_sel = None; self._pts_undo = []   # point editing: colour vbo, view-space points, selection mask, undo stack
         self.on_points_change = None                                   # callback(kept_count) after an edit, for the editor UI
+        self.on_brush_size = None                                      # callback(px) when scroll resizes the brush, so the palette slider tracks it
+        self._depth_failed = False                                    # set when visible-only wanted depth but the read failed (app warns)
         self.edit_target = "points"    # "points" (clean cloud -> rebuild) or "mesh" (delete faces on the built model, no rebuild)
         self._medit_faces = None; self._medit_undo = []; self._selfbo = None; self._sel_face_n = 0   # mesh face editing: faces, undo, selected-face overlay buffer
         self.visible_only = False      # selection: True = only what faces the camera (depth-tested); False = select through (default keeps old behaviour)
@@ -353,7 +355,9 @@ class GLView(OpenGLFrame):
         """True where a point is the front-most surface at its pixel (not hidden behind the object). Falls
         back to `front` (select-through) if visible-only is off or the depth read failed."""
         db = self._depth_buf
-        if not self.visible_only or db is None: return front
+        if not self.visible_only: return front
+        if db is None:                                       # wanted visible-only but the depth read failed: flag it, still select
+            self._depth_failed = True; return front
         try:
             vh, vw = db.shape
             px = np.clip(scr[:, 0].astype(np.int32), 0, vw - 1)
@@ -854,6 +858,9 @@ class GLView(OpenGLFrame):
         d = direction if direction is not None else (1 if e.delta > 0 else -1)
         if self.edit_tool == "brush":                        # scroll sizes the brush, not the zoom
             self.brush_px = max(6.0, min(120.0, self.brush_px * (1.15 if d > 0 else 1 / 1.15)))
+            if callable(self.on_brush_size):                 # keep the palette's slider/number in sync
+                try: self.on_brush_size(self.brush_px)
+                except Exception: pass
             if self._sel_path is None: self._sel_path = [(e.x, e.y)]   # show the ring where the cursor is
             else: self._sel_path[-1] = (e.x, e.y)
             self.draw(); return

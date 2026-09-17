@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.152-pre"
+APP = "PointYoink"; VERSION = "0.9.153-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -3035,6 +3035,14 @@ class App(ctk.CTk):
         self._editmode_chrome(True)                                    # hide the view switches: this is the editing workspace
         try: self.edit_target_sw.set(tgt)
         except Exception: pass
+        # reset selection settings ONCE per edit session (not on every palette show - Codex)
+        try:
+            if getattr(self,"sel_mode_sw",None): self.sel_mode_sw.set("Replace")
+            if getattr(self,"depth_sw",None): self.depth_sw.set("Through object")
+            self.vis_only.set(False); self.mv.set_visible_only(False); self.mv.edit_mode="replace"
+            self.mv.on_brush_size=self._on_brush_size                  # scroll-resize the brush -> palette slider tracks it
+            self._vis_warned=False; self.mv._depth_failed=False
+        except Exception: pass
         self._show_edit_palette()                                      # swap the right panel to the editor tools right away
         if tgt=="Points":
             self.pts_sw.set("Points"); self._view_mode_changed("Points")   # cloud + tools, keeps the camera
@@ -3286,12 +3294,9 @@ class App(ctk.CTk):
         ctk.CTkButton(p, text="‹  Done editing", height=28, corner_radius=8, fg_color="transparent", border_width=0, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11),
                       command=lambda: self.tabs.set("3D Preview", True)).pack(fill="x", padx=6, pady=(6,12))
     def _show_edit_palette(self):
-        try:
-            self.projpanel.grid_remove(); self.editpanel.grid(); self.editpanel.lift()
-            if getattr(self, "sel_mode_sw", None): self.sel_mode_sw.set("Replace")   # fresh session defaults
-            if getattr(self, "depth_sw", None): self.depth_sw.set("Through object")
-            try: self.vis_only.set(False); self.mv.set_visible_only(False); self.mv.edit_mode="replace"
-            except Exception: pass
+        # just swaps the panel into view - the session reset lives in _enter_edit_mode so re-showing
+        # the palette (e.g. after a load completes) never wipes what the user just set (Codex).
+        try: self.projpanel.grid_remove(); self.editpanel.grid(); self.editpanel.lift()
         except Exception: pass
     def _hide_edit_palette(self):
         try:
@@ -3312,6 +3317,12 @@ class App(ctk.CTk):
             self.mv.brush_px=float(v)
             if getattr(self,"_brush_val",None): self._brush_val.configure(text="%d px" % int(v))
         except Exception: pass
+    def _on_brush_size(self, px):
+        """Scroll on the model resized the brush - keep the palette slider and number in sync (Codex)."""
+        try:
+            if getattr(self,"_brush_slider",None): self._brush_slider.set(float(px))
+            if getattr(self,"_brush_val",None): self._brush_val.configure(text="%d px" % int(px))
+        except Exception: pass
     def _magic_reach_changed(self, v):
         try:
             self.mv.magic_k=float(v)
@@ -3329,7 +3340,7 @@ class App(ctk.CTk):
             row=ctk.CTkFrame(ts, fg_color="transparent"); row.pack(fill="x")
             ctk.CTkLabel(row, text="Brush size", text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left")
             self._brush_val=ctk.CTkLabel(row, text="%d px" % int(self.mv.brush_px), text_color=TX, font=ctk.CTkFont(size=11)); self._brush_val.pack(side="right")
-            s=ctk.CTkSlider(ts, from_=6, to=120, number_of_steps=114, command=self._brush_size_changed); s.set(float(self.mv.brush_px)); s.pack(fill="x", pady=(2,0))
+            self._brush_slider=ctk.CTkSlider(ts, from_=6, to=120, number_of_steps=114, command=self._brush_size_changed); self._brush_slider.set(float(self.mv.brush_px)); self._brush_slider.pack(fill="x", pady=(2,0))
             ctk.CTkLabel(ts, text="Scroll on the model also sizes it.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w").pack(fill="x")
         elif tool=="magic":
             row=ctk.CTkFrame(ts, fg_color="transparent"); row.pack(fill="x")
@@ -3418,6 +3429,13 @@ class App(ctk.CTk):
             parts=["%s %s" % (_kfmt(n), unit), "%s selected" % _kfmt(deln)]
             if removed: parts.append("%s removed" % _kfmt(removed))
             self.edit_count.configure(text="  ·  ".join(parts))
+        except Exception: pass
+        # Codex: if Visible only was on but the depth read failed, we silently selected through - say so once.
+        try:
+            if getattr(self.mv, "visible_only", False) and getattr(self.mv, "_depth_failed", False) and not getattr(self, "_vis_warned", False):
+                self._vis_warned=True
+                self.set_banner("Visible only couldn't read depth here, so it selected through. Rotate a little and try again.", WARN)
+            self.mv._depth_failed=False
         except Exception: pass
         self._edit_update_actions()
         self._edit_sync_dirty()
