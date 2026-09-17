@@ -231,6 +231,9 @@ class GLView(OpenGLFrame):
         if not self._mapped(): self._pending_pts = (v, on_ready); return
         try:
             self.tkMakeCurrent()
+            # entering points mode: drop any mesh-edit state so selection/delete/save use the CLOUD, not
+            # stale faces, and so _pts_recolor() below takes the point path not _mesh_recolor() (Codex #1).
+            self.edit_target = "points"; self._medit_faces = None; self._medit_undo = []; self._sel_face_n = 0
             for _b in ("_pvbo", "_pcvbo"):
                 if getattr(self, _b, None) is not None:
                     try: GL.glDeleteBuffers(1, [int(getattr(self, _b))])

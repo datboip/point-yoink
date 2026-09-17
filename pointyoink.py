@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.141-pre"
+APP = "PointYoink"; VERSION = "0.9.142-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -618,28 +618,30 @@ def human(n):
         n/=1024
     return "%.1f TB"%n
 
-def _rebuild_mesh_from_points(pts, out_path):
-    """Rebuild a triangle mesh from an (N,3) point array using ball-pivoting (open3d). Ball-pivoting is
-    used on purpose over Poisson: it spans only where there are points, so real openings/holes stay open
-    instead of being sealed over. Writes a binary PLY to out_path. Runs off the UI thread."""
-    import numpy as np, open3d as o3d
-    pts=np.asarray(pts, dtype=np.float64)
-    pcd=o3d.geometry.PointCloud(); pcd.points=o3d.utility.Vector3dVector(pts)
-    pcd.remove_duplicated_points()
-    try: avg=float(np.mean(pcd.compute_nearest_neighbor_distance()))
-    except Exception: avg=0.0
-    if not (avg>0 and np.isfinite(avg)): avg=0.3
-    pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=avg*3.0, max_nn=30))
-    try: pcd.orient_normals_consistent_tangent_plane(20)
+def _ply_element_count(path, element):
+    """Read a PLY header (ascii, at the top of any PLY) for 'element <element> N'. Cheap: no full parse.
+    Returns N or None. Used to tell if editing loaded a REDUCED version of a big scan (Codex #3)."""
+    try:
+        with open(path, "rb") as f:
+            for _ in range(300):
+                ln=f.readline()
+                if not ln: break
+                s=ln.decode("ascii", "replace").strip()
+                if s=="end_header": break
+                if s.startswith("element "+element+" "):
+                    return int(s.split()[2])
     except Exception: pass
-    radii=[avg*1.5, avg*3.0, avg*6.0]
-    mesh=o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(pcd, o3d.utility.DoubleVector(radii))
-    mesh.remove_duplicated_vertices(); mesh.remove_duplicated_triangles()
-    mesh.remove_degenerate_triangles(); mesh.remove_unreferenced_vertices()
-    if len(mesh.triangles)==0: raise RuntimeError("ball-pivoting produced no faces")
-    tmp=out_path+".tmp.ply"
-    o3d.io.write_triangle_mesh(tmp, mesh)
-    os.replace(tmp, out_path)
+    return None
+def _write_ply_points(path, pts):
+    """Write an (N,3) point array as a binary-little-endian PLY (no deps, so the app process never has to
+    import open3d just to hand points to the memory-capped rebuild subprocess)."""
+    import numpy as np
+    pts=np.ascontiguousarray(pts, dtype="<f4")
+    hdr=("ply\nformat binary_little_endian 1.0\nelement vertex %d\nproperty float x\nproperty float y\nproperty float z\nend_header\n" % len(pts)).encode("ascii")
+    tmp=path+".tmp"
+    with open(tmp, "wb") as f:
+        f.write(hdr); f.write(pts.tobytes())
+    os.replace(tmp, path)
 
 def cimg(path, w):
     im=Image.open(path); r=w/im.width; return ctk.CTkImage(light_image=im, dark_image=im, size=(w, int(im.height*r)))
@@ -2714,6 +2716,7 @@ class App(ctk.CTk):
             if n not in self.size_cache:
                 sz,_=project_model_size(n, os.path.join(dest, n)); self.size_cache[n]=sz; self.q.put(("sizes",None))
     def select_project(self, name):
+        if name!=getattr(self, "selected", None) and not self._guard_unsaved_edits(): return   # protect unsaved editor edits
         self.selected=name
         for n,card in self.rows.items():
             card.configure(fg_color=(SELB if n==name else ROW))
@@ -2895,6 +2898,7 @@ class App(ctk.CTk):
         except Exception: pass
         return None
     def _pick_scan(self, name, node, path):
+        if node!=getattr(self, "_film_sel", None) and not self._guard_unsaved_edits(): return   # protect unsaved editor edits
         self._film_sel=node; self._mark_scan(node)
         # Show the cached grey shaded still IMMEDIATELY when it exists, instead of first flashing the
         # scanner's blue preview.png (raw point cloud on black) and swapping the grey in 350 ms later.
@@ -2989,6 +2993,22 @@ class App(ctk.CTk):
         # still image: re-render it now in the chosen mode. (Going through _maybe_schedule_shaded meant the
         # opt-in auto-preview gate could swallow the first toggle, so it "took two clicks" to switch.)
         if self.selected and self._film_sel: self._request_shaded(self.selected, self._film_sel)
+    def _guard_unsaved_edits(self):
+        """The ONE gate before any navigation that would replace the edited view (tab switch, scan tile,
+        project select). Returns True to proceed, False to abort. Keep saves and stays put (caller aborts);
+        Discard drops the edits and proceeds; Cancel aborts. Does not touch tabs - callers own their view."""
+        if not (getattr(self, "_in_edit_mode", False) and getattr(self, "_edit_dirty", False) and not getattr(self, "_edit_saving", False)):
+            return True
+        choice=self._modal("Unsaved edits",
+                           "You've edited this scan but haven't saved.\nKeep it as a new model, or throw the edits away?",
+                           [("Keep as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
+        if choice=="cancel": return False
+        if choice=="keep":
+            self._edit_keep(); return False        # save + land on the new model; the pending nav is abandoned
+        self._edit_dirty=False; self._in_edit_mode=False   # discard: clear edit state, let the nav proceed
+        try: self._editmode_chrome(False); self.mv.set_edit_tool(None); self.edit_bar.place_forget()
+        except Exception: pass
+        return True
     def _on_preview_tab(self, name):
         """Sub-tab click: 3D preview | ✏ Edit | Files. Edit has no frame of its own - it reuses the live 3D
         view (same camera, same object) and just turns on the point tools, so editing feels like the same
@@ -2997,22 +3017,13 @@ class App(ctk.CTk):
             try: self._edit_tab.grid_remove(); self._preview_tab.grid()   # hide the empty Edit frame, keep the live view
             except Exception: pass
             self._enter_edit_mode(); return
-        # leaving the Edit tab: if there are unsaved edits (mesh OR points), prompt before dropping them
+        # leaving the Edit tab: the shared guard prompts if there are unsaved edits (mesh OR points)
         if getattr(self, "_in_edit_mode", False):
-            if getattr(self, "_edit_dirty", False) and not getattr(self, "_edit_saving", False):
-                choice=self._modal("Unsaved edits",
-                                   "You've edited this scan but haven't saved.\nKeep it as a new model, or throw the edits away?",
-                                   [("Keep as model","keep",True),("Discard","discard",False),("Cancel","cancel",False)])
-                if choice in ("cancel","keep"):
-                    try: self.tabs.set("✏ Edit"); self._edit_tab.grid_remove(); self._preview_tab.grid()   # stay in the editor
-                    except Exception: pass
-                    if choice=="keep": self._edit_keep()   # save, then it lands on 3D Preview itself
-                    return
-                self._edit_dirty=False                     # discard: fall through
-            self._in_edit_mode=False; self._editmode_chrome(False)
-            try: self.mv.set_edit_tool(None); self.edit_bar.place_forget()
-            except Exception: pass
-            try: self.pts_sw.set("Mesh"); self._request_shaded(self.selected, self._film_sel)   # back to the model
+            if not self._guard_unsaved_edits():        # cancel, or keep-in-progress: stay in the editor
+                try: self.tabs.set("✏ Edit"); self._edit_tab.grid_remove(); self._preview_tab.grid()
+                except Exception: pass
+                return
+            try: self.pts_sw.set("Mesh"); self._request_shaded(self.selected, self._film_sel)   # discarded: back to the model
             except Exception: pass
         if name=="3D Preview":
             try: self._preview_tab.grid()
@@ -3083,6 +3094,9 @@ class App(ctk.CTk):
                 self.big_hint.configure(text="Couldn't open this model for editing (see Help > Log)."); return
             try:
                 self._edit_orig_n=int(len(self.mv._medit_faces)); self._edit_cur_n=self._edit_orig_n
+                full=_ply_element_count(src, "face")   # Codex #3: warn if the model was too big and got decimated for editing
+                if full and self._edit_orig_n and self._edit_orig_n < full-1000:
+                    self.set_banner("Editing a reduced model: %s of %s faces (the saved model uses this resolution)." % (_kfmt(self._edit_orig_n), _kfmt(full)), WARN)
                 self.mv.on_points_change=self._edit_points_changed
                 self.mv.set_edit_tool(None); self._set_edit_tool(None, _init=True)
                 self.edit_bar.place(relx=0.5, rely=1.0, y=-8, anchor="s"); self.edit_bar.lift()
@@ -3195,7 +3209,8 @@ class App(ctk.CTk):
         self._mv_key=None                                      # the interactive view now shows points, not the tracked mesh: so toggling back to Mesh actually reloads it (else _mv_start short-circuits and stays on points)
         try: self.mv._keep_view=True                           # show the points at the mesh's current camera, not the default
         except Exception: pass
-        self._mv_loading=True; self._preview_busy("Loading the fused points")
+        real_cloud=not str(cloud).endswith("fuse_mesh.ply")   # Codex #5: the last-resort fallback is a MESH's vertices, not a real fused cloud - label it honestly
+        self._mv_loading=True; self._preview_busy("Loading the fused points" if real_cloud else "Loading the model's points")
         def ready(ok):
             self._mv_loading=False; self._preview_idle()
             if ok:
@@ -3204,12 +3219,16 @@ class App(ctk.CTk):
                 for _w in (self.view_nav, self.renders_lbl, self.big_hint):
                     try: _w.lift()
                     except Exception: pass
-                try: self.renders_lbl.configure(text="Fused points · scanner")
+                try: self.renders_lbl.configure(text="Fused points · scanner" if real_cloud else "Model vertices · no separate cloud")
                 except Exception: pass
                 if getattr(self, "_in_edit_mode", False):
-                    self.big_hint.configure(text="Select and Delete to clean · then “Keep as model” to save it (holes stay open) · Discard to revert")
+                    self.big_hint.configure(text=("Select and Delete to clean · then “Keep as model” to save it (holes stay open) · Discard to revert" if real_cloud
+                                                  else "No separate point cloud for this scan - these are the model's own vertices · Select and Delete, then Keep as model"))
                     try:
                         self._edit_orig_n=int(self.mv._pts_n or 0); self._edit_cur_n=self._edit_orig_n   # baseline: edits are dirty once we drop below this
+                        full=_ply_element_count(cloud, "vertex")   # Codex #3: if the cloud was capped, say so - the save uses this reduced set
+                        if full and self._edit_orig_n and self._edit_orig_n < full-1000:
+                            self.set_banner("Editing a reduced set: %s of %s points (the saved model uses this resolution)." % (_kfmt(self._edit_orig_n), _kfmt(full)), WARN)
                         self.mv.on_points_change=self._edit_points_changed; self.mv.set_edit_tool(None)
                         self._set_edit_tool(None, _init=True)
                         self.edit_bar.place(relx=0.5, rely=1.0, y=-8, anchor="s"); self.edit_bar.lift()
@@ -3219,7 +3238,8 @@ class App(ctk.CTk):
                     # plain Points view (from the 3D Preview toggle): just for comparing mesh vs capture, no tools
                     try: self.mv.on_points_change=None; self.mv.set_edit_tool(None); self.edit_bar.place_forget()
                     except Exception: pass
-                    self.big_hint.configure(text="The raw captured points (open the ✏ Edit tab to clean them) · drag to rotate")
+                    self.big_hint.configure(text=("The raw captured points (open the ✏ Edit tab to clean them) · drag to rotate" if real_cloud
+                                                  else "The model's own vertices (no separate cloud for this scan) · drag to rotate"))
             else:
                 self.big_hint.configure(text="Couldn't load the fused points (see Help > Log).")
         # Load the FULL cloud for editing (not the 400k preview cap), so Delete + Keep act on every point and
@@ -3312,15 +3332,26 @@ class App(ctk.CTk):
         out=os.path.join(local, "%s_%s_edited.ply" % (name, node))
         def work():
             try:
+                if os.path.exists(out) and os.path.getsize(out)>1024:   # keep the previous edited model (Codex #4: don't overwrite silently)
+                    try:
+                        vdir=os.path.join(local, ".versions"); os.makedirs(vdir, exist_ok=True)
+                        shutil.copy2(out, os.path.join(vdir, "%s_edited_%s.ply" % (node, time.strftime("%Y%m%d-%H%M%S"))))
+                    except Exception as e: log_error("edit-keep-archive", e)
                 if is_mesh:
                     import trimesh
                     verts,faces=payload
                     m=trimesh.Trimesh(vertices=verts, faces=faces, process=False)
                     tmp=out+".tmp.ply"; m.export(tmp); os.replace(tmp, out)
+                    ok=(os.path.exists(out) and os.path.getsize(out)>1024); err=None if ok else "empty result"
                 else:
-                    _rebuild_mesh_from_points(payload, out)
-                ok=(os.path.exists(out) and os.path.getsize(out)>1024)
-                err=None if ok else "empty result"
+                    # rebuild in a memory-capped child (Codex #6): write the cleaned points, reconstruct there
+                    tmpc=out+".pts.ply"; _write_ply_points(tmpc, payload)
+                    env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "10")
+                    r=self._run_child([_sys.executable, os.path.join(HERE, "process.py"), tmpc, out, "--rebuild-points"], timeout=1800, env=env)
+                    try: os.remove(tmpc)
+                    except Exception: pass
+                    ok=(r.returncode==0 and os.path.exists(out) and os.path.getsize(out)>1024)
+                    err=None if ok else ((r.stderr or r.stdout or "rebuild failed")[-200:] if r else "rebuild failed")
             except Exception as e:
                 ok=False; err=str(e); log_error("edit-keep-save", e)
             self.q.put(("call", lambda: self._edit_keep_done(name, node, out, ok, err)))
@@ -4553,6 +4584,7 @@ class App(ctk.CTk):
         if self.selected==name: self._panel_refresh()
     def _pick_scan_by_node(self, name, node):
         """Select a scan tile the way a click on the strip would (so Remove base and the preview follow)."""
+        if (name, node)!=(getattr(self,"selected",None), getattr(self,"_film_sel",None)) and not self._guard_unsaved_edits(): return
         if self.selected!=name: self.select_project(name)
         self._film_sel=node; self._mark_scan(node)
         try: self._maybe_schedule_shaded(name, node, 250)

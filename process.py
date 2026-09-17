@@ -78,9 +78,39 @@ def main():
     ap.add_argument("--hole-size", type=float, default=0, help="largest hole to fill, in mm (0 = auto: ~4%% of the bbox diagonal, so real gaps close but an intentionally-open base does not)")
     ap.add_argument("--smooth-times", type=int, default=3, help="smoothing passes (scanner default 3; 0 = off)")
     ap.add_argument("--simplify-pct", type=float, default=0, help="keep this %% of faces after cleaning (0 = keep all; the scanner's Simplify uses 40)")
+    ap.add_argument("--rebuild-points", action="store_true", help="reconstruct a mesh from a point cloud with ball-pivoting (keeps openings); runs under this process's memory cap")
     a = ap.parse_args()
 
-    import numpy as np, trimesh
+    import numpy as np
+
+    if a.rebuild_points:
+        # Ball-pivoting on purpose over Poisson: it spans only where points are, so real openings stay open.
+        # Runs here (subprocess) under RLIMIT_AS, so a pathological cloud dies alone (Codex #6).
+        if not a.outfile: print("outfile required"); sys.exit(2)
+        import open3d as o3d
+        emit("load", file=os.path.basename(a.infile))
+        pcd = o3d.io.read_point_cloud(a.infile)
+        pts = np.asarray(pcd.points, dtype=np.float64)
+        emit("loaded", points=len(pts))
+        if len(pts) < 100: print("too few points to rebuild"); sys.exit(3)
+        pcd.remove_duplicated_points()
+        try: avg = float(np.mean(pcd.compute_nearest_neighbor_distance()))
+        except Exception: avg = 0.0
+        if not (avg > 0 and np.isfinite(avg)): avg = 0.3
+        pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=avg * 3.0, max_nn=30))
+        try: pcd.orient_normals_consistent_tangent_plane(20)
+        except Exception: pass
+        emit("normals", avg_spacing=round(avg, 4))
+        radii = o3d.utility.DoubleVector([avg * 1.5, avg * 3.0, avg * 6.0])
+        mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(pcd, radii)
+        mesh.remove_duplicated_vertices(); mesh.remove_duplicated_triangles()
+        mesh.remove_degenerate_triangles(); mesh.remove_unreferenced_vertices()
+        if len(mesh.triangles) == 0: print("ball-pivoting produced no faces"); sys.exit(4)
+        tmp = a.outfile + ".tmp.ply"; o3d.io.write_triangle_mesh(tmp, mesh); os.replace(tmp, a.outfile)
+        emit("done", out=os.path.basename(a.outfile), faces=len(mesh.triangles), verts=len(mesh.vertices))
+        return
+
+    import trimesh
     emit("load", file=os.path.basename(a.infile))
     m = trimesh.load(a.infile, force="mesh")
     emit("loaded", verts=len(m.vertices), faces=len(m.faces))
