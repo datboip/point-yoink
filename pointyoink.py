@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.155-pre"
+APP = "PointYoink"; VERSION = "0.9.156-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1597,7 +1597,7 @@ class App(ctk.CTk):
         self.llist.grid_columnconfigure(0, weight=1)
         self.list_empty=None   # the "No projects yet" panel, created by render_list; kept as tall as the list's visible area
         self.llist._parent_canvas.bind("<Configure>", lambda e: self._fit_empty("list_empty", self.llist), add="+")
-        tk.Frame(left, bg=STROKE, height=1, bd=0, highlightthickness=0).grid(row=3,column=0, sticky="ew", padx=12, pady=(6,0))   # footer divider so the status line isn't floating
+        self._list_footer_sep=tk.Frame(left, bg=STROKE, height=1, bd=0, highlightthickness=0)   # shown only when the footer has text (import: 'N selected')
         self.sel_lbl=ctk.CTkLabel(left, text="No projects selected", text_color=MUT, anchor="w", font=ctk.CTkFont(size=11))
         self.sel_lbl.grid(row=4,column=0, sticky="ew", padx=18, pady=(7,12))
         tk.Frame(pm, bg=STROKE, width=1, bd=0, highlightthickness=0).grid(row=0,column=1, sticky="ns")
@@ -1670,12 +1670,12 @@ class App(ctk.CTk):
         # standard-view nav (Fusion-style): snap the 3D view to Home / Top / Front / Back / Left / Right,
         # so the model is never lost off-screen; drag still gives free rotation to any angle.
         self.view_nav=ctk.CTkFrame(bigwrap, fg_color="#0d1017", corner_radius=6, border_width=1, border_color=STROKE)
-        for lab, az, el, tip in (("⌂ Fit",None,None,"Fit the model in view: home angle, zoom and pan reset"), ("Top",0,90,"Top-down"),
+        for lab, az, el, tip in (("Fit",None,None,"Fit the model in view: home angle, zoom and pan reset"), ("Top",0,90,"Top-down"),
                                  ("Front",0,0,"Front"), ("Back",180,0,"Back"), ("Left",-90,0,"Left side"), ("Right",90,0,"Right side")):
             cmd=self._reset_view if az is None else (lambda a=az,e=el: self._set_view(a,e))
-            b=ctk.CTkButton(self.view_nav, text=lab, width=(50 if az is None else 42), height=22, corner_radius=4,
-                            fg_color="transparent", hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11),
-                            command=cmd)
+            b=ctk.CTkButton(self.view_nav, text=("  "+lab if az is None else lab), image=(_icon("fit-view","default",16) if az is None else None), compound="left",
+                            width=(52 if az is None else 42), height=22, corner_radius=4,
+                            fg_color="transparent", hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11), command=cmd)
             b.pack(side="left", padx=1, pady=1); self._tip(b, tip)
         # The point/mesh editor tools live in the right-side palette (self.editpanel / _build_edit_palette),
         # shown in place of the project panel while editing. No bottom overlay bar any more.
@@ -2475,15 +2475,20 @@ class App(ctk.CTk):
         if cm=="Live":
             self.sel_lbl.configure(text="Live view"); self.summary.configure(text="Live view · scanner cameras"); return
         if getattr(self, "page", "import")=="projects":
-            # the Projects page has no batch checkboxes: show what is OPEN, not the Import page's
-            # "No projects selected" (which read as a contradiction while a project was clearly open).
+            # ONE status: the open project shows in the title and the bottom bar. No floating "Open: X" footer.
             nm=self.disp(self.selected) if self.selected else None
-            self.sel_lbl.configure(text=("Open: %s" % nm) if nm else "Working locally")
-            try: self.summary.configure(text=("Editing %s" % nm) if nm else "Working locally · pick a project on the left")
+            self.sel_lbl.configure(text="")
+            try: self._list_footer_sep.grid_remove()
+            except Exception: pass
+            editing=getattr(self, "_in_edit_mode", False)
+            try:
+                self.summary.configure(text=(("Editing %s" % nm) if editing else nm) if nm else "Working locally · pick a project on the left")
             except Exception: pass
             return
         sel=[n for n,v in self.pull_sel.items() if v.get()]; n=len(sel); s="" if n==1 else "s"
         self.sel_lbl.configure(text=("%d project%s selected"%(n,s)) if n else "No projects selected")
+        try: self._list_footer_sep.grid(row=3,column=0, sticky="ew", padx=12, pady=(6,0)) if n else self._list_footer_sep.grid_remove()
+        except Exception: pass
         if not sel:
             self.summary.configure(text="No projects selected"); self.import_btn.configure(text="Import selected"); return
         known=[self.size_cache.get(x) for x in sel]; tot=sum(z for z in known if z); miss=sum(1 for z in known if not z)
@@ -3347,10 +3352,14 @@ class App(ctk.CTk):
         # the palette (e.g. after a load completes) never wipes what the user just set (Codex).
         try: self.projpanel.grid_remove(); self.editpanel.grid(); self.editpanel.lift()
         except Exception: pass
+        try: self.update_summary()   # bottom bar -> "Editing <project>"
+        except Exception: pass
     def _hide_edit_palette(self):
         try:
             self.editpanel.grid_remove()
             if self.page=="projects": self.projpanel.grid()
+        except Exception: pass
+        try: self.update_summary()   # bottom bar -> just "<project>" (viewing, not editing)
         except Exception: pass
     def _toggle_visible_only(self):
         try: self.mv.set_visible_only(bool(self.vis_only.get()))
@@ -5065,7 +5074,7 @@ class App(ctk.CTk):
         if os.path.exists(os.path.join(d, "fuse.ply")) or os.path.exists(os.path.join(local, "%s_%s_cloud.ply" % (os.path.basename(local), node))): return "fused"
         if self._has_raw_frames(local, node): return "raw"
         return None
-    STAGE_WORDS={"meshed": ("edited on the scanner", OK), "fused": ("fused on the scanner, not meshed", WARN), "raw": ("raw only, not edited on the scanner", WARN), None: ("", MUT)}
+    STAGE_WORDS={"meshed": ("One-tap edited ✓", OK), "fused": ("fused, not meshed", WARN), "raw": ("raw only, not edited", WARN), None: ("", MUT)}
     def _device_scan_names(self, name, root=None):
         """Names given to scans on the scanner: the project's .revo lists each scan with a name (equal to its id unless
         it was renamed on the device). {id: name} for the renamed ones."""
