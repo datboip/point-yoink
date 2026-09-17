@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.186-pre"
+APP = "PointYoink"; VERSION = "0.9.187-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -5188,11 +5188,12 @@ class App(ctk.CTk):
             for wg in (c, top_, num, nm): wg.configure(cursor="hand2"); wg.bind("<Button-1>", lambda e,kk=k: jump(kk))
             cells.append((num, nm, ul))
         tk.Frame(t, bg=STROKE, height=1, bd=0, highlightthickness=0).pack(fill="x", padx=22)
-        body=ctk.CTkFrame(t, fg_color="transparent"); body.pack(fill="both", expand=True, padx=24, pady=(14,6))
+        body=ctk.CTkFrame(t, fg_color="transparent")   # packed AFTER nav, so the footer is reserved at the bottom and a tall screenshot can never push the buttons off screen
         body.grid_columnconfigure(0, weight=5, uniform="c"); body.grid_columnconfigure(1, weight=7, uniform="c"); body.grid_rowconfigure(0, weight=1)
         leftw=ctk.CTkFrame(body, fg_color="transparent"); leftw.grid(row=0, column=0, sticky="nsew", padx=(2,16))
         rightw=ctk.CTkFrame(body, fg_color="transparent"); rightw.grid(row=0, column=1, sticky="nsew")
-        nav=ctk.CTkFrame(t, fg_color="transparent"); nav.pack(fill="x", padx=28, pady=(0,16))
+        nav=ctk.CTkFrame(t, fg_color="transparent"); nav.pack(side="bottom", fill="x", padx=28, pady=(0,16))
+        body.pack(side="top", fill="both", expand=True, padx=24, pady=(14,6))
         def close(): self.cfg["seen_howto"]=True; save_cfg(self.cfg); self._dialogs.pop("howto", None); t.destroy()
         back_b=ctk.CTkButton(nav, text="‹  Back", width=96, height=36, corner_radius=18, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=lambda: jump(self._guide_i-1)); back_b.pack(side="left")
         pg=ctk.CTkLabel(nav, text="", text_color=MUT, font=ctk.CTkFont(size=12)); pg.pack(side="left", padx=16)
@@ -5230,7 +5231,7 @@ class App(ctk.CTk):
                 # otherwise be tall enough to push the footer buttons off the dialog.
                 try: iw,ih=Image.open(path).size
                 except Exception: iw,ih=2,1
-                scale=min(620.0/iw, 400.0/ih); w=max(220, int(iw*scale))
+                scale=min(620.0/iw, 340.0/ih); w=max(220, int(iw*scale))   # cap height too, leaving room for the label, caption and footer buttons
                 self._clickimg(rightw, path, w, pady=(8,0))
                 if len(shots)>1:
                     tabs=ctk.CTkFrame(rightw, fg_color="transparent"); tabs.pack(fill="x", pady=(12,0))
