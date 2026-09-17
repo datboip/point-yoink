@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.166-pre"
+APP = "PointYoink"; VERSION = "0.9.167-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -1988,7 +1988,7 @@ class App(ctk.CTk):
         self.ftree.heading("#0", text="name", anchor="w"); self.ftree.heading("size", text="size", anchor="e")
         self.ftree.column("#0", width=190, stretch=True); self.ftree.column("size", width=70, anchor="e", stretch=False)
         self.ftree.grid(row=0,column=0, sticky="nsew", padx=(4,0), pady=4)
-        fsb=ctk.CTkScrollbar(tw, command=self.ftree.yview, fg_color="transparent"); fsb.grid(row=0,column=1, sticky="ns", padx=(0,3), pady=4)
+        fsb=ctk.CTkScrollbar(tw, command=self.ftree.yview, fg_color="transparent"); fsb.grid(row=0,column=1, sticky="ns", padx=(0,3), pady=(28,6))   # start below the treeview's column header so it doesn't ride up into it
         self.ftree.configure(yscrollcommand=fsb.set); self._ftree_sb=fsb   # the save folder holds thousands of files: it must scroll
         self.ftree.bind("<<TreeviewOpen>>", self._folder_expand); self.ftree.bind("<Double-1>", self._folder_open)
         self.ftree.tag_configure("dir", foreground=AC); self.ftree.tag_configure("mesh", foreground=OK)
@@ -2834,7 +2834,8 @@ class App(ctk.CTk):
                 var=ctk.BooleanVar(value=False); var.trace_add("write", lambda *a: self.update_summary())
             self.pull_sel[name]=var
             if q and q not in (self.disp(name)+" "+name).lower(): continue
-            card=ctk.CTkFrame(self.llist, fg_color=(SELB if name==self.selected else ROW), corner_radius=10, border_width=0)
+            _sel=(name==self.selected)   # selected = a crisp accent outline on a neutral card, so the blue "on this PC" badge doesn't blend into a blue fill
+            card=ctk.CTkFrame(self.llist, fg_color=(CARD if _sel else ROW), corner_radius=10, border_width=(2 if _sel else 0), border_color=AC)
             card.grid(row=2*shown, column=0, sticky="ew", pady=(2,0), padx=4); card.grid_columnconfigure(2, weight=1)
             self.rows[name]=card
             if self.page=="import":
@@ -5194,7 +5195,7 @@ class App(ctk.CTk):
                         btxt="Couldn't check for a base"; bcol=MUT; btip="Not enough geometry to tell whether a table is attached. Use Remove base if the table is still on the part."
                 bl=ctk.CTkLabel(hdr, text=btxt, text_color=bcol, font=ctk.CTkFont(size=11), anchor="w"); bl.pack(fill="x", padx=12)
                 if btip: self._tip(bl, btip)
-            ctk.CTkFrame(hdr, fg_color="transparent", height=8).pack()
+            ctk.CTkFrame(hdr, fg_color="transparent", height=4).pack()
             if vs:
                 # One model, shown plainly - the scan rides on ONE identity so the preview, points and
                 # export never feel like different objects. Extra versions hide behind "Other versions".
@@ -5206,13 +5207,12 @@ class App(ctk.CTk):
                        "leaves the original untouched. This line shows which copy the preview, points and export use.")
                 if cur:
                     ck,clabel,cpath=cur
-                    mchip=ctk.CTkFrame(pp, fg_color="#15304d", corner_radius=9); mchip.pack(fill="x", padx=6, pady=(8,1))
-                    ml=ctk.CTkLabel(mchip, text="Showing:  "+clabel+_sz(cpath), height=26, anchor="w", text_color=AC, font=ctk.CTkFont(size=12, weight="bold"))
+                    mchip=ctk.CTkFrame(pp, fg_color="#15304d", corner_radius=9); mchip.pack(fill="x", padx=6, pady=(6,2))
+                    ml=ctk.CTkLabel(mchip, text="Showing:  "+clabel, height=26, anchor="w", text_color=AC, font=ctk.CTkFont(size=12, weight="bold"))
                     ml.pack(side="left", fill="x", expand=True, padx=(10,0), pady=3)
-                    self._tip(ml, _vtip+"\n\nFile: "+os.path.basename(cpath))
-                    hint=ctk.CTkLabel(pp, text="ⓘ  A version is another saved copy. The scanner's original is never changed.",
-                                      text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=222); hint.pack(fill="x", padx=8, pady=(0,2))
-                    self._tip(hint, _vtip)
+                    self._tip(ml, _vtip+"\n\nFile: "+os.path.basename(cpath)+_sz(cpath))
+                    info=ctk.CTkLabel(mchip, text="ⓘ", width=20, text_color=AC, font=ctk.CTkFont(size=12)); info.pack(side="right", padx=(0,8))
+                    self._tip(info, _vtip)
                 others=[(k,l,p) for (k,l,p) in vs if not (cur and k==cur[0])]
                 if others:
                     alt_open=node in getattr(self, "_alt_ver_open", set())
