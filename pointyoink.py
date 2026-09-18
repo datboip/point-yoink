@@ -28,20 +28,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-# CTkScrollbar._draw() ends with a synchronous canvas.update_idletasks() call. That can process
-# a pending <Configure>/dimension-change event on a DIFFERENT scrollbar instance elsewhere in the
-# app, whose own handler (_update_dimensions_event, or .set() via xscrollcommand/yscrollcommand)
-# calls _draw() again - which ends with its OWN update_idletasks(), which can trigger yet another
-# instance's redraw, and so on. This chains across every CTkScrollableFrame in the app (list, film
-# strip, options, detail panel, captures, ...), not just recursing on one instance - a per-instance
-# guard doesn't stop a cascade across different instances (a per-instance
-# version of this patch still hung, SIGUSR1 dumps showing the chain hop through
-# _update_dimensions_event on a second scrollbar mid-draw). The actual fix: track nesting globally,
-# and only let the OUTERMOST _draw() call really flush idle tasks. Any _draw() invoked while
-# already inside another one still does its real drawing work (so that widget still ends up
-# visually correct) but has its own trailing update_idletasks() suppressed for that call - it
-# rides along on the outer call's own event processing instead of starting a new idle-flush that
-# can hop to yet another widget. That breaks the cascade at its root instead of just at one node.
+# CTkScrollbar._draw() ends with update_idletasks(), which can start another scrollbar's redraw mid-draw and cascade across every scrollable frame. Track nesting globally and let only the outermost draw flush idle tasks; inner draws still paint but skip their own flush
 try:
     _ctk_draw_depth = [0]
     _orig_ctk_scrollbar_draw = ctk.CTkScrollbar._draw
@@ -106,6 +93,7 @@ VID = "2207"
 for d in (THUMBS, CFG_DIR): os.makedirs(d, exist_ok=True)
 
 _INSTANCE_LOCK = None
+_LOCK_ERROR = None        # set when the lock file itself could not be used (permissions, read-only config dir)
 _SIGTERM_PENDING = False
 _SIGTERM_TIME = 0.0
 
@@ -181,13 +169,19 @@ def _acquire_single_instance():
         _INSTANCE_LOCK.seek(0); _INSTANCE_LOCK.truncate()
         _INSTANCE_LOCK.write("%s\n%s\n" % (os.getpid(), VERSION)); _INSTANCE_LOCK.flush()
         return True
-    except Exception:
-        return True   # never block a real launch over a lock-file problem
+    except Exception as e:
+        # no lock means no protection against a second copy editing the same records and files:
+        # refuse to start and say why, rather than run unlocked
+        global _LOCK_ERROR; _LOCK_ERROR="%s (%s)" % (e, lock_path)
+        try: log_line("single-instance-lock-error: %s" % _LOCK_ERROR)
+        except Exception: pass
+        return False
 
 def _show_single_instance_error():
     """A dark, on-theme 'already running' dialog (not the plain gray Tk messagebox) with a button that
     brings the window that's already open to the front."""
-    msg = "PointYoink is already running.\nUse the window that's already open."
+    msg = ("PointYoink can't create its lock file, so it won't start:\n%s\n\nCheck that the config folder is writable, then try again." % _LOCK_ERROR) if _LOCK_ERROR \
+          else "PointYoink is already running.\nUse the window that's already open."
     try: log_line("single-instance-blocked")
     except Exception: pass
     try:
@@ -1195,6 +1189,7 @@ class App(LiveMixin, ctk.CTk):
         self.rows={}; self.serial=None
         self.pulling=False; self.cancel=False; self.listing=False; self.listed=False; self.proc=None
         self._closing=False; self._children=set(); self._children_lock=threading.Lock(); self._job_seq=0
+        self._ops=0                              # thread-only jobs (no child process) that a handoff must not interrupt, e.g. a PLY export
         self._mounting=False; self.auto_tried=False; self._wifi=None; self._wifi_bg=False; self.listed_src=None; self._listing_src=None; self._refresh_probe_busy=False; self._shots_busy=False; self._open3d_probe_busy=False
         self._device_mounted=False; self._device_touch_cool_until=0.0
         self.report_callback_exception = self._on_tk_error
@@ -1250,6 +1245,23 @@ class App(LiveMixin, ctk.CTk):
         except Exception: pass
         self._forget_child(proc)
 
+    def _stall_guard(self, proc, idle, what, cancel=False):
+        """Stop a child that goes quiet: if it prints nothing for `idle` seconds (or, with cancel=True, the
+        user cancels) it is terminated, then killed, so its read loop ends and the job reports a failure
+        instead of hanging forever. Returns touch(); call it on every line the child prints."""
+        last=[time.monotonic()]
+        def touch(): last[0]=time.monotonic()
+        def run():
+            while proc is not None and proc.poll() is None:
+                time.sleep(2.0)
+                quiet=time.monotonic()-last[0] > idle
+                if quiet or (cancel and self.cancel):
+                    try: log_line("%s: %s, stopping it" % (what, "no output for %ds" % idle if quiet else "cancelled"))
+                    except Exception: pass
+                    self._terminate_proc(proc); time.sleep(5.0)
+                    if proc.poll() is None: self._terminate_proc(proc, kill=True)
+                    return
+        threading.Thread(target=run, daemon=True).start(); return touch
     def _terminate_proc(self, proc, kill=False):
         if not proc or proc.poll() is not None: return
         try:
@@ -1424,12 +1436,7 @@ class App(LiveMixin, ctk.CTk):
             ]
             self._splash=sp; self._splash_a=0.0; self._missing=None
             self._splash_a=1.0; sp.update_idletasks()
-            # Blocking, synchronous, HERE: no other thread and no Tk font has been created yet (that happens in
-            # _header/_body, called after this returns), so the first import of trimesh/shapely cannot race a
-            # worker thread (e.g. a thumbnail render spawned the moment the project list arrives) and cannot
-            # finalise a Tk object from the wrong thread. That race was a real deadlock: two
-            # threads both doing "import shapely" for the first time, one hung forever in Font.__del__ while
-            # holding the module's import lock, the other blocked forever waiting for that same lock.
+            # import the mesh libraries here, before any worker thread or Tk font exists: a first import of trimesh/shapely racing a worker thread can deadlock on the import lock
             _preload()
             self.after(60, lambda: self._run_checks(0))
             self._splash_anim()
@@ -1454,7 +1461,7 @@ class App(LiveMixin, ctk.CTk):
         elif self._splash_a<=0.0:
             try: sp.destroy()
             except Exception: pass
-            self._splash=None; self.deiconify()
+            self._splash=None; self.imgs.pop("sp_ring", None); self.deiconify()
     def _run_checks(self, i):
         if not self._splash: return
         cv=self._sp_cv
@@ -1537,12 +1544,7 @@ class App(LiveMixin, ctk.CTk):
             try: self._sp_cv.itemconfigure(self._sp_status, text="loading your projects…", fill=MUT)
             except Exception: pass
             self.after(150, self._close_splash); return
-        # Multiple self.after(150, self._close_splash) calls can already be queued from the
-        # "not ready yet" branch above by the time _first_render_done/_checks_done both flip
-        # true - each one reaches here and would otherwise re-run the whole forced-paint+reveal
-        # sequence a second time (pointyoink.log shows two full
-        # forced-first-paint passes, 0.159s then 28.473s, same session - a real ~28s extra
-        # freeze this guard prevents).
+        # several queued callbacks can reach this point; run the reveal sequence once
         if getattr(self, "_splash_closing", False): return
         self._splash_closing=True
         if self._splash:
@@ -1551,15 +1553,7 @@ class App(LiveMixin, ctk.CTk):
             try: self.attributes("-alpha", 0.0)
             except Exception: pass
             self.deiconify()
-            # Wait for the REAL first paint, not a fixed guess. A fixed delay here used to let the
-            # crossfade start before CustomTkinter's widgets were actually drawn, so the reveal
-            # showed a half-built UI fading in. A single update_idletasks() can also return before
-            # genuinely done (drawing one widget can queue more idle work), so loop until a pass
-            # finds nothing left to do. MUST be update_idletasks(), never plain update(): update()
-            # drains every pending X event including raw input (mouse motion, at whatever the
-            # mouse's poll rate is) - same machine, same instant:
-            # update_idletasks() took 0.27s, update() hung 20+s and never returned while the mouse
-            # kept moving. update() was the actual bug this whole fix introduced.
+            # wait for the real first paint: loop update_idletasks() until a pass finds no work (one call can queue more). Never plain update(): it drains raw input events and can spin for as long as the mouse keeps moving
             for _pass in range(6):
                 t0=time.perf_counter()
                 try: self.update_idletasks()
@@ -1790,9 +1784,6 @@ class App(LiveMixin, ctk.CTk):
                                            fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE,
                                            text_color=TX, font=ctk.CTkFont(size=11))
         self.pts_sw.pack(side="right", padx=(0,8)); self.pts_sw.set("Mesh")   # (no tooltip: CTkSegmentedButton.bind raises, like shade_sw)
-        # "Reset view" lived here but it did the same thing as "⌂ Fit" in the bottom-left nav - dropped as a
-        # duplicate. _reset_view stays (Fit and double-click use it).
-        # preview box: the rendered PNG (or the scanner's preview) with a hint line at the bottom
         pv.grid_columnconfigure(0, weight=1); pv.grid_rowconfigure(0, weight=1, minsize=120)
         # corner_radius=0: this panel holds the OpenGL 3D view, which is a real X child window and can't be
         # clipped to rounded corners - its square edges bled past a rounded frame. A
@@ -2347,7 +2338,7 @@ class App(LiveMixin, ctk.CTk):
             "1  Build  -  raw frames become a 3D model. One-tap Edit on the scanner does it too; Build here when that did not turn out right.",
             "2  Cut base  -  drag one line above the table on each scan. The cut is remembered and applied when combining.",
             "3  Combine  -  scanned each side separately? Click matching spots on two scans at a time, Keep, then build one model from all the frames.",
-            "4  Prepare  -  remove floating pieces, smooth, fill holes, reduce triangles. Before and after, Keep or Discard.",
+            "4  Prepare  -  remove floating pieces, smooth, fill holes, reduce triangles. Preview before and after, then Save prepared version or Discard.",
             "5  Export  -  version, format and folder together, with the model's size and a mesh check.",
             "Originals are never changed: every step saves a new version, and you pick which one counts.",
         ], accent=OK)
@@ -2442,7 +2433,7 @@ class App(LiveMixin, ctk.CTk):
                             fg_color=AC, hover_color=AC_H, border_color=DIM, text_color=TX, font=ctk.CTkFont(size=12), checkbox_width=20, checkbox_height=20, corner_radius=5)
         rdc.pack(anchor="w", padx=20, pady=(6,0))
         ctk.CTkLabel(pr, text="GPU: seconds per scan (needs ~2 GB VRAM) · CPU: minutes", text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left")
-        # UI scale (for HiDPI / tiny-window fix)
+        # UI scale
         sr=ctk.CTkFrame(t, fg_color="transparent"); sr.pack(fill="x", padx=20, pady=(18,0))
         cur=getattr(self,"_ui_scale",1.0)
         sv=ctk.DoubleVar(value=cur)
@@ -2560,7 +2551,12 @@ class App(LiveMixin, ctk.CTk):
         def ok(*_):
             self.records.setdefault(name,{})["label"]=(v.get().strip() or None)
             self._persist(); self._dialogs.pop("projname", None); t.destroy()
-            self.projects_sig=None  # force re-render
+            self.projects_sig=None; self.gallery_cache.pop(name, None)
+            try: self.render_list(getattr(self, "all_projects", self.projects))
+            except Exception as e: log_error("rename-refresh", e)
+            if self.selected==name:
+                try: self.select_project(name)
+                except Exception as e: log_error("rename-refresh", e)
         e.bind("<Return>", ok)
         br=ctk.CTkFrame(t, fg_color="transparent"); br.pack(fill="x", padx=16, pady=14)
         ctk.CTkButton(br, text="Save", width=100, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=ok).pack(side="right", padx=6)
@@ -2583,6 +2579,10 @@ class App(LiveMixin, ctk.CTk):
             self._handoff_requested = True; self._handoff_req_mono = _SIGTERM_TIME or time.monotonic()
         self._handoff_tick()
 
+    def _op_begin(self):
+        with self._children_lock: self._ops+=1
+    def _op_end(self):
+        with self._children_lock: self._ops=max(0, self._ops-1)
     def _handoff_busy(self):
         """Never hand off while there's work that closing would lose or corrupt. The newer instance then
         times out on the lock and shows the ordinary 'already running' window instead of yanking this one
@@ -2592,6 +2592,7 @@ class App(LiveMixin, ctk.CTk):
         if getattr(self, "_wifi", None): return True          # a WiFi receive is in progress (set before 'pulling')
         if getattr(self, "_mounting", False): return True     # mounting the device over MTP
         if self.live_busy(): return True                     # a dev live-view stream is up or connecting (no-op in shipped builds)
+        if getattr(self, "_ops", 0) > 0: return True         # a thread-only job (a file export) is mid-write
         try:
             with self._children_lock:
                 if self._children: return True                # a heavy subprocess (Prepare / Build / Combine / cut) is running
@@ -2603,7 +2604,7 @@ class App(LiveMixin, ctk.CTk):
             self._handoff_requested = False
             age = time.monotonic() - getattr(self, "_handoff_req_mono", 0.0)
             if age > 6.0:
-                # the requester waits ~8s for the lock then gives up and shows 'already running'. Only accept
+                # the requester waits ~13s for the lock then gives up and shows 'already running'. Only accept
                 # a request young enough to leave room for our own cleanup before that timeout; an older one
                 # (a long-blocked tick or slow startup) is stale - honouring it would close us after our
                 # replacement already bailed, leaving nothing open. Monotonic clock so a wall-clock jump can't
@@ -2659,12 +2660,7 @@ class App(LiveMixin, ctk.CTk):
         try: self._terminate_children()
         except Exception as e: log_error("child-cleanup", e)
         self._persist()
-        # tearing down thousands of widgets one by one is what made closing look like popups dying in slow motion:
-        # hide the window first, then leave; daemon threads and child processes go with us.
-        # update_idletasks() used to be called here too, but it's the exact same call proven
-        # (repeated SIGUSR1 thread dumps, identical stuck stack each time) to hang for a sustained
-        # period inside CustomTkinter's own scrollbar redraw code on this GNOME/X11 desktop -
-        # os._exit(0) below exits regardless, so nothing here needs pending idle tasks flushed first.
+        # hide the window first, then exit: tearing down thousands of widgets is slow, and flushing pending redraws here can hang inside the scrollbar redraw, so nothing is flushed before os._exit
         try: self.withdraw()
         except Exception: pass
         try: self.quit()
@@ -2738,9 +2734,7 @@ class App(LiveMixin, ctk.CTk):
 
     # ---- polling ----
     def refresh_loop(self):
-        # One startup probe only. Periodic idle polling made the app harder to reason about while chasing
-        # keyboard stalls; USB/Rescan/Refresh now perform explicit work when the user asks. This probe
-        # still reads only sysfs and /proc/self/mountinfo, never the MTP/FUSE tree.
+        # one startup probe, reading only sysfs and /proc/self/mountinfo; USB, Rescan and Refresh do the real device work when asked
         if not self.pulling and not self._wifi and not getattr(self, "_refresh_probe_busy", False):
             self._refresh_probe_busy=True
             def probe():
@@ -2821,7 +2815,9 @@ class App(LiveMixin, ctk.CTk):
             self.set_banner("Tap “File Transfer” on the MIRACO first.", WARN); self.after(300, self._usb_help); return
         self._mounting=True; self._shots_loaded=False; self.set_banner("Connecting…", AC)
         def work():
-            try: self.q.put(("mounted", *do_mount()))
+            try:
+                if getattr(self, "_closing", False): self.q.put(("mounted", False, "closing")); return   # never start a mount the app can't see through
+                self.q.put(("mounted", *do_mount()))
             except Exception as e: log_error("mount", e); self.q.put(("mounted", False, str(e)))
         threading.Thread(target=work, daemon=True).start()
 
@@ -2866,8 +2862,7 @@ class App(LiveMixin, ctk.CTk):
         sig=json.dumps([q, self.page]+[[p, self.is_imported(p["name"]), self.changed(p["name"])] for p in projs])
         if sig==self.projects_sig: return
         self.projects_sig=sig; self.projects=projs
-        # Unmap the list while its rows are destroyed/rebuilt - see render_gallery for why
-        # (same CTkScrollableFrame redraw-recursion bug).
+        # unmap the list while its rows are rebuilt (see render_gallery: nested scrollbar redraws)
         self.llist.grid_remove()
         for w in self.llist.winfo_children(): w.destroy()
         try:
@@ -3236,8 +3231,7 @@ class App(LiveMixin, ctk.CTk):
     def _shade_mode_changed(self, v):
         self.shade_mode="wire" if v=="Wireframe" else "solid"
         if self.mv.winfo_manager(): self.mv.set_wire(self.shade_mode=="wire"); return   # live view: just redraw
-        # still image: re-render it now in the chosen mode. (Going through _maybe_schedule_shaded meant the
-        # opt-in auto-preview gate could swallow the first toggle, so it "took two clicks" to switch.)
+        # a still image is re-rendered straight away when its mode changes
         if self.selected and self._film_sel: self._request_shaded(self.selected, self._film_sel)
     def _guard_unsaved_edits(self):
         """The ONE gate before any navigation that would replace the edited view (tab switch, scan tile,
@@ -3476,7 +3470,7 @@ class App(LiveMixin, ctk.CTk):
         for _w in (getattr(self,"edit_keep",None), getattr(self,"edit_discard",None)):   # fresh editor: nothing to save yet
             try: _w.configure(state="disabled")
             except Exception: pass
-        self._mv_key=None                                      # the interactive view now shows points, not the tracked mesh: so toggling back to Mesh actually reloads it (else _mv_start short-circuits and stays on points)
+        self._mv_key=None                                      # reload the mesh when switching back from points
         try: self.mv._keep_view=True                           # show the points at the mesh's current camera, not the default
         except Exception: pass
         real_cloud=not str(cloud).endswith("fuse_mesh.ply")   # the last-resort fallback is a MESH's vertices, not a real fused cloud - label it honestly
@@ -3716,11 +3710,11 @@ class App(LiveMixin, ctk.CTk):
             if removed: parts.append("%s removed" % _kfmt(removed))
             self.edit_count.configure(text="  ·  ".join(parts))
         except Exception: pass
-        # if Visible only was on but the depth read failed, we silently selected through - say so once.
+        # Visible only needs a depth read; when that fails the selection is abandoned - say so once.
         try:
             if getattr(self.mv, "visible_only", False) and getattr(self.mv, "_depth_failed", False) and not getattr(self, "_vis_warned", False):
                 self._vis_warned=True
-                self.set_banner("Visible only couldn't read depth here, so it selected through. Rotate a little and try again.", WARN)
+                self.set_banner("Visible only could not read depth. Nothing was selected. Rotate the model and try again.", WARN)
             self.mv._depth_failed=False
         except Exception: pass
         self._edit_update_actions()
@@ -3894,14 +3888,10 @@ class App(LiveMixin, ctk.CTk):
                     ns=self._proc_nodes(name)
                     if len(ns)==1: node=ns[0]   # single scan: the version chip and the preview must agree
                 except Exception: pass
-        # honour the picked version (_mesh_for_node -> _proc_current) whenever we know the scan; _find_mesh
-        # (largest file) was showing the sealed scanner model even when "prepared copy" was ticked - the
-        # "first load sealed, toggle to points and back shows the holey one" bug.
+        # use the picked version for the scan (_mesh_for_node -> _proc_current); _find_mesh alone would show the largest file
         mesh=self._mesh_for_node(name, node) if node else self._find_mesh(name)
         if not mesh:
-            # genuinely no fused mesh (only raw frames). Clear the interactive target so clicking the
-            # preview doesn't open the PREVIOUS scan's 3D view - that was the "says no model but then
-            # loads" bug.
+            # no fused mesh, only raw frames: clear the interactive target so a click cannot open the previous scan's view
             self._mv_want=None; self._mv_key=None; self._shade_key=None; self._cancel_mv_start()   # reset _shade_key too, or a late mesh_stats for the PREVIOUS scan re-stamps its triangle count here
             try: self.mv.grid_remove(); self.big.grid()
             except Exception: pass
@@ -4103,7 +4093,7 @@ class App(LiveMixin, ctk.CTk):
         # instead of making the user click the still. Set "auto_live_preview": false to keep it click-to-open.
         if self.cfg.get("auto_live_preview", True):
             self.big_hint.configure(text="Loading the interactive 3D view…")
-            self._schedule_mv_start(self._shade_key[0], 300)   # was 1800ms and opt-in; snappy now that meshes are cached
+            self._schedule_mv_start(self._shade_key[0], 300)   # open the cached 3D view once the still image is up
         else:
             self.big_hint.configure(text="Still image · click to open the interactive 3D view (or pick a view above)")
     def _make_mv(self, software=False):
@@ -4171,17 +4161,12 @@ class App(LiveMixin, ctk.CTk):
                     except Exception: pass
                 self.big_hint.configure(text="Drag to rotate · scroll to zoom · right-drag to pan · double-click to reset")
             else:
-                # this used to reuse the exact "...is loading" text shown WHILE still loading, so a real
-                # failure was indistinguishable from a load that's just slow.
+                # a load failure reads differently from a load that is still running
                 log_line("live 3D view failed to load for %s: %s" % (k, getattr(self.mv, "_err", "unknown")))
                 try: self.mv.grid_remove()
                 except Exception: pass
                 self.big_hint.configure(text="Still image · couldn't load the live 3D view (see Help > Log)")
-        # GLView's own default cap is 3M faces - for a casual rotate/zoom preview (not the precise
-        # cut-plane tool, which already caps at 600k) that meant a 500-650k triangle mesh never got
-        # decimated at all, paying full uncapped normal-computation cost every time a scan was
-        # selected: measured 16-37s, consistently, not a one-off.
-        # The cap is now the Settings "Live 3D preview detail" choice (mesh prep measured 0.7 s at 300k).
+        # cap the preview's faces at the Settings "Live 3D preview detail" level: an uncapped 500-650k mesh costs seconds of normal computation on every selection
         self.mv.load(path, ready, max_faces=LIVE_QUALITY_FACES.get(self.cfg.get("live_quality","medium"), 300000))
     def _show_stats(self, st):
         v,f=st
@@ -4284,14 +4269,15 @@ class App(LiveMixin, ctk.CTk):
                         "Project %d of %d · %s · scan %d/%d · %s / %s · %s/s"
                         % (i+1,total,name,min(n,nscan[0]),n,human(done[0]),human(total_bytes),human(rate)), rate))
         def on_bytes(b): done[0]+=b; rep()
+        bad=0
         for sp,dp,kind,node in plan:
             if self.cancel: return
             if node!=last_node[0]: nscan[0]+=1; last_node[0]=node
             try:
-                self._copy_chunked(sp, dp, on_bytes)     # chunked -> reports bytes/sec continuously (shutil.copyfile is one opaque blocking call)
-                if kind=="mesh": meshes.append(dp)
-            except Exception as e: log_error("copy "+kind, e)
+                if self._copy_chunked(sp, dp, on_bytes) and kind=="mesh": meshes.append(dp)   # chunked -> reports bytes/sec continuously
+            except Exception as e: bad+=1; log_error("copy "+kind, e)
         rep(force=True)
+        if bad and not self.cancel: raise OSError("%d of %d files failed to copy" % (bad, len(plan)))   # the project counts as failed, staging is kept
         if (fmts or cleanup) and not self.cancel:
             self._process_meshes(meshes, name, fmts, cleanup, i, total, clean_opts=clean_opts)
         return len(meshes)
@@ -4380,22 +4366,35 @@ class App(LiveMixin, ctk.CTk):
 
     def _copy_chunked(self, src, dst, on_bytes, chunk=1<<20):
         """Copy a file in 1 MB chunks, calling on_bytes(n) after each - lets the import report bytes/sec
-        continuously so the speed graph is a real curve, not one flat block per file."""
-        with open(src, "rb") as fi, open(dst, "wb") as fo:
-            while True:
-                if self.cancel: break
-                buf=fi.read(chunk)
-                if not buf: break
-                fo.write(buf); on_bytes(len(buf))
+        continuously so the speed graph is a real curve, not one flat block per file. The bytes go to a
+        sibling temp file and replace dst only when the whole file arrived, so a cancel, a short read or
+        a crash can never leave a truncated file where a good one was. Returns False when cancelled."""
+        part="%s.part-%d" % (dst, os.getpid())
+        try:
+            want=os.path.getsize(src); got=0
+            with open(src, "rb") as fi, open(part, "wb") as fo:
+                while True:
+                    if self.cancel: break
+                    buf=fi.read(chunk)
+                    if not buf: break
+                    fo.write(buf); got+=len(buf); on_bytes(len(buf))
+            if self.cancel: os.remove(part); return False
+            if got!=want: raise OSError("short copy of %s: %d of %d bytes" % (os.path.basename(src), got, want))
+            os.replace(part, dst); return True
+        except Exception:
+            try: os.remove(part)
+            except Exception: pass
+            raise
     def _import_full(self, name, dest, i, total):
         """Full project including raw frames - kept in the device's nested layout (needed to re-process)."""
         src=os.path.join(PROJECTS,name)+"/"; dst=os.path.join(dest,name)+"/"; os.makedirs(dst, exist_ok=True)
         cmd=["rsync","-a","--info=progress2",src,dst]
         self.q.put(("prog", i/total, "Project %d of %d - %s (full)"%(i+1,total,name)))
         proc=self._popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-        self.proc=proc
+        self.proc=proc; touch=self._stall_guard(proc, 300, "import rsync", cancel=True)
         try:
             for ln in proc.stdout:
+                touch()
                 if self.cancel: proc.terminate(); break
                 # rsync --info=progress2 line: "   1,234,567  45%   12.34MB/s    0:00:30"
                 # use ALL of it (bytes, speed, time-left), not just the % - a full-project copy over the
@@ -4480,9 +4479,9 @@ class App(LiveMixin, ctk.CTk):
             viewer=os.path.join(HERE, "viewer.py")
             proc=self._popen([_sys.executable, viewer, path, name], watch=True,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-            got=False; tail=[]
+            got=False; tail=[]; touch=self._stall_guard(proc, 900, "3D viewer")
             for ln in proc.stdout:
-                tail=(tail+[ln.strip()])[-5:]
+                touch(); tail=(tail+[ln.strip()])[-5:]
                 if "PYVIEW_READY" in ln: got=True; self.q.put(("view_done", token, None)); break
                 if "PYVIEW_ERROR" in ln: got=True; log_line("viewer: "+ln.strip()); self.q.put(("view_done", token, ln.strip())); break
             if not got:
@@ -4652,7 +4651,7 @@ class App(LiveMixin, ctk.CTk):
         slider.configure(command=on_slide)
         def flip(): st["keep_above"]=not st["keep_above"]; schedule()
         flipb.configure(command=flip)
-        def use_normal(n, start=None, ref=None, base=True):
+        def use_normal(n, start=None, base=True):
             """Set the cut direction. Which way is up: agree with the auto-detected table plane when it points roughly the
             same way, else the end with the bigger flat sheet is the table. The cut starts just above the densest
             height in the lower third (the table), or where asked."""
@@ -4715,7 +4714,7 @@ class App(LiveMixin, ctk.CTk):
             if st["V"] is None: return
             view.on_pick=None; clearb.configure(state="disabled")
             if which=="Floor grid":
-                view.markers=[]; use_normal(st["n_grid"], ref=st.get("n_auto_up")); dirhint.configure(text="the view's floor grid is the table")
+                view.markers=[]; use_normal(st["n_grid"]); dirhint.configure(text="the view's floor grid is the table")
             elif which=="Auto-detect":
                 view.markers=[]; use_normal(st["n_auto"]); dirhint.configure(text="the flattest surface in the scan")
             elif which=="Click spots on the table":
@@ -4770,7 +4769,6 @@ class App(LiveMixin, ctk.CTk):
                     if res is None: load.configure(text="Could not find the table in this scan"); return
                     V, n_auto, n_grid = res; st["V"]=V; st["n_auto"]=n_auto; st["n_grid"]=n_grid
                     Ha=V.dot(n_auto); lo,hi=np.percentile(Ha,[3,97]); band=0.03*(hi-lo)
-                    st["n_auto_up"]=(-n_auto if (Ha>hi-band).sum()>(Ha<lo+band).sum() else n_auto)   # auto plane oriented with its sheet at the bottom
                     load.grid_remove(); dirsel.set("Floor grid"); choose_dir("Floor grid")
                     status.configure(text="Starting just above the table along the floor grid. Drag to rotate, scroll to zoom.")
                 self.q.put(("call", done))
@@ -4950,11 +4948,7 @@ class App(LiveMixin, ctk.CTk):
         want=self.records.get(name,{}).get("current",{}).get(node)
         for v in vs:
             if v[0]==want: return v
-        # No explicit pick: anchor on the scanner's model (the device's sealed, nicest result) so a fresh
-        # open shows ONE coherent model that matches the thumbnail and the fused points - NOT the holey
-        # prepared copy just because it sorts first. The prepared / PC-build versions are alternatives you
-        # switch to on purpose. Coherence fix: "going back and seeing the other one feels like
-        # you're editing something else."
+        # no explicit pick: default to the scanner's model, so a fresh open shows the one that matches the thumbnail; prepared and PC-built copies are alternatives you choose
         for v in vs:
             if v[0]=="scanner": return v
         return vs[0]
@@ -4977,7 +4971,7 @@ class App(LiveMixin, ctk.CTk):
             except Exception: pass
             if self.page=="projects": self._schedule_panel_refresh(50)   # move the ✓ / rebuild the version chips (deferred: don't destroy the clicked button mid-callback)
         self.after(0, lambda: self._proc_render(name))          # rebuild the cards page too, deferred for the same reason
-    def _trash(self, path):
+    def _trash(self, path, tdir=None):
         """Move a file or folder to the desktop trash (gio), else into <dest>/.trash. Can be slow
         for a big folder (the gio call is timeout-bounded, but its own fallback move is a real
         copy+delete if .trash lands on a different filesystem) - always call via _trash_async
@@ -4986,15 +4980,16 @@ class App(LiveMixin, ctk.CTk):
             if subprocess.run(["gio","trash",path], capture_output=True, timeout=30).returncode==0: return True
         except Exception: pass
         try:
-            tdir=os.path.join(self.dest.get() or DEFAULT_DEST, ".trash"); os.makedirs(tdir, exist_ok=True)
+            tdir=tdir or os.path.join(self.dest.get() or DEFAULT_DEST, ".trash"); os.makedirs(tdir, exist_ok=True)
             shutil.move(path, os.path.join(tdir, time.strftime("%Y%m%d-%H%M%S_")+os.path.basename(path))); return True
         except Exception as e:
             log_error("trash", e); return False
     def _trash_async(self, path, done):
+        tdir=os.path.join(self.dest.get() or DEFAULT_DEST, ".trash")     # read the Tk variable here, on the UI thread
         """Run _trash() off the main thread and deliver the result back via the queue - a project
         folder can be big, so this must never block the UI thread."""
         def _run():
-            ok=self._trash(path)
+            ok=self._trash(path, tdir)
             self.q.put(("call", lambda: done(ok)))
         threading.Thread(target=_run, daemon=True).start()
     def _proc_delete_version(self, name, node, key, path):
@@ -5104,8 +5099,7 @@ class App(LiveMixin, ctk.CTk):
             self._proc_rows[node]={"card":card, "bar":pb, "lbl":pl, "build":bb, "prepare":cb, "export":xb}
     def _card_thumb(self, name, node, path, label):
         """Small shaded render for a card without a scanner picture, cached under THUMBS, made in a thread."""
-        # include the version in the key, or a node with both a scanner and a prepared mesh renders one
-        # version and serves it for the other (same bug fixed for the shaded still/film).
+        # the version is part of the key: a scan with a scanner mesh and a prepared mesh renders each separately
         verkey=(self._proc_current(name, node) or (None,))[0]
         key="%s__%s__%s__card" % (name, node, verkey or "v"); out=os.path.join(THUMBS, key+".png")
         def put():
@@ -5308,10 +5302,10 @@ class App(LiveMixin, ctk.CTk):
            dict(name="Prepare", icon="prepare", title="Prepare the surface",
                 purpose="Remove floating pieces, reduce triangles, and smooth the surface.",
                 steps=[("On the scanner", "Isolation, Simplify and Smooth, one panel each."),
-                       ("In PointYoink", "Prepare runs all three on a copy, with before and after.")],
+                       ("In PointYoink", "Tick the clean-up actions you want; Prepare runs them on a copy and shows before and after.")],
                 info=None, where="On the scanner",
                 shots=[("Isolation", "scanner-isolation"), ("Simplify", "scanner-simplify"), ("Smooth", "scanner-smooth")],
-                caption="Keep or Discard the result; the original is never changed."),
+                caption="Save prepared version or Discard; the original is never changed."),
            dict(name="Export", icon="export", title="Export for a slicer",
                 purpose="Save the finished model as STL, OBJ, GLB or PLY.",
                 steps=[("In PointYoink", "Pick the version, the format and the folder."),
@@ -5564,9 +5558,7 @@ class App(LiveMixin, ctk.CTk):
         try:
             self._panel_refresh_body(pp)
         except Exception as e:
-            # this panel is cleared above before being rebuilt - any exception past that point used to
-            # leave it permanently blank with nothing in the log (a Tk-callback exception, not caught by
-            # drain_loop). Surfaced after a Remove Base completed and the panel went empty.
+            # the panel was cleared above: an error while rebuilding shows a placeholder instead of leaving it blank
             log_error("panel_refresh", e)
             for w in pp.winfo_children(): w.destroy()
             ctk.CTkLabel(pp, text="Couldn't refresh this panel (see Help > Log). Try selecting the project again.",
@@ -5694,8 +5686,6 @@ class App(LiveMixin, ctk.CTk):
         act("  Compare versions…", lambda: self._compare_dialog(name), "Two 3D views side by side, any scan or version in each, turning together.", icon="compare")
         act("  Combine scans…", lambda: self._align_dialog(name), "Scanned each side separately? Line the scans up and build one model from all of them.", icon="combine")
         act("  Build all models", self.on_process_pc, "Build the 3D model of every scan that has raw data.", icon="build")
-        # "All scans as cards…" removed: it was a near-empty duplicate of this page (hero +
-        # filmstrip + these same actions already live here). Build detail lives in Settings.
         act("  Delete project from this PC", self._proc_delete_project, "Everything in its folder goes to the trash. The scanner copy is not touched.", danger=True, icon="delete")
     def _proc_progress(self, node, frac, text):
         r=self._proc_rows.get(node)
@@ -5849,7 +5839,7 @@ class App(LiveMixin, ctk.CTk):
                               text_color=("#04121f" if avail else DIM), state=("normal" if avail else "disabled"),
                               command=(lambda idx=i: (self._dialogs.pop("prephist", None), t.destroy(), self._prep_restore(name, node, idx)))).pack(side="right", padx=14)
     def _prepare_dialog(self, name, node):
-        """The four named clean-up actions, run on a copy, shown before and after, then Keep or Discard."""
+        """The four named clean-up actions, run on a copy, shown before and after, then Save prepared version or Discard."""
         cur=self._proc_current(name, node)
         if not cur: return
         self._ensure_clean_vars()
@@ -6076,13 +6066,18 @@ class App(LiveMixin, ctk.CTk):
             while os.path.exists(out): out=os.path.join(ddir, "%s_%d.%s" % (nm, n, fmt)); n+=1
             self._btn_busy(gob, "Writing…"); status.configure(text="Writing %s…" % os.path.basename(out), text_color=MUT)
             def work():
-                err=None
+                err=None; self._op_begin(); _root,_ext=os.path.splitext(out); tmp="%s.part-%d%s" % (_root, os.getpid(), _ext)   # keep the extension: the converter picks the format from it
                 try:
                     os.makedirs(ddir, exist_ok=True)
-                    if fmt=="ply": shutil.copyfile(src, out)
-                    elif not self._convert_subprocess(src, out):   # capped child: a huge model can't take the app down
+                    if fmt=="ply": shutil.copyfile(src, tmp)
+                    elif not self._convert_subprocess(src, tmp):   # capped child: a huge model can't take the app down
                         raise RuntimeError("could not convert to %s - see Help > Log" % fmt.upper())
-                except Exception as e: err=e; log_error("export", e)
+                    os.replace(tmp, out)                              # the named file only ever appears complete
+                except Exception as e:
+                    err=e; log_error("export", e)
+                    try: os.remove(tmp)
+                    except Exception: pass
+                finally: self._op_end()
                 def done():
                     if not t.winfo_exists(): return
                     self._btn_idle(gob)
@@ -6203,14 +6198,16 @@ class App(LiveMixin, ctk.CTk):
         def pick_base():
             newb=node_by_dlab.get(bsel.get())
             if newb is None or newb==st["base"]: return
+            if st["busy"]: bsel.set(dlab(st["base"])); return          # not while a fit is running
             others=[n for n in nodes if n in rec and isinstance(rec[n], dict) and rec[n].get("base")!=newb]
             if others and not self._confirm("Change the base scan?", "Scans already lined up were lined up to %s. Changing the base drops those." % lab(st["base"])): bsel.set(dlab(st["base"])); return
             for n in others: rec.pop(n, None)
-            st["base"]=newb; rec["_base"]=newb; self._persist()
+            st["base"]=newb; rec["_base"]=newb; self._persist(); st["result"]=None; keepb.pack_forget()
             mmenu.configure(values=[dlab(n) for n in nodes if n!=newb]); st["moving"]=next((n for n in nodes if n!=newb), None); msel.set(dlab(st["moving"]) if st["moving"] else "")
             load_views(); refresh_chips()
         def pick_moving():
-            st["moving"]=node_by_dlab.get(msel.get()); load_views()
+            if st["busy"]: msel.set(dlab(st["moving"]) if st["moving"] else ""); return   # not while a fit is running
+            st["moving"]=node_by_dlab.get(msel.get()); st["result"]=None; keepb.pack_forget(); load_views()
         def on_pick(which, world, view):
             try: _on_pick(which, world, view)
             except Exception as e: log_error("align pick", e); status.configure(text="Could not place that point (see Help > Log).", text_color=WARN)
@@ -6256,6 +6253,9 @@ class App(LiveMixin, ctk.CTk):
         def busy_on(m):
             busy["t0"]=time.time(); busy["msg"]=m; bar.grid(row=6,column=0, columnspan=2, sticky="ew", padx=16, pady=(0,10)); bar.configure(mode="indeterminate"); bar.start()
             able(alignb, False); able(autob, False); able(comb, False, OK)
+            for mn in (bmenu, mmenu):
+                try: mn.configure(state="disabled")
+                except Exception: pass
             busy["job"]=t.after(10, busy_tick)
         def busy_off():
             if busy["job"]:
@@ -6264,11 +6264,13 @@ class App(LiveMixin, ctk.CTk):
             busy["job"]=None
             if t.winfo_exists():
                 bar.stop(); bar.grid_remove(); able(alignb, len(st["pairs"])>=3); able(autob, True); refresh_chips()
+                for mn in (bmenu, mmenu):
+                    try: mn.configure(state="normal")
+                    except Exception: pass
         def run_align(auto):
             if st["busy"] or not st["moving"]: return
             if auto and _has_open3d_cache is None:
-                # First Auto click before the background Open3D check has landed: instead of doing nothing
-                # (which made it "take two clicks"), start/await the check and run Auto as soon as it's ready.
+                # if the background Open3D check has not finished, wait for it and run Auto as soon as it is ready
                 self._start_open3d_probe(); st["busy"]=True; busy_on("Checking Open3D…")
                 def waito():
                     if not t.winfo_exists(): return
@@ -6277,9 +6279,10 @@ class App(LiveMixin, ctk.CTk):
                 t.after(200, waito); return
             if auto and not self._require_open3d("Auto alignment"): return
             st["busy"]=True; keepb.pack_forget(); busy_on("Starting…" if not auto else "Starting Auto… this takes a minute or two")
-            base_p=self._proc_current(name, st["base"])[2]; mov_p=self._proc_current(name, st["moving"])[2]
-            os.makedirs(THUMBS, exist_ok=True); pj=os.path.join(THUMBS, "align_pairs.json"); oj=os.path.join(THUMBS, "align_result.json")
-            json.dump({"pairs": st["pairs"]}, open(pj, "w"))
+            job={"base": st["base"], "moving": st["moving"], "pairs": [list(pr) for pr in st["pairs"]], "id": "%d-%x" % (os.getpid(), int(time.time()*1000))}
+            base_p=self._proc_current(name, job["base"])[2]; mov_p=self._proc_current(name, job["moving"])[2]
+            os.makedirs(THUMBS, exist_ok=True); pj=os.path.join(THUMBS, "align_pairs_%s.json" % job["id"]); oj=os.path.join(THUMBS, "align_result_%s.json" % job["id"])
+            json.dump({"pairs": job["pairs"]}, open(pj, "w"))
             def work():
                 res=None; err=""
                 try:
@@ -6288,8 +6291,9 @@ class App(LiveMixin, ctk.CTk):
                     if st["pairs"]: cmd+=["--pairs", pj]
                     if auto: cmd.append("--auto")
                     proc=self._popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env); tail=[]
+                    touch=self._stall_guard(proc, 900, "align")
                     for ln in proc.stdout:
-                        ln=ln.strip(); tail=(tail+[ln])[-6:]
+                        touch(); ln=ln.strip(); tail=(tail+[ln])[-6:]
                         if ln.startswith("STAGE error "): err=ln[12:]
                         elif ln.startswith("STAGE "):
                             try: msg=json.loads(ln.split(" ",2)[2]).get("msg")
@@ -6299,9 +6303,16 @@ class App(LiveMixin, ctk.CTk):
                     if proc.returncode==0 and os.path.exists(oj): res=json.load(open(oj))
                     else: log_line("align failed: %s %s" % (err, " | ".join(tail)))
                 except Exception as e: log_error("align", e)
+                finally:
+                    for f in (pj, oj):
+                        try: os.remove(f)
+                        except Exception: pass
                 def done():
+                    nonlocal res
                     st["busy"]=False; busy_off()
                     if not t.winfo_exists(): return
+                    if (st["base"], st["moving"])!=(job["base"], job["moving"]): return   # the dialog moved on: this result is for other scans
+                    if res: res=dict(res, base=job["base"], moving=job["moving"], pairs=job["pairs"])
                     if not res: status.configure(text="Could not line these up%s. Try more spread-out points, or pick a scan with more overlap." % ((": "+err) if err else ""), text_color=WARN); return
                     st["result"]=res; fit=res.get("fitness"); rmse=res.get("rmse"); pe=res.get("pair_error_after")
                     words=("%.0f%% of %s overlaps the base, typical gap %.2f mm" % (fit*100, lab(st["moving"]), rmse)) if fit is not None else "rough fit from your points only (no Open3D)"
@@ -6315,11 +6326,13 @@ class App(LiveMixin, ctk.CTk):
                 self.q.put(("call", done))
             threading.Thread(target=work, daemon=True).start()
         def keep():
-            if not st["result"]: return
-            rec[st["moving"]]={"base": st["base"], "matrix": st["result"]["matrix"], "fitness": st["result"].get("fitness"), "rmse": st["result"].get("rmse"),
-                               "pairs": [list(pr) for pr in st["pairs"]], "when": time.strftime("%Y-%m-%d %H:%M")}
-            rec["_base"]=st["base"]; self._persist(); refresh_chips(); keepb.pack_forget()
-            self.set_banner("%s lined up to %s. Saved with the project." % (lab(st["moving"]), lab(st["base"])), OK)
+            r=st["result"]
+            if not r: return
+            mv, bs=r.get("moving", st["moving"]), r.get("base", st["base"])     # the scans this result was computed for
+            rec[mv]={"base": bs, "matrix": r["matrix"], "fitness": r.get("fitness"), "rmse": r.get("rmse"),
+                     "pairs": [list(pr) for pr in r.get("pairs", st["pairs"])], "when": time.strftime("%Y-%m-%d %H:%M")}
+            rec["_base"]=bs; self._persist(); refresh_chips(); keepb.pack_forget(); st["result"]=None
+            self.set_banner("%s lined up to %s. Saved with the project." % (lab(mv), lab(bs)), OK)
             nxt=next((n for n in nodes if n!=st["base"] and not (isinstance(rec.get(n), dict) and rec[n].get("base")==st["base"])), None)
             if nxt: st["moving"]=nxt; msel.set(lab(nxt)); load_views(); status.configure(text="Now line up %s." % lab(nxt))
             else: status.configure(text="Every scan is lined up. Build one model from all of them below.")
@@ -6373,8 +6386,9 @@ class App(LiveMixin, ctk.CTk):
                 cmd=[_sys.executable, os.path.join(HERE,"fuse.py"), "--out", out, "--voxel", str(voxel)] + ([] if fuse_device=="cpu" else ["--gpu"])
                 for sp in sets: cmd+=["--set", sp]
                 proc=self._popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
+                touch=self._stall_guard(proc, 1800, "combine fuse")
                 for ln in proc.stdout:
-                    ln=ln.strip()
+                    touch(); ln=ln.strip()
                     if not ln.startswith("STAGE "): continue
                     parts=ln.split(" ",2); stage=parts[1]
                     try: payload=json.loads(parts[2]) if len(parts)>2 else {}
@@ -6402,8 +6416,7 @@ class App(LiveMixin, ctk.CTk):
         dest=self.dest.get() or DEFAULT_DEST; voxel=float(self.fuse_voxel.get() or 0.4); fuse_device=self.cfg.get("fuse_device","auto"); register_drift=bool(self.cfg.get("register_drift", True)); self._fuse_name=name
         self._start_thread(self._fuse_worker, name, None, dest, voxel, fuse_device, register_drift, name="fuse")
     def _fuse_worker(self, name, only_nodes=None, dest=None, voxel=None, fuse_device="auto", register_drift=True):
-        # thin guard: the impl emits fuse_done on every normal path, but an exception outside its inner
-        # try (e.g. os.makedirs) used to skip that emit and leave _fusing=True (Build stuck "already running").
+        # always emit a completion, so an error outside the worker's own handling cannot leave Build marked busy
         try:
             self._fuse_worker_impl(name, only_nodes, dest, voxel, fuse_device, register_drift)
         except Exception as e:
@@ -6447,8 +6460,9 @@ class App(LiveMixin, ctk.CTk):
                 try:
                     rp=self._popen([_sys.executable, os.path.join(HERE,"register.py"), "--frames", lcache, "--calib", calib] + ([] if fuse_device=="cpu" else ["--gpu"]),
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
+                    touch=self._stall_guard(rp, 1800, "register")
                     for ln in rp.stdout:
-                        ln=ln.strip()
+                        touch(); ln=ln.strip()
                         if not ln.startswith("STAGE "): continue
                         parts=ln.split(" ",2); stage=parts[1]
                         try: payload=json.loads(parts[2]) if len(parts)>2 else {}
@@ -6465,9 +6479,9 @@ class App(LiveMixin, ctk.CTk):
                                   "--out", out, "--voxel", str(voxel)] + ([] if fuse_device=="cpu" else ["--gpu"]),
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
                                  env=dict(os.environ, OPENBLAS_NUM_THREADS="1"))
-                ok=False; devname="GPU"
+                ok=False; devname="GPU"; touch=self._stall_guard(proc, 1800, "build fuse")
                 for ln in proc.stdout:
-                    ln=ln.strip()
+                    touch(); ln=ln.strip()
                     if not ln.startswith("STAGE "): continue
                     parts=ln.split(" ",2); stage=parts[1]
                     try: payload=json.loads(parts[2]) if len(parts)>2 else {}
@@ -6616,7 +6630,7 @@ class App(LiveMixin, ctk.CTk):
         top=tk.Toplevel(self); top.title("Importing"); top.configure(bg=BG)
         try: top.transient(self.winfo_toplevel())
         except Exception: pass
-        top.geometry(self._centred(520, 500)); self._imp_top=top   # was 430: the graph + 4 stat tiles + button row overflowed, clipping the buttons
+        top.geometry(self._centred(520, 500)); self._imp_top=top   # room for the graph, the stat tiles and the button row
         card=ctk.CTkFrame(top, fg_color=CARD, corner_radius=16); card.pack(fill="both", expand=True, padx=16, pady=16)
         self.imp_title=ctk.CTkLabel(card, text="Importing…", text_color=TX, font=ctk.CTkFont(size=15, weight="bold")); self.imp_title.pack(pady=(16,2))
         self.imp_sub=ctk.CTkLabel(card, text="Copying off the scanner…", text_color=MUT, font=ctk.CTkFont(size=11)); self.imp_sub.pack()
@@ -6721,6 +6735,7 @@ class App(LiveMixin, ctk.CTk):
     def _wifi_event(self, kind, info):
         rx=self._wifi
         if not rx: return
+        if info.get("session") not in (None, getattr(rx, "session", None)): return   # from a receive that was cancelled or replaced
         ui=not self._wifi_bg      # while backgrounded the dialog widgets are gone: keep only status/banner/button
         if kind=="searching":
             if ui: self.wifi_state.configure(text="Scanner found at %s - enter the code on it." % info["ip"], text_color=OK)
@@ -6782,11 +6797,19 @@ class App(LiveMixin, ctk.CTk):
         """A transfer that finished but was never imported (app closed, picker lost) is still in
         staging: offer it again instead of leaving a gigabyte stranded in a hidden folder."""
         if self._wifi or self.pulling: return
-        stage=os.path.join(self.dest.get() or DEFAULT_DEST, ".wifi-incoming")
-        try: projects=sorted(d for d in os.listdir(stage) if os.path.isdir(os.path.join(stage, d, "data")))
+        root=os.path.join(self.dest.get() or DEFAULT_DEST, ".wifi-incoming")
+        # each receive stages into its own .wifi-incoming/<session>/; older builds staged straight into the root
+        cands=[root]
+        try: cands+=[os.path.join(root, d) for d in sorted(os.listdir(root)) if os.path.isdir(os.path.join(root, d))]
         except Exception: return
-        if not projects:
-            threading.Thread(target=shutil.rmtree, args=(stage,), kwargs={"ignore_errors": True}, daemon=True).start(); return
+        stage=None; projects=[]
+        for c in cands:
+            try: pj=sorted(d for d in os.listdir(c) if os.path.isdir(os.path.join(c, d, "data")))
+            except Exception: pj=[]
+            if pj: stage, projects=c, pj; break
+            if c!=root: threading.Thread(target=shutil.rmtree, args=(c,), kwargs={"ignore_errors": True}, daemon=True).start()   # an empty session dir
+        if not stage:
+            threading.Thread(target=shutil.rmtree, args=(root,), kwargs={"ignore_errors": True}, daemon=True).start(); return
         self.set_banner("A WiFi transfer was received earlier but never imported - choose what to keep.", AC)
         self._wifi_picker(stage, projects)
     def _wifi_picker(self, stage, projects):
@@ -6968,32 +6991,46 @@ class App(LiveMixin, ctk.CTk):
         ctk.CTkButton(br, text="Import", width=110, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=ok).pack(side="right", padx=6)
         ctk.CTkButton(br, text="Back", width=90, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX,
                       command=lambda: (self._dialogs.pop("wifiname", None), t.destroy())).pack(side="right", padx=6)
+    def _swap_dir(self, old, do_replace):
+        """Replace the directory `old` with what do_replace() produces there. The previous contents are
+        renamed aside first and only deleted once do_replace() succeeded; on failure they are put back."""
+        aside=None
+        if os.path.isdir(old):
+            aside="%s.replacing-%d" % (old, os.getpid()); os.rename(old, aside)
+        try:
+            r=do_replace()
+        except Exception:
+            if aside:
+                shutil.rmtree(old, ignore_errors=True)
+                try: os.rename(aside, old)
+                except Exception as e2: log_error("swap-restore", e2)
+            raise
+        if aside: shutil.rmtree(aside, ignore_errors=True)
+        return r
     def _wifi_finish_worker(self, stage, keep, dest, mo, fmts, cleanup, replace=False, clean_opts=None):
         failed=[]; no_models=[]; total=len(keep)
         for i,(name,nodes) in enumerate(keep.items()):
             if self.cancel: break
             try:
                 if mo:
-                    if replace and os.path.isdir(os.path.join(dest, name)): shutil.rmtree(os.path.join(dest, name), ignore_errors=True)
-                    n=self._import_flat(name, dest, fmts, cleanup, i, total, src_root=stage, nodes=nodes, clean_opts=clean_opts)
+                    _imp=lambda: self._import_flat(name, dest, fmts, cleanup, i, total, src_root=stage, nodes=nodes, clean_opts=clean_opts)
+                    n=self._swap_dir(os.path.join(dest, name), _imp) if replace else _imp()
                     if not n: no_models.append(name)
                 else:
                     self.q.put(("prog", i/total, "Saving %s (full project)" % name))
                     for nd in glob.glob(os.path.join(stage, name, "data", "*")):     # drop the scans that weren't ticked
                         if os.path.basename(nd) not in nodes: shutil.rmtree(nd, ignore_errors=True)
                     out=os.path.join(dest, name); src=os.path.join(stage, name)
-                    if os.path.isdir(out) and replace: shutil.rmtree(out)
-                    if os.path.isdir(out):        # keep-and-add: swap in the scanner's version of each ticked scan, keep everything else
+                    if os.path.isdir(out) and not replace:   # keep-and-add: swap in the scanner's version of each ticked scan, keep everything else
                         for nd in glob.glob(os.path.join(src, "data", "*")):
                             tgt=os.path.join(out, "data", os.path.basename(nd)); os.makedirs(os.path.dirname(tgt), exist_ok=True)
-                            if os.path.isdir(tgt): shutil.rmtree(tgt)
-                            shutil.move(nd, tgt)
+                            self._swap_dir(tgt, lambda nd=nd, tgt=tgt: shutil.move(nd, tgt))
                         for f in os.listdir(src):
                             fp=os.path.join(src, f)
-                            if os.path.isfile(fp): shutil.copyfile(fp, os.path.join(out, f))
+                            if os.path.isfile(fp): self._copy_chunked(fp, os.path.join(out, f), lambda b: None)
                         shutil.rmtree(src, ignore_errors=True)
-                    else:
-                        shutil.move(src, out)
+                    else:                                    # new, or Replace: the old project stays until the new one is fully in place
+                        self._swap_dir(out, lambda: shutil.move(src, out))
                 try:   # keep a thumbnail so the project list can show it later
                     root=os.path.join(stage if mo else dest, name, "data")
                     for node in sorted(os.listdir(root)):
@@ -7072,7 +7109,7 @@ class App(LiveMixin, ctk.CTk):
             shutil.copyfile(src, local)
             def done():
                 self._dev_hold=0.0                                  # release the top banner back to device state
-                self.set_status("Playing %s" % nm[:24]); self.after(4000, lambda: self.set_status(""))   # transient bottom-bar note that clears itself (was a stuck top banner)
+                self.set_status("Playing %s" % nm[:24]); self.after(4000, lambda: self.set_status(""))   # a bottom-bar note that clears itself
                 try: subprocess.Popen(["xdg-open", local])
                 except Exception as e: log_error("xdg-open rec", e)
             self.q.put(("call", done))
@@ -7145,11 +7182,16 @@ class App(LiveMixin, ctk.CTk):
         if not self._confirm("Remove capture", "Remove %s from this PC?\n\nIt goes to the trash (recoverable). The scanner's original is not touched." % nm):
             return
         capdir=os.path.join(self.dest.get() or DEFAULT_DEST, "captures")
-        gone=False
+        gone=False; had=False; failed=False
         for t in (os.path.join(capdir, nm), os.path.join(THUMBS, "shots", nm)):
             if os.path.exists(t):
-                try: subprocess.run(["gio","trash",t], check=False, timeout=10); gone=True
-                except Exception as e: log_error("trash-capture", e)
+                had=True
+                try:
+                    if self._trash(t): gone=True
+                    else: failed=True
+                except Exception as e: log_error("trash-capture", e); failed=True
+        if failed:
+            self.set_banner("Couldn't move %s to the trash - it is still on this PC (see Help > Log)." % nm[:24], WARN); return
         self._shots_items=[(n,p) for (n,p) in getattr(self,"_shots_items",[]) if n!=nm]   # drop it from the current view now
         self._recs=[(n,p,s) for (n,p,s) in getattr(self,"_recs",[]) if n!=nm]
         self.refresh_screenshots_soft()
@@ -7391,7 +7433,7 @@ class App(LiveMixin, ctk.CTk):
             ctk.CTkLabel(row, text=hint, text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left", padx=10)
         ctk.CTkLabel(card, text="Sizes are rough estimates before compression - the real zip is smaller.",
                      text_color=MUT, font=ctk.CTkFont(size=10), wraplength=410, justify="left").pack(anchor="w", padx=18, pady=(8,0))
-        t.protocol("WM_DELETE_WINDOW", lambda: pick(None))   # same fix as _modal(): closing via the X button must still release the grab
+        t.protocol("WM_DELETE_WINDOW", lambda: pick(None))   # closing via the X button must release the grab too
         try:
             t.grab_set(); t.wait_window()
         except Exception: pass
@@ -7444,7 +7486,8 @@ class App(LiveMixin, ctk.CTk):
         self.pulling=True
         self._btn_busy(self.zip_btn, "Zipping…")
         self.progress.grid(row=1,column=0, columnspan=4, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=4, sticky="w", padx=(20,0), pady=(0,10))
-        threading.Thread(target=self._zip_worker, args=(sel,dest,mode,scope), daemon=True).start()
+        scoped={n: {k: self._scope_meshes(os.path.join(dest, n), n, k) for k in {"current", scope}} for n in sel}   # Tk/records read here, not in the worker
+        threading.Thread(target=self._zip_worker, args=(sel,dest,mode,scope,scoped), daemon=True).start()
     def _project_meshes(self, base, name):
         """Mesh .ply files for an imported project (flat layout, else nested mirror)."""
         flat=[p for p in glob.glob(os.path.join(base, name+"_*.ply")) if not p.endswith("_cloud.ply") and not p.endswith(".tmp.ply")]
@@ -7452,7 +7495,7 @@ class App(LiveMixin, ctk.CTk):
         return sorted(glob.glob(os.path.join(base, "data", "*", "fuse_mesh.ply")))
     def _scope_meshes(self, base, name, scope):
         """Mesh plys to export, honoring the version scope: 'current' = only the version picked per scan
-        (what the UI shows), 'all' = every version file on disk. Falls back to all if nothing resolves."""
+        (what the UI shows), 'all' = every version file on disk. Returns only what resolves; nothing is guessed."""
         if scope!="current": return self._project_meshes(base, name)
         out=[]
         for node in self._proc_nodes(name):
@@ -7461,7 +7504,8 @@ class App(LiveMixin, ctk.CTk):
         # No silent fall-back to every version: if a "current" scope resolves nothing, the caller reports an
         # empty export rather than quietly shipping ALL versions the user didn't ask for.
         return sorted(set(out))
-    def _zip_worker(self, sel, dest, mode, scope="current"):
+    def _zip_worker(self, sel, dest, mode, scope="current", scoped=None):
+        scoped=scoped or {}
         import zipfile
         # everything is inside the try, incl. makedirs: a bad destination must post a zipfail and clear
         # the busy state, not throw out of the thread and leave the ZIP button stuck disabled.
@@ -7477,7 +7521,7 @@ class App(LiveMixin, ctk.CTk):
             for name in sel:
                 base=os.path.join(dest, name)
                 if mode in ("stl","obj","glb"):
-                    for ply in self._scope_meshes(base, name, scope):
+                    for ply in scoped.get(name, {}).get(scope, []):
                         # name flat & unique: <name>_<node>.<ext>
                         node=os.path.basename(os.path.dirname(ply)) if os.sep+"data"+os.sep in ply else os.path.basename(ply)[:-4]
                         stem=node if node.startswith(name) else "%s_%s"%(name,node)
@@ -7490,7 +7534,7 @@ class App(LiveMixin, ctk.CTk):
                         files.append((target, os.path.basename(target)))
                 elif mode=="models" and scope=="current":
                     # only the version picked per scan: its ply, any same-stem converted file, and point clouds
-                    keep={os.path.splitext(os.path.basename(p))[0] for p in self._scope_meshes(base, name, "current")}
+                    keep={os.path.splitext(os.path.basename(p))[0] for p in scoped.get(name, {}).get("current", [])}
                     for f in glob.glob(os.path.join(base,"*")):
                         if f.endswith(".tmp.ply") or not f.lower().endswith((".ply",".stl",".obj",".glb")): continue
                         st=os.path.splitext(os.path.basename(f))[0]
@@ -7499,7 +7543,7 @@ class App(LiveMixin, ctk.CTk):
                                 src=os.path.join(base, st+".ply")
                                 if os.path.exists(src) and os.path.getmtime(f) < os.path.getmtime(src): log_line("zip: skipping stale %s" % os.path.basename(f)); continue
                             files.append((f, os.path.basename(f)))
-                    for p in self._scope_meshes(base, name, "current"):      # nested device-mirror layout
+                    for p in scoped.get(name, {}).get("current", []):      # nested device-mirror layout
                         if os.sep+"data"+os.sep in p:
                             node=os.path.basename(os.path.dirname(p)); stem,ext=os.path.splitext(os.path.basename(p))
                             files.append((p, "%s_%s_%s%s" % (name, node, stem, ext)))
@@ -7546,9 +7590,7 @@ class App(LiveMixin, ctk.CTk):
         self.progress.set(0); self.progress.grid_remove(); self._close_import_popup()
         if cancelled: self.progline.configure(text="Cancelled."); self.set_banner("Import cancelled.", WARN)
         else:
-            # record + warm every project that actually imported, even if others in the batch failed
-            # (this used to run only in the all-success path, so a partly-failed batch left its successes
-            # unrecorded, un-warmed, and unable to show as "imported" or detect future changes)
+            # record and warm every project that imported, including the successes in a partly failed batch
             done=[n for n in getattr(self, "_pull_list", []) if n not in failed and os.path.isdir(os.path.join(dest, n))]
             for n in done:
                 p=self._proj(n) or {}
@@ -7600,11 +7642,7 @@ class App(LiveMixin, ctk.CTk):
                 try:
                     self._handle_event(kind, rest)
                 except Exception as e:
-                    # One bad event must never kill the pump: everything the app shows (the project list, the
-                    # splash closing, thumbnails, WiFi/build progress) depends on this loop rescheduling itself.
-                    # Before this fix an uncaught exception here propagated out of drain_loop and silently
-                    # stopped it forever - the window would sit frozen (the splash never closes, nothing ever
-                    # updates again) with no error visible anywhere but the log.
+                    # one bad event must not stop the pump: log it and keep draining, since every update the app shows depends on this loop rescheduling itself
                     log_error("drain_loop event %r" % (kind,), e)
                 finally:
                     self._slow_watch(kind, _t_ev)
@@ -7661,7 +7699,7 @@ class App(LiveMixin, ctk.CTk):
                         if out: self._show_shaded(out)
                         else: self.big_hint.configure(text="Scanner's own preview · could not draw the 3D model (see Help > Log)"); self._preview_idle()
                     if mode=="solid" and out:                       # upgrade this project's list thumbnail to the shaded render, in place (no re-render)
-                        nm=key.rsplit("__",2)[0]; row=self.rows.get(nm)   # key is name__node__verkey (3 parts since the verkey was added); rows are keyed by bare project name
+                        nm=key.rsplit("__",2)[0]; row=self.rows.get(nm)   # keys are project__node__version; rows are keyed by project
                         lbl=getattr(row, "_thumb_lbl", None) if row is not None else None
                         if lbl is not None:
                             try: self.imgs["row_"+nm]=cimg(out,54); lbl.configure(image=self.imgs["row_"+nm], text="")

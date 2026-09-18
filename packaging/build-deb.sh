@@ -7,7 +7,8 @@
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # app version as written in pointyoink.py; a pre-release suffix becomes Debian's "~" so 1.0.0~rc1 sorts BEFORE 1.0.0
-VER="${1:-$(grep -oP 'VERSION = "\K[0-9A-Za-z.-]+' "$ROOT/pointyoink.py" | sed 's/-/~/')}"
+VER="${1:-$(grep -oP 'VERSION = "\K[0-9A-Za-z.-]+' "$ROOT/pointyoink.py")}"
+VER="${VER//-/~}"                     # an explicit version argument gets the same Debian pre-release form
 BUILD="$ROOT/packaging/build"
 NAME="point-yoink"
 LIB="usr/lib/point-yoink"
@@ -22,7 +23,8 @@ mkdir -p "$PKG/DEBIAN" \
          "$PKG/usr/share/doc/point-yoink"
 
 # --- vendor the pip-only deps (fast-simplification is a compiled ext -> arch-specific deb) ---
-"$ROOT/venv/bin/pip" install --quiet --target "$PKG/$LIB/vendor" customtkinter trimesh "pyglet<2" fast-simplification pyopengltk PyOpenGL
+# pinned to the versions listed in THIRD_PARTY_NOTICES.md; bump both together
+"$ROOT/venv/bin/pip" install --quiet --target "$PKG/$LIB/vendor" customtkinter==6.0.0 darkdetect==0.8.0 trimesh==5.1.0 pyglet==1.5.31 fast-simplification==0.2.0 pyopengltk==0.0.4 PyOpenGL==3.1.10 packaging==26.3
 # drop things provided by apt (PIL/ImageTk = system tk build; numpy/matplotlib/networkx are apt)
 V="$PKG/$LIB/vendor"
 rm -rf "$V"/PIL* "$V"/Pillow* "$V"/pillow* "$V"/numpy* "$V"/matplotlib* "$V"/networkx* "$V"/bin "$V"/__pycache__ 2>/dev/null || true
@@ -36,7 +38,7 @@ done
 mkdir -p "$PKG/$LIB/assets" && cp -r "$ROOT"/assets/. "$PKG/$LIB/assets/"
 find "$PKG/$LIB/assets" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 cp "$ROOT/icon.png"      "$PKG/usr/share/icons/hicolor/512x512/apps/point-yoink.png"
-cp "$ROOT/LICENSE" "$ROOT/README.md" "$ROOT/CHANGELOG.md" "$PKG/usr/share/doc/point-yoink/" 2>/dev/null || true
+cp "$ROOT/LICENSE" "$ROOT/README.md" "$ROOT/CHANGELOG.md" "$ROOT/THIRD_PARTY_NOTICES.md" "$PKG/usr/share/doc/point-yoink/" 2>/dev/null || true
 
 # --- launcher (the command is `point-yoink`) ---
 cat > "$PKG/usr/bin/point-yoink" <<EOF
@@ -68,6 +70,7 @@ Version: ${VER}
 Architecture: amd64
 Maintainer: datboip <datboip@users.noreply.github.com>
 Depends: python3, python3-tk, python3-pil, python3-pil.imagetk, python3-numpy, python3-matplotlib, python3-networkx, jmtpfs, rsync, xdg-utils, fuse3 | fuse
+Recommends: ffmpeg
 Conflicts: pointyoink
 Replaces: pointyoink
 Section: graphics

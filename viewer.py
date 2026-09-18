@@ -49,7 +49,7 @@ def main():
             pass
         viewer.set_visible(True)
         viewer.activate()
-        print("PYVIEW_READY", flush=True)     # window is now up WITH the mesh drawn
+        print("PYVIEW_READY", flush=True)     # the window is up with the mesh drawn
         pyglet.app.run()
     except Exception as e:
         print("PYVIEW_ERROR viewer failed:", e, flush=True); return 5

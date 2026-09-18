@@ -24,6 +24,8 @@ STAGE = ".wifi-incoming"          # projects land here first, then the app moves
 def random_code(): return "%04d" % secrets.randbelow(10000)
 MAX_BAD_CODES = 5              # a 4-digit code is small; lock the session after a few wrong guesses
 MAX_BODY = 64 * 1024 * 1024    # request body cap (the scanner sends 4 MiB parts)
+MAX_HANDLERS = 16              # simultaneous connections; the scanner uses a handful
+CONN_TIMEOUT = 60.0            # seconds a connection may sit idle mid-request before it is dropped
 
 def lan_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -38,6 +40,13 @@ class _Handler(BaseHTTPRequestHandler):
         b = b'{"code": 0, "msg": "ok", "result": 0}'
         self.send_response(200); self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    timeout = CONN_TIMEOUT                     # applied to the connection socket by StreamRequestHandler
+    def handle(self):
+        sem = self.server.rx._sem
+        if not sem.acquire(blocking=False):    # too many open connections: drop this one without parsing it
+            self.close_connection = True; return
+        try: super().handle()
+        finally: sem.release()
     def _deny(self, status=403):
         self.send_response(status); self.send_header("Content-Length", "0"); self.end_headers(); self.close_connection = True
     def _allowed(self, route):
@@ -61,9 +70,11 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         rx = self.server.rx; route = self.path.split("?")[0]
         if not self._allowed(route): self._deny(); return
-        n = int(self.headers.get("Content-Length") or 0)
-        if n > MAX_BODY: self._deny(413); return            # parts are 4 MiB; anything huge is not the scanner
+        try: n = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError): self._deny(400); return
+        if n < 0 or n > MAX_BODY: self._deny(413); return    # parts are 4 MiB; a negative length would mean "read to EOF"
         body = self.rfile.read(n) if n else b""
+        if len(body) != n: self._deny(400); return           # short body: never write or count a truncated part
         if route == "/file": rx._file(self.headers, body)
         elif route == "/close": rx._closed()
         self._ok()
@@ -78,13 +89,16 @@ class Receiver:
     Only requests carrying the code are served, from the first client that passes /connect;
     after MAX_BAD_CODES wrong codes the session is locked (start a new one for a new code)."""
     def __init__(self, dest, code=None, on_event=None, name=None):
-        self.dest = dest; self.stage = os.path.join(dest, STAGE); self.code = code or random_code()
+        self.session = secrets.token_hex(4)    # this receive only: its own staging dir, its own events
+        self.dest = dest; self.stage = os.path.join(dest, STAGE, self.session); self.code = code or random_code()
+        self._sem = threading.BoundedSemaphore(MAX_HANDLERS)
         self.on_event = on_event or (lambda k, i: None); self.name = name or socket.gethostname()
         self.httpd = None; self.udp = None; self._on = False
         self.files = {}; self.parts = {}; self.bytes = 0; self.total = 0; self.t0 = None; self.seen = set(); self._lock = threading.Lock()
         self.peer = None; self.bad = 0; self.locked = False
         self._hist = []                    # (time, bytes) for the instantaneous rate
     def _emit(self, kind, **info):
+        info["session"] = self.session
         try: self.on_event(kind, info)
         except Exception: pass
     def start(self):
@@ -147,6 +161,7 @@ class Receiver:
         incomplete = self._incomplete()
         self._emit("done", projects=projects, incomplete=incomplete)
     def _file(self, h, body):
+        if not self._on: return                              # stopped or replaced: nothing is written any more
         rel = h.get("path", "").replace("\\", "/").strip("/")
         if not rel or ".." in rel.split("/"): return
         out = os.path.join(self.stage, rel)
@@ -155,6 +170,7 @@ class Receiver:
             os.makedirs(out, exist_ok=True); return           # a folder entry (the project dir comes last)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with self._lock:
+            if not self._on: return
             fresh = rel not in self.files                    # first part of this file in this transfer
             with open(out, "wb" if (fresh or not os.path.exists(out)) else "r+b") as f:
                 f.seek((idx - 1) * PART); f.write(body)

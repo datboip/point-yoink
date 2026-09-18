@@ -78,7 +78,7 @@ class GLView(OpenGLFrame):
         self._depth_failed = False                                    # set when visible-only wanted depth but the read failed (app warns)
         self.edit_target = "points"    # "points" (clean cloud -> rebuild) or "mesh" (delete faces on the built model, no rebuild)
         self._medit_faces = None; self._medit_undo = []; self._selfbo = None; self._sel_face_n = 0   # mesh face editing: faces, undo, selected-face overlay buffer
-        self.visible_only = False      # selection: True = only what faces the camera (depth-tested); False = select through (default keeps old behaviour)
+        self.visible_only = False      # True selects only visible surfaces; False selects through
         self._magic_degraded = False   # set True if Magic had to fall back to a plain ball (no scipy)
         self._depth_buf = None; self._depth_valid = False   # cached GL depth buffer for visible-only; invalidated on camera/geometry change
         self._keep_view = False        # set True before a load to keep the current camera (Mesh<->Points toggles in place)
@@ -802,9 +802,7 @@ class GLView(OpenGLFrame):
                 self._edit_orbit = True; self._drag = (e.x, e.y); self._press_at = (e.x, e.y); return
             self._edit_orbit = False
             self._sel_mode_now = "add" if (e.state & 0x0001) else ("subtract" if (e.state & 0x0004) else self.edit_mode)
-            # Brush/magic paint by OR-ing points in; a "replace" stroke has to clear the old selection at its
-            # START, then behave as add for the rest of the drag. Without this the previous selection lingered
-            # and replace acted like add. Lasso/rect already replace correctly.
+            # a Replace stroke clears the old selection once at its start, then adds for the rest of the drag; lasso and box replace on their own
             if self.edit_tool in ("brush", "magic") and self._sel_mode_now == "replace":
                 if self._pts_sel is not None: self._pts_sel[:] = False
                 self._sel_mode_now = "add"
@@ -855,7 +853,7 @@ class GLView(OpenGLFrame):
         dx, dy = e.x - self._drag[0], e.y - self._drag[1]; self._drag = (e.x, e.y)
         if self.edit_tool:                 # while a select tool is active, right/middle-drag ORBITS so you can
             self.rot = self._axis_rot(dy * 0.5, 1, 0, 0) @ self._axis_rot(dx * 0.5, 0, 1, 0) @ self.rot; self.draw(); return   # check coverage from any angle; the red selection persists
-        self.pan[0] += dx / (w * 0.9); self.pan[1] -= dy / (h * 0.9); self.draw()   # was *0.5: pan was too twitchy
+        self.pan[0] += dx / (w * 0.9); self.pan[1] -= dy / (h * 0.9); self.draw()   # scale pointer movement to the viewport
     def _wheel(self, e, direction=None):
         d = direction if direction is not None else (1 if e.delta > 0 else -1)
         if self.edit_tool == "brush":                        # scroll sizes the brush, not the zoom

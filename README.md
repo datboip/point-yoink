@@ -7,7 +7,7 @@
 
 **Pull your Revopoint MIRACO scans onto Linux, clean them up, and export them for printing.**
 
-Revo Scan, the software that goes with Revopoint scanners, runs on Windows, macOS, iOS and Android. There is no Linux version. PointYoink is a small desktop app that fills that gap: plug the MIRACO in (or use WiFi), pull the scans off, then build, cut the base off, combine scans, clean up and export to STL, OBJ, GLB or PLY. Nothing goes online. The scanner's files are only copied, never changed, and every edit on the PC is saved as a new version.
+Revo Scan, the software that goes with Revopoint scanners, runs on Windows, macOS, iOS and Android. There is no Linux version. PointYoink is a small desktop app that fills that gap: plug the MIRACO in (or use WiFi), pull the scans off, then build, cut the base off, combine scans, clean up and export to STL, OBJ, GLB or PLY. Nothing goes online. The scanner's files are only copied, never changed. Prepare and Remove base keep the version they replace; Build and Combine replace their own earlier results.
 
 <p align="center">
   <img src="docs/img/v1/02-projects-preview.png" alt="PointYoink with a project open: the scan in 3D, the next step ready to go" width="920">
@@ -36,12 +36,12 @@ I did try the workaround everyone points to, running Revo Scan through Wine. It 
 - **Prepare** removes floating pieces, smooths, fills small holes and reduces triangles, with the scanner's own defaults. Before and after side by side, then Keep or Discard.
 - **Export** as STL, OBJ, GLB or PLY, with the model's size in millimetres, triangle count, separate pieces and open edges shown before you save.
 - **Captures** pulls the scanner's screenshots and screen recordings off the device.
-- Every step saves a new version. You pick which one the preview and the exports use. Rename projects and scans, compare two versions in linked 3D views, export a project as one ZIP.
+- The scanner's model, a model built here, and a prepared or base-cut copy are kept as separate versions. You pick which one the preview and the exports use. Rename projects and scans, compare two versions in linked 3D views, export a project as one ZIP.
 
 ## Supported scanners
 
-- **MIRACO Pro**: tested and working. This is the scanner PointYoink was built on.
-- **MIRACO and MIRACO Plus**: same standalone design, so they should work, but I don't own one. Reports welcome.
+- MIRACO Pro: tested and working. This is the scanner PointYoink was built on.
+- MIRACO and MIRACO Plus: same standalone design, so they should work, but I don't own one. Reports welcome.
 
 Tethered Revopoint scanners (POP, INSPIRE, RANGE, MINI, MetroX) keep their scans on the host PC, not on the device, so there is nothing for PointYoink to pull; they are not supported.
 
@@ -52,7 +52,7 @@ Tethered Revopoint scanners (POP, INSPIRE, RANGE, MINI, MetroX) keep their scans
 Download the latest `.deb` from [Releases](https://github.com/datboip/point-yoink/releases) and install it. Dependencies come along automatically.
 
 ```bash
-sudo apt install ./point-yoink_1.0.0_amd64.deb
+sudo apt install ./point-yoink_*_amd64.deb
 ```
 
 PointYoink then shows up in your application menu, or run `point-yoink`.
@@ -60,7 +60,7 @@ PointYoink then shows up in your application menu, or run `point-yoink`.
 ### From source
 
 ```bash
-sudo apt install python3-tk python3-pil.imagetk python3-numpy python3-matplotlib python3-networkx jmtpfs rsync
+sudo apt install python3-venv python3-tk python3-pil.imagetk python3-numpy python3-matplotlib python3-networkx jmtpfs rsync
 git clone https://github.com/datboip/point-yoink
 cd point-yoink
 python3 -m venv --system-site-packages venv
@@ -68,7 +68,7 @@ python3 -m venv --system-site-packages venv
 ./venv/bin/python pointyoink.py
 ```
 
-Optional, for building and combining on the PC: `./venv/bin/pip install open3d` (about 400 MB; uses the GPU when there is one).
+Optional: `./venv/bin/pip install open3d` (about 400 MB; uses the GPU when there is one) for building and combining on the PC, and `ffmpeg` for thumbnails and lengths of the scanner's screen recordings.
 
 
 ## How to use
@@ -105,7 +105,7 @@ The app has three pages. **Import** is the scanner. **Projects** is this PC. **C
 
 A MIRACO project holds thousands of raw depth frames plus the finished, fused output. **Finished models** copies just the output, so an import moves megabytes instead of gigabytes. **Full project** keeps the scanner's layout with the raw frames, which is what Build and Combine read.
 
-Build fuses the frames in a TSDF volume ([Open3D](https://www.open3d.org/), GPU when available) using the registered poses the scanner writes with every scan. Combine solves a rigid fit from your point pairs (or from feature matching with Auto), refines it with ICP, and fuses every scan's frames into one volume with each scan's table plane removed first. The heavy work runs in memory-capped subprocesses, so a huge mesh can't take the machine down.
+Build fuses the frames in a TSDF volume ([Open3D](https://www.open3d.org/), GPU when available) using the registered poses the scanner writes with every scan. Combine solves a rigid fit from your point pairs (or from feature matching with Auto), refines it with ICP, and fuses every scan's frames into one volume with each scan's table plane removed first. The heavy work runs in child processes; CPU processing runs under a memory limit (10 GB by default, `POINTYOINK_MEM_CAP_GB` to change it).
 
 Imported files land in a flat layout with unique names:
 
@@ -122,11 +122,11 @@ revopoint-scans-models/
 
 ## Troubleshooting
 
-- **Nothing detected:** tap **File Transfer** on the scanner; plugging in alone isn't enough.
-- **The File Transfer pop-up never appears:** a quick replug often isn't enough. Unplug the cable, wait about ten seconds, plug it back in, and the scanner asks again.
-- **Still nothing:** try another USB-C cable. Some only charge.
-- **Connect fails or hangs:** unplug, wait, replug, tap File Transfer again.
-- **Previews are blank:** the scanner is still waking up. Click the project again.
+- If no scanner is detected, tap File Transfer on the scanner. Plugging in alone is not enough.
+- If the File Transfer prompt does not appear, unplug the cable, wait about ten seconds, then reconnect it. A quick replug is often not enough.
+- If it is still not detected, try another USB-C cable. Some only charge.
+- If connecting fails or hangs, unplug, wait, reconnect, and tap File Transfer again.
+- If previews stay blank, the scanner is still waking up. Select the project again.
 - Anything else: open **Log** from the menu, copy it, and open an issue.
 
 ## Roadmap

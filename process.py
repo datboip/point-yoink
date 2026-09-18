@@ -246,11 +246,7 @@ def main():
             try: trimesh.smoothing.filter_humphrey(m, iterations=int(a.smooth_times))
             except Exception as e:
                 warnings.append("smoothing"); emit("warn", step="smooth", err=str(e)[:200])
-            # Humphrey/Laplacian smoothing is unstable on these open-boundary scan meshes: it drags a few
-            # percent of vertices far off the surface (measured displacement up to ~100x the median edge).
-            # The OLD fix DELETED the resulting sliver faces, which tore holes and lost real geometry. Instead,
-            # REVERT only the runaway vertices to where they were before smoothing: topology is untouched (no
-            # faces removed, no holes), while the well-behaved 97% keep their smoothing.
+            # Humphrey/Laplacian smoothing drags a few percent of vertices far off these open-boundary scan meshes. Pin those runaway vertices back to their pre-smoothing position: topology untouched, no faces removed, the rest keeps its smoothing
             try:
                 V = np.asarray(m.vertices, dtype=np.float64)
                 if med_edge > 0 and len(V) == len(V0):

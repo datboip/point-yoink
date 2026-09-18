@@ -23,7 +23,7 @@ MAX_FACES = 40000
 # a fresh launch skips the parse+simplify too. Editing the mesh (Prepare / base-cut writes a new file, new
 # mtime) misses and recomputes. This is what makes clicking Scan 1 -> Scan 2 -> Scan 1 stop re-loading.
 MESH_CACHE = os.path.expanduser("~/.cache/pointyoink/mesh")
-CACHE_STATS = {"mem": 0, "disk": 0, "compute": 0}   # the app logs deltas around a view open to PROVE reuse
+CACHE_STATS = {"mem": 0, "disk": 0, "compute": 0}   # counts of memory, disk and computed cache results
 _MEM = OrderedDict(); _MEM_MAX = 6
 
 def _mesh_key(path, max_faces, tf):
@@ -31,7 +31,7 @@ def _mesh_key(path, max_faces, tf):
         st = os.stat(path)
         h = hashlib.sha1()
         h.update(os.path.abspath(path).encode("utf-8", "replace"))
-        h.update(b"|"); h.update(("%d|%d|%d" % (int(st.st_mtime), st.st_size, int(max_faces))).encode())
+        h.update(b"|"); h.update(("%d|%d|%d" % (st.st_mtime_ns, st.st_size, int(max_faces))).encode())   # nanoseconds: two writes within a second must not share a key
         if tf is not None:                          # a second mesh oriented to match the first: key on that transform too
             h.update(b"|tf|"); h.update(np.asarray(tf["mean"], np.float64).tobytes())
             h.update(np.asarray(tf["R"], np.float64).tobytes())
