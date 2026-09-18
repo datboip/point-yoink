@@ -28,7 +28,7 @@ rm -rf "$V"/PIL* "$V"/Pillow* "$V"/pillow* "$V"/numpy* "$V"/matplotlib* "$V"/net
 find "$V" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 
 # --- app files (the module files keep their names, they just live under point-yoink/) ---
-for f in pointyoink.py viewer.py process.py cutplane.py fuse.py range.py wifi.py shade.py meshview.py glview.py align.py register.py icon.png; do
+for f in pointyoink.py viewer.py process.py cutplane.py fuse.py wifi.py shade.py meshview.py glview.py align.py register.py icon.png; do
   cp "$ROOT/$f" "$PKG/$LIB/"
 done
 # whole assets tree: device help screenshots AND the icon set (assets/icons/png/<state>/<size>/*.png + manifest)
@@ -67,7 +67,6 @@ Version: ${VER}
 Architecture: amd64
 Maintainer: datboip <datboip@users.noreply.github.com>
 Depends: python3, python3-tk, python3-pil, python3-pil.imagetk, python3-numpy, python3-matplotlib, python3-networkx, jmtpfs, rsync, xdg-utils, fuse3 | fuse
-Recommends: v4l-utils
 Conflicts: pointyoink
 Replaces: pointyoink
 Section: graphics

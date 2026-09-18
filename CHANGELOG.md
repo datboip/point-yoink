@@ -1,7 +1,20 @@
 # Changelog
 
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
-builds; 1.0.0 will be the first public GitHub release.
+builds; 1.0.0 is the first public release.
+
+## 1.0.0 (unreleased, rc1 on the dev branch)
+The first public release, being finished on the dev branch.
+- Pull Revopoint MIRACO scans onto Linux over USB (MTP) or WiFi. No Revo Scan, no Windows, no VM.
+- Build the mesh on the GPU, remove the base, combine sides, prepare the surface, and export STL / OBJ / GLB / PLY, with a mesh check before you save.
+- Captures: pull the scanner's screenshots and recordings; per-project records, renaming and thumbnails.
+- Remove base rebuilt: the 3D view on the left and a tool palette on the right. Table direction by floor grid, auto-detect, or three or more clicked spots (click a dot again to remove it, Backspace undoes the last, Clear points wipes them; spots survive switching modes). Cut height by slider or an exact millimetre field; fine tilt (pitch and roll) the same way; Flip side; Reset really deselects everything.
+- A base cut can be undone from the same dialog. Applying a cut now keeps a copy of any prepared model it replaces.
+- Scans are named by their own id unless you name them, the same as projects. Naming a project uses the same dialog as naming a scan.
+- Every popup opens centred inside the main window and never larger than it on first open.
+- Buttons show a working state while a job runs instead of greying out; hover contrast on the blue buttons fixed.
+- The splash spinner is drawn smoothly and no longer looks stuck while the window is still being built.
+- The experimental live view and the RANGE camera source are not part of the shipped app.
 
 ## 0.9.56 (dev, 2026-09-15)
 - **The freeze, actually fixed.** Every "app frozen / keyboard dead for a minute" report traced to one

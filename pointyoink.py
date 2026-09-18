@@ -60,7 +60,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "0.9.189-pre"
+APP = "PointYoink"; VERSION = "1.0.0-rc1"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -100,6 +100,7 @@ def _build_id():
     try: return time.strftime("%m%d-%H%M", time.localtime(os.path.getmtime(os.path.join(HERE,"pointyoink.py"))))
     except Exception: return "?"
 BUILD = _build_id()
+RELEASE = not any(t in VERSION for t in ("-pre", "-rc"))   # a stamped release hides the dev build id; pre/rc builds show it
 DEFAULT_DEST = os.path.join(HOME, "revopoint-scans-models")
 VID = "2207"
 for d in (THUMBS, CFG_DIR): os.makedirs(d, exist_ok=True)
@@ -245,7 +246,7 @@ LIVE_QUALITY_LABEL={"low":"Low (fast)", "medium":"Medium", "high":"High (crisp)"
 # palette
 BG="#0e1117"; CARD="#171b23"; CARD2="#1d222c"; STROKE="#2a3140"; SELB="#22304a"
 SEL_FILL="#252b37"; SEL_EDGE="#3d4a63"   # a selected project row: a lifted lighter card with a soft neutral edge (not a blue outline, which collided with the blue "on this PC" badge)
-AC="#4aa3ff"; AC_H="#3b8fe6"; OK="#3ecf8e"; WARN="#ffb454"; DANGER="#ff6b6b"
+AC="#4aa3ff"; AC_H="#63b3ff"; OK="#3ecf8e"; WARN="#ffb454"; DANGER="#ff6b6b"
 TX="#eef1f5"; MUT="#98a2b3"
 
 CHANGELOG = """0.8.0
@@ -1120,7 +1121,31 @@ def _desktop_scale():
 # ---------------- app ----------------
 ctk.set_appearance_mode("dark"); ctk.set_default_color_theme("blue")
 
-class App(ctk.CTk):
+# ---- optional live-view experiment (dev-only) ----
+# The Live tab (MIRACO camera over USB + position over WiFi) is a personal testbed that never
+# ships: it lives in dev/live_view.py and is mixed in only when that local module is present.
+# A normal checkout or an installed .deb has no dev/ dir, so HAS_LIVE stays False and the app
+# carries none of that code - just the null-object stubs below.
+try:
+    import sys as _sysmod
+    _devdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dev")
+    if os.path.isdir(_devdir):
+        if _devdir not in _sysmod.path: _sysmod.path.insert(0, _devdir)
+        import live_view as _lv
+        LiveMixin = _lv.LiveMixin; HAS_LIVE = True
+    else:
+        _lv = None; HAS_LIVE = False
+except Exception:
+    _lv = None; HAS_LIVE = False
+if not HAS_LIVE:
+    class LiveMixin:                         # shipped builds: no Live tab, no live-view code
+        def build_live_tab(self, lv): return False
+        def live_busy(self): return False
+        def live_on_queue(self, kind, rest): return False
+        def live_cleanup(self): pass
+
+
+class App(LiveMixin, ctk.CTk):
     def __init__(self):
         super().__init__()
         try: self.tk.call("tk", "useinputmethods", "0")   # belt and braces with the XMODIFIERS override at the top of the file
@@ -1149,7 +1174,7 @@ class App(ctk.CTk):
             dw=min(1090, int(sw*0.92)); dh=min(1070, int(sh*0.90))   # tall enough for preview + renders + tools
         except Exception:
             dw,dh=1090,1070
-        self.title("%s  %s (%s)" % (APP, VERSION, BUILD))
+        self.title(("%s  %s" % (APP, VERSION)) if RELEASE else ("%s  %s (%s)" % (APP, VERSION, BUILD)))
         self.geometry(self.cfg.get("geometry", "%dx%d"%(dw,dh)))
         self.minsize(min(1024,dw), min(600,dh))
         self.configure(fg_color=BG)
@@ -1358,10 +1383,23 @@ class App(ctk.CTk):
             # It runs on its own timer (see _splash_anim), decoupled from the setup checks, so the
             # motion stays smooth however fast or slow the probes finish.
             R=98
-            cv.create_oval(lx-R, ly-R, lx+R, ly+R, outline="#1b2230", width=3)
-            self._sp_ring=cv.create_arc(lx-R, ly-R, lx+R, ly+R, start=90, extent=95,
-                                        style="arc", outline=AC, width=3)
-            self._sp_ring_a=90.0
+            # Tk canvas arcs are not anti-aliased (jaggy ring): pre-render the 40 positions of the
+            # spinner as supersampled PIL images and cycle them - same motion, smooth edges.
+            from PIL import ImageDraw
+            SS=4; sz=2*R+8; bb=[4*SS, 4*SS, (sz-4)*SS, (sz-4)*SS]; frames=[]
+            for i in range(40):
+                a=(90-9*i)%360
+                im=Image.new("RGBA", (sz*SS, sz*SS), (0,0,0,0)); d=ImageDraw.Draw(im)
+                d.ellipse(bb, outline="#1b2230", width=3*SS)                      # faint full track
+                d.arc(bb, start=-(a+95), end=-a, fill=AC, width=3*SS)             # the bright arc (PIL angles run clockwise)
+                frames.append(ImageTk.PhotoImage(im.resize((sz, sz), Image.LANCZOS)))
+            # a 41st, track-only frame: shown while the window is still being built (Tk can't tick a
+            # timer then), so the ring never looks like a spinner that got stuck - the bright arc
+            # appears and starts turning the moment the mainloop is free and real loading begins.
+            im=Image.new("RGBA", (sz*SS, sz*SS), (0,0,0,0)); ImageDraw.Draw(im).ellipse(bb, outline="#1b2230", width=3*SS)
+            frames.append(ImageTk.PhotoImage(im.resize((sz, sz), Image.LANCZOS)))
+            self.imgs["sp_ring"]=frames; self._sp_ring_i=0
+            self._sp_ring=cv.create_image(lx, ly, image=frames[-1])
             if os.path.exists(ICON):
                 try:
                     self.imgs["splash"]=ImageTk.PhotoImage(Image.open(ICON).convert("RGBA").resize((150,150), Image.LANCZOS))
@@ -1401,8 +1439,9 @@ class App(ctk.CTk):
         """Spin the bright arc of the loader ring. Self-reschedules until the splash is gone."""
         if not self._splash: return
         try:
-            self._sp_ring_a=(self._sp_ring_a-9)%360
-            self._sp_cv.itemconfigure(self._sp_ring, start=self._sp_ring_a)
+            fr=self.imgs.get("sp_ring") or []
+            if len(fr)>1:                          # cycle the 40 rotating frames; the last one is the static track
+                self._sp_ring_i=(self._sp_ring_i+1)%(len(fr)-1); self._sp_cv.itemconfigure(self._sp_ring, image=fr[self._sp_ring_i])
         except Exception: return
         self.after(16, self._splash_anim)
     def _splash_fade(self, d):
@@ -1592,12 +1631,12 @@ class App(ctk.CTk):
         wm=ctk.CTkFrame(h, fg_color="transparent"); wm.grid(row=0,column=1, sticky="w")
         ctk.CTkLabel(wm, text="Point", font=ctk.CTkFont(family=WORDMARK, size=20, weight="bold"), text_color=TX).pack(side="left")
         ctk.CTkLabel(wm, text="Yoink", font=ctk.CTkFont(family=WORDMARK, size=20, weight="bold"), text_color=AC).pack(side="left")
-        vl=ctk.CTkLabel(wm, text="v%s · %s" % (VERSION, BUILD), font=ctk.CTkFont(size=10), text_color=DIM); vl.pack(side="left", padx=(6,0), pady=(6,0))
-        self._tip(vl, "Build %s - the git commit this app is running (a trailing + means uncommitted changes). Match it to `git log --oneline -1` to know it's current." % BUILD)
+        vl=ctk.CTkLabel(wm, text=("v%s" % VERSION) if RELEASE else ("v%s · %s" % (VERSION, BUILD)), font=ctk.CTkFont(size=10), text_color=DIM); vl.pack(side="left", padx=(6,0), pady=(6,0))
+        self._tip(vl, ("PointYoink v%s." % VERSION) if RELEASE else ("Build %s - the git commit this app is running (a trailing + means uncommitted changes). Match it to `git log --oneline -1` to know it's current." % BUILD))
         self._modes=TabStrip(h, command=lambda lab: self._set_mode(HEADER_KEY.get(lab, lab)), content=False, base=CARD, size=13)
         self._modes.grid(row=0,column=2, sticky="w", padx=(26,0), pady=(8,0))
         self._modes.add("Import", img=_icon("import","default",16)); self._modes.add("Projects", img=_icon("projects","default",16)); self._modes.add("Captures", img=_icon("captures","default",16))
-        self._modes.add("Live view", tag="Planned", img=_icon("live-view","default",16))
+        if HAS_LIVE: self._modes.add("Live view", tag="Planned", img=_icon("live-view","default",16))
         self.mode_sw=_ModeSwitch(self._modes)
         btns=ctk.CTkFrame(h, fg_color="transparent"); btns.grid(row=0,column=3, sticky="e", padx=(0,14)); self._hbtns=btns
         _mic=_icon("menu","muted",18)
@@ -1674,7 +1713,7 @@ class App(ctk.CTk):
         body.grid_columnconfigure(0, weight=1); body.grid_rowconfigure(0, weight=1)
         # top-level modes (header tabs): Import (projects), Captures, Process, Live view. Only one is shown.
         self.mode_frames={}
-        for m in ("Projects","Captures","Process","Live"):
+        for m in (("Projects","Captures","Process","Live") if HAS_LIVE else ("Projects","Captures","Process")):
             f=ctk.CTkFrame(body, fg_color=("transparent" if m in ("Projects","Process") else CARD), corner_radius=(0 if m=="Projects" else 14))
             if m in ("Captures","Live"): f.grid(row=0,column=0, sticky="nsew", padx=16, pady=12)
             else: f.grid(row=0,column=0, sticky="nsew")
@@ -1838,75 +1877,9 @@ class App(ctk.CTk):
         self.shots_empty=self._empty_state(self.shots, "captures")
         self.shots_empty.grid(row=0,column=0,columnspan=4, sticky="nsew")
         self.shots._parent_canvas.bind("<Configure>", lambda e: self._fit_empty("shots_empty", self.shots), add="+")
-        # Live tab: two live sources. MIRACO streams pose + IMU over WiFi (TCP 9999, 120 Hz);
-        # a tethered RANGE streams its cameras over USB (range.py).
-        lv=self.mode_frames["Live"]
-        lv.grid_columnconfigure(0, weight=1); lv.grid_rowconfigure(1, weight=1)
-        bar=ctk.CTkFrame(lv, fg_color="transparent"); bar.grid(row=0,column=0, sticky="ew", padx=10, pady=(10,4))
-        ctk.CTkLabel(bar, text="Source", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
-        self.live_src=ctk.CTkSegmentedButton(bar, values=["MIRACO  (PC mode, USB)", "RANGE  (USB)", "MIRACO position  (WiFi)"], command=self._live_src_changed, height=30, corner_radius=15,
-                                             fg_color=CARD2, selected_color=AC, selected_hover_color=AC_H, unselected_color=CARD2, unselected_hover_color=STROKE,
-                                             text_color=TX, font=ctk.CTkFont(size=12))
-        self.live_src.pack(side="left", padx=10); self.live_src.set("MIRACO  (PC mode, USB)")
-        # -- MIRACO source --
-        mf=ctk.CTkFrame(lv, fg_color="transparent"); mf.grid(row=1,column=0, sticky="nsew"); mf.grid_remove(); self.live_miraco=mf
-        mf.grid_columnconfigure(0, weight=1); mf.grid_rowconfigure(1, weight=1)
-        top=ctk.CTkFrame(mf, fg_color="transparent"); top.grid(row=0,column=0,columnspan=2, sticky="ew", padx=10, pady=(0,4))
-        ctk.CTkLabel(top, text="Scanner IP", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
-        self.live_ip=ctk.StringVar(value=self.cfg.get("scanner_ip",""))
-        ctk.CTkEntry(top, textvariable=self.live_ip, width=140, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=10).pack(side="left", padx=8)
-        fb=ctk.CTkButton(top, text="Find", width=64, height=30, corner_radius=15, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self.live_find); fb.pack(side="left", padx=2)
-        self._tip(fb, "Scan your local network for the scanner (it answers on port 9999 whenever its WiFi is on).")
-        self.live_btn=ctk.CTkButton(top, text="▶ Connect", width=110, height=30, corner_radius=15, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=self.live_toggle)
-        self.live_btn.pack(side="right")
-        self.live_rate=ctk.CTkLabel(top, text="", text_color=MUT, font=ctk.CTkFont(size=11)); self.live_rate.pack(side="right", padx=12)
-        self.live_cv=tk.Canvas(mf, bg="#0a0c10", highlightthickness=0); self.live_cv.grid(row=1,column=0, sticky="nsew", padx=(10,4), pady=(0,10))
-        # backsplash + "Find the scanner" on the empty canvas; cleared when a stream starts (see _live_empty)
-        self.live_find_btn=ctk.CTkButton(self.live_cv, text="Find the scanner", width=150, height=34, corner_radius=8, fg_color="transparent",
-                                         border_width=1, border_color=AC, hover_color=CARD2, text_color=AC, font=ctk.CTkFont(size=13, weight="bold"),
-                                         command=self.live_find)
-        self._tip(self.live_find_btn, "Scan your local network for the scanner (it answers on port 9999 whenever its WiFi is on).")
-        self.live_cv.bind("<Configure>", lambda e: self._live_empty())
-        side=ctk.CTkFrame(mf, fg_color=CARD2, corner_radius=10, width=200); side.grid(row=1,column=1, sticky="ns", padx=(4,10), pady=(0,10)); side.grid_propagate(False)
-        self.live_txt=ctk.CTkLabel(side, text="not connected\n\nHit Find, then Connect.", text_color=MUT, justify="left", anchor="nw", font=ctk.CTkFont(family="monospace", size=11))
-        self.live_txt.pack(fill="both", expand=True, padx=12, pady=12)
-        self._live_on=False; self._live_last=None; self._live_n=0; self._live_t=time.time(); self._live_trail=[]
-        # -- RANGE source --
-        rf=ctk.CTkFrame(lv, fg_color="transparent"); rf.grid(row=1,column=0, sticky="nsew"); self.live_range=rf   # matches the default-selected source above
-        rf.grid_columnconfigure(0, weight=1); rf.grid_rowconfigure(1, weight=1)
-        rtop=ctk.CTkFrame(rf, fg_color="transparent"); rtop.grid(row=0,column=0, sticky="ew", padx=10, pady=(0,4))
-        self.range_status=ctk.CTkLabel(rtop, text="Not connected - plug the RANGE into a direct USB port (not a hub), then Connect",
-                                       text_color=MUT, font=ctk.CTkFont(size=12), anchor="w"); self.range_status.pack(side="left", fill="x", expand=True)
-        self.range_btn=ctk.CTkButton(rtop, text="▶ Connect", width=120, height=30, corner_radius=15, fg_color=AC, hover_color=AC_H,
-                                     text_color="#04121f", command=self.range_toggle); self.range_btn.pack(side="right")
-        self.range_cap=ctk.CTkButton(rtop, text="⬇ Capture", width=100, height=30, corner_radius=15, fg_color=CARD2, hover_color=STROKE,
-                                     text_color=TX, command=self.range_capture); self.range_cap.pack(side="right", padx=6)
-        self._tip(self.range_cap, "Grab the current depth frame as a point cloud (.ply) plus a color snapshot into your save folder, ready for View in 3D and export.")
-        self.range_view=ctk.CTkSegmentedButton(rtop, values=["All", "Depth", "IR L", "IR R", "Color", "Combined"], command=lambda v: self._range_layout(), height=30, corner_radius=15,
-                                               fg_color=CARD2, selected_color=STROKE, selected_hover_color=STROKE, unselected_color=CARD2, unselected_hover_color=STROKE,
-                                               text_color=TX, font=ctk.CTkFont(size=12))
-        self.range_view.pack(side="right", padx=6); self.range_view.set("All")   # (segmented buttons can't take a tooltip)
-        self.range_rot=int(self.cfg.get("range_rot", 90))   # the sensors are mounted sideways; 90 makes the view upright
-        rb=ctk.CTkButton(rtop, text="↻ %d°" % self.range_rot, width=64, height=30, corner_radius=15, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self._range_rotate)
-        rb.pack(side="right", padx=2); self.range_rot_btn=rb
-        self._tip(rb, "Rotate the live views (and captured clouds) in 90° steps to match how you're holding the scanner.")
-        grid=ctk.CTkFrame(rf, fg_color="transparent"); grid.grid(row=1,column=0, sticky="nsew", padx=10, pady=(0,4)); self.range_grid=grid
-        for c in (0,1): grid.grid_columnconfigure(c, weight=1, uniform="rg")
-        for r in (0,1): grid.grid_rowconfigure(r, weight=1, uniform="rg")
-        self.range_tiles={}
-        for i,(key,cap) in enumerate((("Depth","Depth"),("IR L","IR left"),("IR R","IR right"),("Color","Color"))):
-            cell=ctk.CTkFrame(grid, fg_color="#0a0c10", corner_radius=12); cell.grid(row=i//2, column=i%2, sticky="nsew", padx=3, pady=3)
-            cell.grid_propagate(False); cell.grid_columnconfigure(0, weight=1); cell.grid_rowconfigure(1, weight=1)
-            ctk.CTkLabel(cell, text=cap, text_color=MUT, font=ctk.CTkFont(size=11), anchor="w").grid(row=0,column=0, sticky="ew", padx=10, pady=(6,0))
-            lab=ctk.CTkLabel(cell, text=""); lab.grid(row=1,column=0, sticky="nsew"); self.range_tiles[key]=lab
-        self.range_single=ctk.CTkLabel(rf, text="", fg_color="#0a0c10", corner_radius=12); self.range_single.grid(row=1,column=0, sticky="nsew", padx=10, pady=(0,4)); self.range_single.grid_remove()
-        self.range_info=ctk.CTkLabel(rf, text="The RANGE draws 5V/1A: hub ports (500 mA) make it reset when the projector fires. It also reboots itself whenever the stream stops (that's normal).",
-                                     text_color=MUT, font=ctk.CTkFont(size=11), anchor="w"); self.range_info.grid(row=2,column=0, sticky="ew", padx=14, pady=(2,4))
-        self.range_dist=tk.Canvas(rf, height=26, bg="#0a0c10", highlightthickness=0); self.range_dist.grid(row=3,column=0, sticky="ew", padx=14, pady=(0,10))
-        self._tip(self.range_dist, "How far the object is, live: the same Too Near / Excellent / Good / Far / Too Far the scanner itself shows.")
-        self.range_dist.bind("<Configure>", lambda e: self._range_dist_draw(getattr(self, "_range_last_zones", None)))
-        self._range=None; self._range_stream=None; self._range_color=None; self._range_intr=None; self._range_on=False; self._range_busy=False
-        self._range_rgb_intr=None; self._range_extr=None; self._range_rgb_dist=None  # color-alignment calibration, when the device has it
+        # Live view (MIRACO camera over USB + position over WiFi) is a dev-only experiment, built
+        # only when the local dev/live_view.py module is present (never in shipped builds).
+        if HAS_LIVE: self.build_live_tab(self.mode_frames["Live"])
 
     # ---- import options (right column) + the save folder browser (Files tab) ----
     def _opt(self, parent, kind, title, sub, var, value=None, command=None, tip=None):
@@ -1947,13 +1920,6 @@ class App(ctk.CTk):
             if h>1 and abs(h-w.winfo_height())>2: w.configure(height=h)
             if wd>1 and abs(wd-w.winfo_width())>2: w.configure(width=wd)       # a scrollable frame does not stretch its content sideways
         except Exception: pass
-    def _live_empty(self):
-        """Backsplash on the Live canvas until a stream arrives (the trail drawing takes over from there)."""
-        try:
-            if not self._live_on and self._live_last is None: draw_empty_state(self.live_cv, "live", [self.live_find_btn], self._ui_scale)
-            else: self.live_cv.delete("empty")
-        except Exception as e: log_error("live-empty", e)
-
     def _hr(self, parent, pady=(12,6)):
         tk.Frame(parent, bg=STROKE, height=1, bd=0, highlightthickness=0).pack(fill="x", padx=6, pady=pady)
     def _title(self, parent, text, size=13, pady=(0,4)):
@@ -2177,6 +2143,39 @@ class App(ctk.CTk):
         self.import_btn.grid(row=0,column=3, padx=(6,20), pady=(12,4))
 
     # ---- dialogs ----
+    def _btn_busy(self, btn, label):
+        """Show a button as working - dark, dim readable label, clicks blocked - instead of Tk's disabled
+        look (grey letters on a bright button). Remembers the button's own look for _btn_idle."""
+        try:
+            if not hasattr(btn, "_idle_cfg"):
+                btn._idle_cfg={k: btn.cget(k) for k in ("text","fg_color","hover_color","text_color")}
+            btn.configure(text=label, fg_color=CARD2, hover_color=CARD2, text_color=DIM, text_color_disabled=DIM, state="disabled")
+        except Exception: pass
+    def _btn_idle(self, btn):
+        try:
+            c=getattr(btn, "_idle_cfg", None)
+            btn.configure(state="normal", **(c or {}))
+        except Exception: pass
+    def _centred(self, w, h):
+        """Opening geometry for a popup: centred on the main window and clamped so it never opens bigger
+        than the app (room left for its own title bar). Only the first pop - the user can drag or resize it
+        anywhere after. Also gives an off-screen render a real position instead of a missing window
+        manager parking it top-left."""
+        try:
+            self.update_idletasks()
+            pw, ph = self.winfo_width(), self.winfo_height()
+            if pw > 1 and ph > 1:
+                px, py = self.winfo_rootx(), self.winfo_rooty()
+                w = min(w, max(420, pw - 60)); h = min(h, max(320, ph - 85))
+            else:                                   # not mapped yet: fall back to the screen centre
+                px = py = 0; pw, ph = self.winfo_screenwidth(), self.winfo_screenheight()
+            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+            TITLE = 36                             # the WM puts the popup's own title bar ABOVE the +y we ask for: pull up to centre the whole frame
+            x = min(max(0, px + (pw - w)//2), max(0, sw - w))
+            y = min(max(0, py + (ph - h)//2 - TITLE), max(0, sh - h))
+            return "%dx%d+%d+%d" % (w, h, x, y)
+        except Exception:
+            return "%dx%d" % (w, h)
     def _top(self, title, w=560, h=440, key=None):
         key=key or title
         if not hasattr(self,"_dialogs"): self._dialogs={}
@@ -2186,7 +2185,8 @@ class App(ctk.CTk):
                 if ex.winfo_exists():
                     ex.deiconify(); ex.lift(); ex.focus_force(); return None
             except Exception: pass
-        t=ctk.CTkToplevel(self); t.title("%s · %s" % (APP, title)); t.geometry("%dx%d"%(w,h)); t.configure(fg_color=BG)
+        t=ctk.CTkToplevel(self); t.title("%s · %s" % (APP, title)); t.configure(fg_color=BG)
+        t.geometry(self._centred(w, h))          # front and centre on the main window, never bigger than it on first pop
         t.transient(self); t.after(60, t.lift)
         self._dialogs[key]=t
         t.protocol("WM_DELETE_WINDOW", lambda: (self._dialogs.pop(key,None), t.destroy()))
@@ -2515,7 +2515,7 @@ class App(ctk.CTk):
                         clean_isolation=self._num(self.clean_iso,15,0,100), clean_fill_holes=self.clean_holes.get(),
                         clean_smooth_times=int(self._num(self.clean_smooth,3,0,50)), clean_keep_pct=self._num(self.clean_keep,100,1,100),
                         clean_do_iso=self.clean_do_iso.get(), clean_do_smooth=self.clean_do_smooth.get(), clean_do_keep=self.clean_do_keep.get(), clean_do_base=self.clean_do_base.get(),
-                        scanner_ip=self.live_ip.get().strip(),
+                        scanner_ip=(self.live_ip.get().strip() if getattr(self, "live_ip", None) is not None else self.cfg.get("scanner_ip","")),
                         cleanup=self.cleanup.get(), side=self.cfg.get("side","project"),
                         gl_view=self.cfg.get("gl_view","auto"), fuse_device=self.cfg.get("fuse_device","auto"),
                         records=self.records); save_cfg(self.cfg)
@@ -2549,12 +2549,21 @@ class App(ctk.CTk):
                 or (p.get("nodes") or 0) != (sig.get("nodes") or 0)
                 or (p.get("meshes") or 0) != (sig.get("meshes") or 0))
     def rename_project(self, name):
-        d=ctk.CTkInputDialog(title="Rename project",
-                             text="Friendly name for:\n%s\n\n(the original ID is kept as the folder name /\nreference - clear the box to reset)"%name)
-        val=d.get_input()
-        if val is None: return
-        self.records.setdefault(name,{})["label"]=(val.strip() or None)
-        self._persist(); self.projects_sig=None  # force re-render
+        """Give a project a friendly name. Same dialog as Name this scan, so they look and land the same."""
+        cur=self.records.get(name, {}).get("label") or ""
+        t=self._top("Name this project", 420, 190, key="projname")
+        if t is None: return
+        ctk.CTkLabel(t, text="A name for this project. Its id (%s) stays as the folder name. Leave empty to go back to the id." % name,
+                     text_color=MUT, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=380).pack(fill="x", padx=20, pady=(18,8))
+        v=ctk.StringVar(value=cur); e=ctk.CTkEntry(t, textvariable=v, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=10); e.pack(fill="x", padx=20); e.focus_set()
+        def ok(*_):
+            self.records.setdefault(name,{})["label"]=(v.get().strip() or None)
+            self._persist(); self._dialogs.pop("projname", None); t.destroy()
+            self.projects_sig=None  # force re-render
+        e.bind("<Return>", ok)
+        br=ctk.CTkFrame(t, fg_color="transparent"); br.pack(fill="x", padx=16, pady=14)
+        ctk.CTkButton(br, text="Save", width=100, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=ok).pack(side="right", padx=6)
+        ctk.CTkButton(br, text="Cancel", width=90, height=32, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=lambda: (self._dialogs.pop("projname", None), t.destroy())).pack(side="right", padx=6)
     def _install_handoff(self):
         """When a newer build launches, _acquire_single_instance SIGTERMs the running one. Catch it and
         close cleanly. The periodic tick also keeps the Python interpreter ticking so the signal handler
@@ -2581,7 +2590,7 @@ class App(ctk.CTk):
         if getattr(self, "_fusing", False) or getattr(self, "pulling", False): return True             # a build or an import/zip
         if getattr(self, "_wifi", None): return True          # a WiFi receive is in progress (set before 'pulling')
         if getattr(self, "_mounting", False): return True     # mounting the device over MTP
-        if getattr(self, "_range_on", False) or getattr(self, "_range_busy", False): return True   # a live stream is up OR connecting/disconnecting
+        if self.live_busy(): return True                     # a dev live-view stream is up or connecting (no-op in shipped builds)
         try:
             with self._children_lock:
                 if self._children: return True                # a heavy subprocess (Prepare / Build / Combine / cut) is running
@@ -2623,17 +2632,8 @@ class App(ctk.CTk):
         try:
             if self._wifi: self._wifi.stop()
         except Exception: pass
-        # independent stops: a failure turning the projector off must NOT skip stopping the streams, which
-        # are separate processes range.py spawns outside our tracked child set.
-        if getattr(self, "_range_on", False) and getattr(self, "_range", None):
-            try: self._range.projector(False)
-            except Exception: pass
-            try:
-                if self._range_color: self._range_color.stop()
-            except Exception: pass
-            try:
-                if self._range_stream: self._range_stream.stop()
-            except Exception: pass
+        try: self.live_cleanup()   # stop any dev live-view stream (no-op in shipped builds)
+        except Exception: pass
         try: self._terminate_children()
         except Exception: pass
         try: self._persist()   # flush config so the newer build opens on the same state
@@ -2650,18 +2650,11 @@ class App(ctk.CTk):
         try:
             if self._wifi: self._wifi.stop()
         except Exception: pass
-        # projector off, then stop the streams: os._exit(0) does NOT kill child processes, so a live
-        # v4l2-ctl stream would otherwise outlive the GUI and keep the camera busy. Independent try blocks
-        # so a projector-off failure can't skip the stream stops. Bounded (~10s worst case) if live.
-        if getattr(self, "_range_on", False) and getattr(self, "_range", None):
-            try: self._range.projector(False)
-            except Exception: pass
-            try:
-                if self._range_color: self._range_color.stop()
-            except Exception: pass
-            try:
-                if self._range_stream: self._range_stream.stop()
-            except Exception: pass
+        # os._exit(0) does NOT kill child processes, so a live v4l2-ctl stream would otherwise outlive
+        # the GUI and keep the camera busy. live_cleanup turns the projector off and stops the streams
+        # (bounded, ~10s worst case if live); a no-op in shipped builds with no Live tab.
+        try: self.live_cleanup()
+        except Exception: pass
         try: self._terminate_children()
         except Exception as e: log_error("child-cleanup", e)
         self._persist()
@@ -4511,7 +4504,7 @@ class App(ctk.CTk):
         if node and os.environ.get("POINTYOINK_NO_GL")!="1" and self.cfg.get("gl_view","auto")!="software":
             self._cut_dialog(name, node, src); return              # the in-app cut view; the matplotlib tool stays as the fallback
         self._basing=True
-        try: self.base_btn.configure(state="disabled")
+        try: self._btn_busy(self.base_btn, "Opening…")
         except Exception: pass
         self.set_status("Base removal: opening the cut-plane tool…")
         token=self._next_job("base"); self._base_job=token; dest=self.dest.get() or DEFAULT_DEST
@@ -4521,38 +4514,118 @@ class App(ctk.CTk):
         """Remove base inside the app: the scan in the GPU view, the part to keep in grey, the part to remove in red,
         one slider along the table's normal, Flip, Apply. Saves <name>_<node>_clean.ply and remembers the plane."""
         import numpy as np
-        t=self._top("Remove base · %s" % self._scan_label(name, node), 980, 780, key="cut")
+        t=self._top("Remove base · %s" % self._scan_label(name, node), 1300, 1020, key="cut")
         if t is None: return
         dest=self.dest.get() or DEFAULT_DEST; local=os.path.join(dest, name); out=os.path.join(local, "%s_%s_clean.ply" % (name, node))
-        card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
-        card.grid_columnconfigure(0, weight=1); card.grid_rowconfigure(1, weight=1)
-        ctk.CTkLabel(card, text="Grey stays, red goes. Drag the slider until only the table is red; Flip if it picked the wrong side. If the plane sits wrong, click three spots on the table. The cut is remembered for combining.",
-                     text_color=MUT, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=900).grid(row=0,column=0, sticky="w", padx=16, pady=(12,6))
-        box=ctk.CTkFrame(card, fg_color="#0a0c10", corner_radius=10); box.grid(row=1,column=0, sticky="nsew", padx=14, pady=4)
+        root=ctk.CTkFrame(t, fg_color="transparent"); root.pack(fill="both", expand=True, padx=12, pady=12)
+        root.grid_columnconfigure(0, weight=1); root.grid_rowconfigure(0, weight=1)
+        # -- left: the 3D view, full height --
+        card=ctk.CTkFrame(root, fg_color=CARD, corner_radius=14); card.grid(row=0,column=0, sticky="nsew", padx=(0,10))
+        card.grid_columnconfigure(0, weight=1); card.grid_rowconfigure(0, weight=1)
+        box=ctk.CTkFrame(card, fg_color="#0a0c10", corner_radius=10); box.grid(row=0,column=0, sticky="nsew", padx=10, pady=(10,4))
         box.grid_columnconfigure(0, weight=1); box.grid_rowconfigure(0, weight=1)
         view=self._new_view(box); view.grid(row=0,column=0, sticky="nsew", padx=4, pady=4)
         if not hasattr(view, "set_split"):
             t.destroy(); self._dialogs.pop("cut", None); self._basing=True; token=self._next_job("base"); self._base_job=token; self._open_loader("Base removal", "Opening the cut-plane tool…", token=token)
             self._start_thread(self._base_worker, name, src, node, dest, token, name="base"); return
         load=ctk.CTkLabel(box, text="Loading the 3D view…", text_color=MUT, font=ctk.CTkFont(size=14), fg_color="#0a0c10"); load.grid(row=0,column=0, sticky="nsew", padx=4, pady=4); load.lift()
-        ctl=ctk.CTkFrame(card, fg_color="transparent"); ctl.grid_columnconfigure(1, weight=1)
-        status=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w")
-        dirrow=ctk.CTkFrame(card, fg_color="transparent"); dirrow.grid(row=2,column=0, sticky="ew", padx=14, pady=(6,0))
-        ctk.CTkLabel(dirrow, text="Table direction", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left", padx=(4,10))
-        dirsel=ctk.CTkSegmentedButton(dirrow, values=["Floor grid", "Auto-detect", "Click spots on the table"], selected_color=AC, selected_hover_color=AC_H, unselected_color=CARD2, unselected_hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=12)); dirsel.pack(side="left")
-        dirhint=ctk.CTkLabel(dirrow, text="", text_color=DIM, font=ctk.CTkFont(size=11)); dirhint.pack(side="left", padx=12)
-        ctl.grid(row=3,column=0, sticky="ew", padx=14, pady=(6,12)); status.grid(row=4,column=0, sticky="w", padx=16, pady=(0,10))
-        ctk.CTkLabel(ctl, text="Cut height", text_color=MUT, font=ctk.CTkFont(size=12)).grid(row=0,column=0, padx=(4,10))
-        slider=ctk.CTkSlider(ctl, from_=0, to=1000, number_of_steps=1000, progress_color=AC, button_color=AC, button_hover_color=AC_H, fg_color="#0d0f14"); slider.grid(row=0,column=1, sticky="ew")
-        val=ctk.CTkLabel(ctl, text="", text_color=TX, font=ctk.CTkFont(size=12), width=150); val.grid(row=0,column=2, padx=10)
-        flipb=ctk.CTkButton(ctl, text="Flip side", width=90, height=32, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX); flipb.grid(row=0,column=3, padx=4)
-        cancelb=ctk.CTkButton(ctl, text="Cancel", width=90, height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX); cancelb.grid(row=0,column=4, padx=4)
+        status=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w"); status.grid(row=1,column=0, sticky="ew", padx=16, pady=(0,10))
+        # -- right: the tool palette (same style as the Import options / Edit palette) --
+        pal=ctk.CTkFrame(root, fg_color=CARD, corner_radius=14, width=340); pal.grid(row=0,column=1, sticky="nsew"); pal.grid_propagate(False)
+        pal.grid_columnconfigure(0, weight=1); pal.grid_rowconfigure(1, weight=1)
+        head=ctk.CTkFrame(pal, fg_color="transparent"); head.grid(row=0,column=0, sticky="ew", padx=16, pady=(14,4))
+        ctk.CTkLabel(head, text="Remove base", font=ctk.CTkFont(size=18, weight="bold"), text_color=TX, anchor="w").pack(fill="x")
+        ctk.CTkLabel(head, text="Grey stays, red goes. Say where the table is, then slide the cut just above it.",
+                     text_color=MUT, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=300).pack(fill="x", pady=(2,0))
+        body=ctk.CTkScrollableFrame(pal, fg_color="transparent"); body.grid(row=1,column=0, sticky="nsew", padx=4); self._autohide(body)
+        # TABLE: where is it?
+        self._title(body, "Table", pady=(6,0))
+        dirvar=ctk.StringVar(value="")
+        class _DirSel:                         # tiny shim so the behaviour code's dirsel.set()/get() keeps working with radio rows
+            def set(self, v): dirvar.set(v)
+            def get(self): return dirvar.get()
+            def configure(self, **k): pass
+        dirsel=_DirSel()
+        _pick_dir=lambda: choose_dir(dirvar.get())
+        self._opt(body, "radio", "Floor grid", "The view's floor grid is the table.", dirvar, "Floor grid", _pick_dir)
+        self._opt(body, "radio", "Auto-detect", "The flattest surface in the scan.", dirvar, "Auto-detect", _pick_dir)
+        self._opt(body, "radio", "Click spots on the table", "Click 3 or more spots on the table.", dirvar, "Click spots on the table", _pick_dir)
+        spots=ctk.CTkFrame(body, fg_color="transparent"); spots.pack(fill="x", padx=12, pady=(0,2))
+        clearb=ctk.CTkButton(spots, text="↺ Clear points", width=118, height=28, corner_radius=14, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11)); clearb.pack(side="left", padx=(24,0))
+        clearb.configure(state="disabled")
+        self._tip(clearb, "Remove all the clicked spots. Click a dot again to remove just that one; Backspace undoes the last.")
+        dirhint=ctk.CTkLabel(body, text="", text_color=DIM, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=280); dirhint.pack(fill="x", padx=(36,12), pady=(2,4))
+        self._hr(body, pady=(6,2))
+        # CUT: where along that direction, which side, fine tilt
+        self._title(body, "Cut", pady=(0,0))
+        ctk.CTkLabel(body, text="Cut height", text_color=MUT, font=ctk.CTkFont(size=12), anchor="w").pack(fill="x", padx=16, pady=(2,0))
+        slider=ctk.CTkSlider(body, from_=0, to=1000, number_of_steps=1000, progress_color=AC, button_color=AC, button_hover_color=AC_H, fg_color="#0d0f14"); slider.pack(fill="x", padx=16, pady=(2,0))
+        val=ctk.CTkLabel(body, text="", text_color=TX, font=ctk.CTkFont(size=12), anchor="w"); val.pack(fill="x", padx=16)
+        cutvar=ctk.DoubleVar(value=0.0)                    # exact height above the lowest point, in mm; tracks the slider and drives it
+        def _cut_from_var(_=None):
+            if st["H"] is None: return
+            try: mm=float(cutvar.get())
+            except Exception: return
+            st["cut"]=min(st["Hmax"], max(st["Hmin"], st["Hmin"]+mm))
+            slider.set(1000.0*(st["cut"]-st["Hmin"])/max(1e-6, st["Hmax"]-st["Hmin"])); schedule()
+        def _cut_step(d):
+            try: v=float(cutvar.get())
+            except Exception: v=0.0
+            cutvar.set(round(max(0.0, v+d), 2)); _cut_from_var()
+        cr=ctk.CTkFrame(body, fg_color="transparent"); cr.pack(fill="x", padx=16, pady=(6,0))
+        ctk.CTkLabel(cr, text="Exact", text_color=TX, font=ctk.CTkFont(size=12), width=54, anchor="w").pack(side="left")
+        ctk.CTkButton(cr, text="−", width=36, height=32, corner_radius=8, fg_color=CARD2, hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=15), command=lambda: _cut_step(-0.5)).pack(side="left")
+        ce=ctk.CTkEntry(cr, textvariable=cutvar, width=78, height=32, justify="center", fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=8, font=ctk.CTkFont(size=13)); ce.pack(side="left", padx=6)
+        ce.bind("<Return>", _cut_from_var); ce.bind("<FocusOut>", _cut_from_var)
+        ctk.CTkButton(cr, text="+", width=36, height=32, corner_radius=8, fg_color=CARD2, hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=15), command=lambda: _cut_step(+0.5)).pack(side="left")
+        ctk.CTkLabel(cr, text="mm", text_color=MUT, font=ctk.CTkFont(size=13)).pack(side="left", padx=(6,0))
+        ctk.CTkLabel(body, text="Fine tilt", text_color=MUT, font=ctk.CTkFont(size=12), anchor="w").pack(fill="x", padx=16, pady=(8,0))
+        tiltx=ctk.DoubleVar(value=0.0); tilty=ctk.DoubleVar(value=0.0)
+        def _tilt_row(label, var):
+            """Same shape as Cut height: a slider for the coarse move plus a typeable -/+ field for the exact number."""
+            ctk.CTkLabel(body, text=label, text_color=MUT, font=ctk.CTkFont(size=12), anchor="w").pack(fill="x", padx=16, pady=(4,0))
+            sl=ctk.CTkSlider(body, from_=-30, to=30, number_of_steps=120, progress_color=AC, button_color=AC, button_hover_color=AC_H, fg_color="#0d0f14")
+            sl.pack(fill="x", padx=16, pady=(2,0)); sl.set(0)
+            def sync_slider():
+                try: sl.set(max(-30.0, min(30.0, float(var.get()))))
+                except Exception: pass
+            def from_slider(v): var.set(round(float(v)*2)/2.0); _tilt()          # snap to half degrees
+            sl.configure(command=from_slider)
+            r=ctk.CTkFrame(body, fg_color="transparent"); r.pack(fill="x", padx=16)
+            ctk.CTkLabel(r, text="Exact", text_color=TX, font=ctk.CTkFont(size=12), width=54, anchor="w").pack(side="left")
+            def step(d):
+                try: v=float(var.get())
+                except Exception: v=0.0
+                var.set(max(-30.0, min(30.0, round(v+d, 2)))); sync_slider(); _tilt()
+            ctk.CTkButton(r, text="−", width=36, height=32, corner_radius=8, fg_color=CARD2, hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=15), command=lambda: step(-0.5)).pack(side="left")
+            e=ctk.CTkEntry(r, textvariable=var, width=78, height=32, justify="center", fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=8, font=ctk.CTkFont(size=13)); e.pack(side="left", padx=6)
+            e.bind("<Return>", lambda ev: (sync_slider(), _tilt())); e.bind("<FocusOut>", lambda ev: (sync_slider(), _tilt()))
+            ctk.CTkButton(r, text="+", width=36, height=32, corner_radius=8, fg_color=CARD2, hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=15), command=lambda: step(+0.5)).pack(side="left")
+            ctk.CTkLabel(r, text="°", text_color=MUT, font=ctk.CTkFont(size=13)).pack(side="left", padx=(6,0))
+            return sl
+        tiltx_sl=_tilt_row("Pitch", tiltx); tilty_sl=_tilt_row("Roll", tilty)
+        def _tilt_zero():
+            for v,sl in ((tiltx,tiltx_sl),(tilty,tilty_sl)): v.set(0.0); sl.set(0)
+        tiltlbl=ctk.CTkLabel(body, text="Nudge if the table sits slightly off. Type a value and press Enter.", text_color=DIM, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=290); tiltlbl.pack(fill="x", padx=16, pady=(4,0))
+        brow=ctk.CTkFrame(body, fg_color="transparent"); brow.pack(fill="x", padx=14, pady=(8,2))
+        flipb=ctk.CTkButton(brow, text="Flip side", width=110, height=32, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX); flipb.pack(side="left", padx=(0,8))
+        self._tip(flipb, "Swap which side is kept: the red half becomes grey and the grey half red.")
+        resetb=ctk.CTkButton(brow, text="↺ Reset", width=96, height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=12)); resetb.pack(side="left")
+        self._tip(resetb, "Deselect everything: no table direction, no spots, no cut shown. Start again from scratch.")
+        self._hr(body, pady=(6,2))
         def no_table():
             self.records.setdefault(name,{}).setdefault("base_plane",{})[node]={"skip": True}; self._persist()
             self.set_banner("%s: no table to cut, step done." % self._scan_label(name, node), OK); self._proc_refresh(); close()
-        skipb=ctk.CTkButton(dirrow, text="No table in this scan", width=150, height=26, corner_radius=13, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=no_table); skipb.pack(side="right", padx=4)
+        skipb=ctk.CTkButton(body, text="No table in this scan", height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=12), command=no_table); skipb.pack(fill="x", padx=14, pady=(2,4))
         self._tip(skipb, "The scanner already dropped the floor (its scan settings can do that), or there was none. Marks the Cut base step done for this scan.")
-        applyb=ctk.CTkButton(ctl, text="✂  Apply cut", width=130, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=12, weight="bold")); applyb.grid(row=0,column=5, padx=(4,0))
+        _bp=(self.records.get(name,{}).get("base_plane",{}) or {}).get(node)
+        if _bp and not (isinstance(_bp, dict) and _bp.get("skip")) and os.path.exists(out):
+            undob=ctk.CTkButton(body, text="↩ Restore scan before cut", height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=WARN, hover_color=CARD2, text_color=WARN, font=ctk.CTkFont(size=12),
+                                command=lambda: (close(), self._undo_base_cut(name, node))); undob.pack(fill="x", padx=14, pady=(0,4))
+            self._tip(undob, "Undo the base cut on this scan: the cut copy goes to the trash (a prepared copy it replaced comes back), the remembered plane is forgotten, and the scan shows the scanner's model again.")
+        foot=ctk.CTkFrame(pal, fg_color="transparent"); foot.grid(row=2,column=0, sticky="ew", padx=14, pady=(6,14)); foot.grid_columnconfigure(0, weight=1)
+        cancelb=ctk.CTkButton(foot, text="Cancel", width=96, height=34, corner_radius=17, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX); cancelb.grid(row=0,column=0, sticky="w")
+        applyb=ctk.CTkButton(foot, text="✂  Apply cut", width=140, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=12, weight="bold")); applyb.grid(row=0,column=1, sticky="e")
         st={"n":None, "H":None, "Hmin":0.0, "Hmax":1.0, "cut":0.0, "keep_above":True, "V":None, "job":None, "busy":False, "picks":[], "n_auto":None, "n_grid":None}
         KEEP=np.array([0.74,0.76,0.80], np.float32); GONE=np.array([1.0,0.36,0.42], np.float32)
         def close():
@@ -4569,6 +4642,8 @@ class App(ctk.CTk):
             cv=shade.world_to_view(c_w, view.tf); nv=shade.world_to_view(c_w+n*10.0, view.tf)-cv
             view.plane=(cv, nv if st["keep_above"] else -nv, 1.1); view.draw()
             val.configure(text="%.1f mm · %d%% removed" % (st["cut"]-st["Hmin"], 100-int(keep.mean()*100)))
+            try: cutvar.set(round(st["cut"]-st["Hmin"], 2))
+            except Exception: pass
         def schedule():
             if st["job"] is None: st["job"]=t.after(60, paint)
         def on_slide(v):
@@ -4576,7 +4651,7 @@ class App(ctk.CTk):
         slider.configure(command=on_slide)
         def flip(): st["keep_above"]=not st["keep_above"]; schedule()
         flipb.configure(command=flip)
-        def use_normal(n, start=None, ref=None):
+        def use_normal(n, start=None, ref=None, base=True):
             """Set the cut direction. Which way is up: agree with the auto-detected table plane when it points roughly the
             same way, else the end with the bigger flat sheet is the table. The cut starts just above the densest
             height in the lower third (the table), or where asked."""
@@ -4588,27 +4663,83 @@ class App(ctk.CTk):
             lo=float(H.min()); rng=float(H.max()-lo)
             low=H[H<lo+0.35*rng]; hist,edges=np.histogram(low, bins=60); h_tab=float(0.5*(edges[hist.argmax()]+edges[hist.argmax()+1]))
             st["n"]=n; st["H"]=H; st["Hmin"]=lo; st["Hmax"]=float(H.max())
-            st["cut"]=float(start) if start is not None else min(st["Hmax"], h_tab+0.02*(st["Hmax"]-st["Hmin"])); st["keep_above"]=True
+            st["cut"]=float(start) if start is not None else min(st["Hmax"], h_tab+0.02*(st["Hmax"]-st["Hmin"]))
+            if base: st["keep_above"]=True; st["n_base"]=n.copy(); _tilt_zero()
+            self._btn_idle(applyb)                             # a plane exists: Apply is live
             slider.set(1000.0*(st["cut"]-st["Hmin"])/max(1e-6, st["Hmax"]-st["Hmin"])); paint()
-        def choose_dir(which):
-            if st["V"] is None: return
-            view.markers=[]; st["picks"]=[]; view.on_pick=None
-            if which=="Floor grid": use_normal(st["n_grid"], ref=st.get("n_auto_up")); dirhint.configure(text="the view's floor grid is the table")
-            elif which=="Auto-detect": use_normal(st["n_auto"]); dirhint.configure(text="the flattest surface in the scan")
-            else:
-                dirhint.configure(text="click spots on the table: 3 sets the plane, more make it truer"); view.on_pick=on_pick_spot; view.draw()
-        def on_pick_spot(world, viewpt):
-            st["picks"].append(np.asarray(world, float)); view.markers.append((viewpt, self.PAIR_COLOURS[(len(st["picks"])-1) % len(self.PAIR_COLOURS)]))
-            if len(st["picks"])<3: dirhint.configure(text="%d of 3 spots" % len(st["picks"])); view.draw(); return
-            # best-fit plane through every spot so far (least squares): more spots average out a wobbly click
+        def _blank_cut():
+            """No cut shown: model all grey, no plane, readouts cleared. Spots are left alone."""
+            st["n"]=None; st["H"]=None; st["keep_above"]=True; st["cut"]=0.0; st["n_base"]=None
+            try:
+                f=np.asarray(view._src[1]); view.set_split(np.ones(len(f), bool), tuple(KEEP), tuple(GONE))
+            except Exception: pass
+            view.plane=None; view.draw()
+            slider.set(0); val.configure(text=""); cutvar.set(0.0); _tilt_zero()
+            self._btn_busy(applyb, "✂  Apply cut")          # nothing to apply yet
+        def _fit_spots():
+            """Re-fit the cut plane from the clicked spots (3+); with fewer, show no cut at all."""
+            k=len(st["picks"])
+            if k==0: _blank_cut(); dirhint.configure(text="click 3+ spots on the table (click a dot to remove it)"); return
+            if k<3: _blank_cut(); dirhint.configure(text="%d of 3 spots" % k); return
+            # best-fit plane through every spot (least squares): more spots average out a wobbly click
             P=np.array(st["picks"]); c=P.mean(0); _,sv,vt=np.linalg.svd(P-c); n=vt[2]
-            if len(P)==3 and sv[1]<1e-6: dirhint.configure(text="those spots are in a line, click another"); view.draw(); return
+            if k==3 and sv[1]<1e-6: dirhint.configure(text="those spots are in a line, click another"); view.draw(); return
             n=n/np.linalg.norm(n)
             if float(np.dot(n, -st["V"].mean(0)))<0: n=-n                     # toward the camera = up
             level=float(c.dot(n)); spread=float(np.abs((P-c).dot(n)).max())
             keep_markers=list(view.markers); use_normal(n, start=level+1.5+spread); view.markers=keep_markers; view.draw()
-            dirhint.configure(text="plane through %d spots (they sit within %.1f mm of it); keep clicking to refine" % (len(P), spread))
-        dirsel.configure(command=choose_dir)
+            dirhint.configure(text="plane through %d spots (within %.1f mm) - click more to refine" % (k, spread))
+        def on_pick_spot(world, viewpt):
+            """Left-click adds a spot; clicking an existing dot removes it. Right-drag is left alone (that's pan)."""
+            w=np.asarray(world, float)
+            if st["picks"]:
+                P=np.array(st["picks"]); d=np.linalg.norm(P-w, axis=1); j=int(d.argmin())
+                ext=float(np.linalg.norm(st["V"].max(0)-st["V"].min(0))) or 1.0
+                if d[j] < 0.025*ext:                                           # clicked on a dot: take it away
+                    st["picks"].pop(j); view.markers.pop(j); _fit_spots(); return
+            st["picks"].append(w); view.markers.append((viewpt, self.PAIR_COLOURS[(len(st["picks"])-1) % len(self.PAIR_COLOURS)]))
+            _fit_spots()
+        def undo_spot(_=None):
+            if not st["picks"] or view.on_pick is None: return                 # only while clicking spots
+            st["picks"].pop()
+            if view.markers: view.markers.pop()
+            _fit_spots()
+        def clear_spots():
+            st["picks"]=[]; view.markers=[]; view.on_pick=on_pick_spot; _fit_spots()
+        def choose_dir(which):
+            if st["V"] is None: return
+            view.on_pick=None; clearb.configure(state="disabled")
+            if which=="Floor grid":
+                view.markers=[]; use_normal(st["n_grid"], ref=st.get("n_auto_up")); dirhint.configure(text="the view's floor grid is the table")
+            elif which=="Auto-detect":
+                view.markers=[]; use_normal(st["n_auto"]); dirhint.configure(text="the flattest surface in the scan")
+            elif which=="Click spots on the table":
+                # spots persist across modes: show the ones already placed (and their plane if 3+), otherwise no cut
+                import shade
+                view.markers=[(shade.world_to_view(w, view.tf), self.PAIR_COLOURS[i % len(self.PAIR_COLOURS)]) for i,w in enumerate(st["picks"])]
+                view.on_pick=on_pick_spot; clearb.configure(state="normal"); _fit_spots()
+        def reset_cut():
+            """Blank slate: nothing selected, no spots, no cut shown."""
+            st["picks"]=[]; view.markers=[]; view.on_pick=None; clearb.configure(state="disabled")
+            dirsel.set(""); _blank_cut()
+            dirhint.configure(text="pick where the table is above, or click spots on it")
+        clearb.configure(command=clear_spots)
+        resetb.configure(command=reset_cut)
+        for _k in ("<BackSpace>", "<Delete>"):                     # undo the last spot; right-click stays free for panning
+            try: t.bind(_k, undo_spot)
+            except Exception: pass
+        def _tilt(_=None):
+            """Nudge the current base normal by two small angles about axes perpendicular to it."""
+            nb=st.get("n_base")
+            if nb is None or st["V"] is None: return
+            def _deg(v):
+                try: return max(-30.0, min(30.0, float(v.get())))
+                except Exception: return 0.0
+            ax=np.radians(_deg(tiltx)); ay=np.radians(_deg(tilty))
+            a=np.array([1.0,0.0,0.0]) if abs(nb[0])<0.9 else np.array([0.0,1.0,0.0])
+            u=np.cross(nb,a); u/=np.linalg.norm(u)+1e-9; w=np.cross(nb,u)
+            def rot(v,k,th): return v*np.cos(th)+np.cross(k,v)*np.sin(th)+k*np.dot(k,v)*(1-np.cos(th))
+            use_normal(rot(rot(nb,u,ax),w,ay), start=st["cut"], base=False)
         def ready(ok):
             if not t.winfo_exists(): return
             if not ok or getattr(view, "_src", None) is None or view.tf is None:
@@ -4634,7 +4765,13 @@ class App(ctk.CTk):
         view.load(src, ready, max_faces=600000)
         def apply():
             if st["H"] is None or st["busy"]: return
-            st["busy"]=True; applyb.configure(state="disabled"); status.configure(text="Cutting the full model… (a big scan takes a few seconds)")
+            st["busy"]=True; self._btn_busy(applyb, "Cutting…"); status.configure(text="Cutting the full model… (a big scan takes a few seconds)")
+            try:                                   # keep whatever prepared copy the cut is about to replace (Prepare does the same)
+                if os.path.exists(out):
+                    vdir=os.path.join(local, ".versions"); os.makedirs(vdir, exist_ok=True)
+                    bk=os.path.join(vdir, "%s_clean_%s.ply" % (node, time.strftime("%Y%m%d-%H%M%S"))); shutil.copy2(out, bk)
+                    self.records.setdefault(name,{}).setdefault("base_cut_backup",{})[node]=bk
+            except Exception as e: log_error("cut-backup", e)
             n=st["n"]; spec="%.6f,%.6f,%.6f,%.4f,%s" % (n[0], n[1], n[2], st["cut"], "1" if st["keep_above"] else "0")
             def work():
                 ok=False; plane=None
@@ -4653,7 +4790,7 @@ class App(ctk.CTk):
                     if ok:
                         self.q.put(("base_done", ("ok", out, node, plane, name)))
                         if t.winfo_exists(): close()
-                    elif t.winfo_exists(): applyb.configure(state="normal"); status.configure(text="The cut failed (see Help > Log).", text_color=WARN)
+                    elif t.winfo_exists(): self._btn_idle(applyb); status.configure(text="The cut failed (see Help > Log).", text_color=WARN)
                 self.q.put(("call", done))
             threading.Thread(target=work, daemon=True).start()
         applyb.configure(command=apply)
@@ -5048,6 +5185,23 @@ class App(ctk.CTk):
             return ("Prepare the %s model" % lab.lower() if target=="combined" else "Prepare %s" % lab, "Remove floating pieces, smooth, fill holes. You see before and after and keep or discard.",
                     "✦  Prepare…", lambda: self._prepare_dialog(name, target), 3, undo)
         return ("Export", "%s is prepared. Save it as STL for a slicer, or OBJ, GLB, PLY." % lab, "⬆  Export…", lambda: self._export_dialog(name, target), 4, undo)
+    def _undo_base_cut(self, name, node):
+        """Put a scan back the way it was before Remove base: the cut copy is trashed (or the prepared copy it
+        replaced is restored), the remembered plane is forgotten, and the scan shows the scanner's model again."""
+        local=os.path.join(self.dest.get() or DEFAULT_DEST, name); out=os.path.join(local, "%s_%s_clean.ply" % (name, node))
+        rec=self.records.setdefault(name,{}); bk=(rec.get("base_cut_backup",{}) or {}).pop(node, None); restored=False
+        try:
+            if bk and os.path.exists(bk): shutil.move(bk, out); os.utime(out, None); restored=True
+            elif os.path.exists(out): self._trash(out)
+        except Exception as e:
+            log_error("undo-base-cut", e); self.set_banner("Couldn't undo the cut (see Help > Log).", WARN); return
+        (rec.get("base_plane",{}) or {}).pop(node, None)
+        if restored: rec.setdefault("current",{})[node]="clean"
+        else: (rec.get("current",{}) or {}).pop(node, None)          # back to the default: the scanner's model
+        self._persist(); self.projects_sig=None; self._mesh_stats={}; self.gallery_cache.pop(name, None)
+        self.set_banner("%s: base cut undone%s." % (self._scan_label(name, node), " - the prepared copy is back" if restored else ""), OK)
+        if self.selected==name: self._proc_render(name); self._mv_key=None; self._maybe_schedule_shaded(name, node, 250)
+        else: self._proc_refresh()
     def _skip_base(self, name, node):
         """Mark a scan as having no base to cut (the NEXT bar suggested it, but detection is not certain).
         Same as choosing No base inside the cut dialog: remembered, and treated as 'no table' when combining."""
@@ -5508,7 +5662,7 @@ class App(ctk.CTk):
         if getattr(self, "_fusing", False): self.set_banner("A build is already running.", WARN); return
         if not self._require_open3d("Building models"): return
         self._fusing=True
-        try: self.proc_btn.configure(state="disabled")
+        try: self._btn_busy(self.proc_btn, "Working…")
         except Exception: pass
         for nd in nodes: self._proc_progress(nd, None, "Starting…")
         self.set_status("Building 3D model%s…" % ("" if len(nodes)==1 else "s"))
@@ -5543,17 +5697,13 @@ class App(ctk.CTk):
         if custom: return custom
         dev=self._device_scan_names(name).get(node)
         if dev: return dev
-        order=[n for n in self._proc_nodes(name) if n!="combined"]   # no custom or device name: a friendly default
-        if node in order: return "Scan %d" % (order.index(node)+1)   # "Scan 1 / Scan 2…" instead of the raw 09142026… id
-        return node
+        return node                                                    # no custom or device name: its own id, same as projects
     def _rename_scan(self, name, node):
         """Give a scan a name like front, back, left side. Shown on the strip, the panel, the cards and in Combine."""
         cur=(self.records.get(name, {}).get("scan_labels", {}) or {}).get(node, "")
         t=self._top("Name this scan", 420, 190, key="scanname")
         if t is None: return
-        _order=[n for n in self._proc_nodes(name) if n!="combined"]
-        _dflt="Scan %d" % (_order.index(node)+1) if node in _order else "its default name"
-        ctk.CTkLabel(t, text="A name for this scan (front, back, left side…). Leave empty to keep %s." % _dflt,
+        ctk.CTkLabel(t, text="A name for this scan (front, back, left side…). Its id (%s) stays as the file name. Leave empty to go back to the id." % node,
                      text_color=MUT, font=ctk.CTkFont(size=12), wraplength=380, justify="left").pack(anchor="w", padx=20, pady=(18,6))
         v=ctk.StringVar(value=cur); e=ctk.CTkEntry(t, textvariable=v, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=10); e.pack(fill="x", padx=20); e.focus_set()
         def ok(*_):
@@ -5866,7 +6016,7 @@ class App(ctk.CTk):
             self.cfg["export_fmt"]=fsel.get(); self.cfg["export_dir"]=ddir; save_cfg(self.cfg)
             out=os.path.join(ddir, "%s.%s" % (nm, fmt)); n=1
             while os.path.exists(out): out=os.path.join(ddir, "%s_%d.%s" % (nm, n, fmt)); n+=1
-            gob.configure(state="disabled"); status.configure(text="Writing %s…" % os.path.basename(out), text_color=MUT)
+            self._btn_busy(gob, "Writing…"); status.configure(text="Writing %s…" % os.path.basename(out), text_color=MUT)
             def work():
                 err=None
                 try:
@@ -5877,7 +6027,7 @@ class App(ctk.CTk):
                 except Exception as e: err=e; log_error("export", e)
                 def done():
                     if not t.winfo_exists(): return
-                    gob.configure(state="normal")
+                    self._btn_idle(gob)
                     if err: status.configure(text="Export failed (see Help > Log).", text_color=WARN); return
                     status.configure(text="Saved %s (%s)" % (out, human(os.path.getsize(out))), text_color=OK)
                     self.set_banner("Exported %s" % os.path.basename(out), OK)
@@ -6047,7 +6197,7 @@ class App(ctk.CTk):
             busy["job"]=t.after(500, busy_tick)
         def busy_on(m):
             busy["t0"]=time.time(); busy["msg"]=m; bar.grid(row=6,column=0, columnspan=2, sticky="ew", padx=16, pady=(0,10)); bar.configure(mode="indeterminate"); bar.start()
-            for b in (alignb, autob, comb): b.configure(state="disabled")
+            able(alignb, False); able(autob, False); able(comb, False, OK)
             busy["job"]=t.after(10, busy_tick)
         def busy_off():
             if busy["job"]:
@@ -6055,7 +6205,7 @@ class App(ctk.CTk):
                 except Exception: pass
             busy["job"]=None
             if t.winfo_exists():
-                bar.stop(); bar.grid_remove(); able(alignb, len(st["pairs"])>=3); autob.configure(state="normal"); refresh_chips()
+                bar.stop(); bar.grid_remove(); able(alignb, len(st["pairs"])>=3); able(autob, True); refresh_chips()
         def run_align(auto):
             if st["busy"] or not st["moving"]: return
             if auto and _has_open3d_cache is None:
@@ -6187,7 +6337,7 @@ class App(ctk.CTk):
         if not name: return
         if not self._require_open3d("Building models"): return
         self._fusing=True
-        try: self.proc_btn.configure(state="disabled")
+        try: self._btn_busy(self.proc_btn, "Working…")
         except Exception: pass
         self.set_status("Building 3D models…")
         for nd in self._proc_nodes(name): self._proc_progress(nd, None, "Waiting…")
@@ -6281,277 +6431,7 @@ class App(ctk.CTk):
         if outs: self.q.put(("fuse_done", name, ("ok", ", ".join(outs))))
         else: self.q.put(("fuse_done", name, ("err", "no scans could be processed - see the log")))
 
-    # ---- live: pose + IMU over TCP 9999 (60-byte packets: 8-byte header + 13 float32) ----
-    def live_find(self):
-        self.hold_banner("Looking for the scanner on your network…", AC)
-        threading.Thread(target=self._live_find_worker, daemon=True).start()
-    def _live_find_worker(self):
-        import socket, concurrent.futures as cf
-        try:
-            s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("8.8.8.8",80)); me=s.getsockname()[0]; s.close()
-        except Exception: self.q.put(("live_found", None)); return
-        base=".".join(me.split(".")[:3])
-        def probe(i):
-            ip="%s.%d"%(base,i); c=socket.socket(); c.settimeout(0.5)
-            try: c.connect((ip,9999)); return ip
-            except Exception: return None
-            finally: c.close()
-        with cf.ThreadPoolExecutor(120) as ex: hits=[h for h in ex.map(probe, range(1,255)) if h]
-        self.q.put(("live_found", hits[0] if hits else None))
-    def live_toggle(self):
-        if self._live_on:
-            self._live_on=False; self.live_btn.configure(text="▶ Connect", fg_color=AC); self.live_rate.configure(text=""); return
-        ip=self.live_ip.get().strip()
-        if not ip: self.set_banner("Enter the scanner's IP, or hit Find.", WARN); return
-        self.cfg["scanner_ip"]=ip; self._live_on=True; self._live_n=0; self._live_t=time.time(); self._live_trail=[]
-        self.live_btn.configure(text="■ Stop", fg_color="#3a2530")
-        self._live_empty()   # clears the backsplash; the trail drawing takes over
-        threading.Thread(target=self._live_worker, args=(ip,), daemon=True).start()
-        self._live_draw()
-    def _live_worker(self, ip):
-        import socket, struct
-        try:
-            s=socket.socket(); s.settimeout(3); s.connect((ip,9999)); s.settimeout(2)
-        except Exception as e:
-            self._live_on=False; self.q.put(("live_err", "Couldn't reach %s:9999 (%s)"%(ip,e))); return
-        buf=b""
-        while self._live_on:
-            try: chunk=s.recv(4096)
-            except socket.timeout: continue
-            except Exception: break
-            if not chunk: break
-            buf+=chunk
-            while len(buf)>=60:
-                pkt=buf[:60]; buf=buf[60:]
-                try: self._live_last=struct.unpack_from("<13f", pkt, 8); self._live_n+=1
-                except Exception: pass
-        s.close()
-        if self._live_on: self._live_on=False; self.q.put(("live_err", "Stream ended."))
-    def _live_draw(self):
-        if not self._live_on: return
-        f=self._live_last; cv=self.live_cv
-        if f:
-            qx,qy,qz,qw=f[0],f[1],f[2],f[3]           # quaternion, assumed (x,y,z,w)
-            R=[[1-2*(qy*qy+qz*qz), 2*(qx*qy-qz*qw),   2*(qx*qz+qy*qw)],
-               [2*(qx*qy+qz*qw),   1-2*(qx*qx+qz*qz), 2*(qy*qz-qx*qw)],
-               [2*(qx*qz-qy*qw),   2*(qy*qz+qx*qw),   1-2*(qx*qx+qy*qy)]]
-            W=max(60,cv.winfo_width()); H=max(60,cv.winfo_height()); cx,cy=W*0.33,H*0.52; L=min(W,H)*0.30
-            def proj(v):
-                x=R[0][0]*v[0]+R[0][1]*v[1]+R[0][2]*v[2]; y=R[1][0]*v[0]+R[1][1]*v[1]+R[1][2]*v[2]; z=R[2][0]*v[0]+R[2][1]*v[1]+R[2][2]*v[2]
-                return cx + L*(x - 0.35*z), cy - L*(y - 0.35*z)
-            cv.delete("all")
-            cv.create_text(cx, 16, text="orientation", fill=MUT, font=(WORDMARK, 9))
-            corners=[(sx,sy,sz) for sx in (-.6,.6) for sy in (-.35,.35) for sz in (-.15,.15)]
-            P=[proj(v) for v in corners]
-            for i in range(8):
-                for j in range(i+1,8):
-                    if sum(a!=b for a,b in zip(corners[i],corners[j]))==1: cv.create_line(*P[i],*P[j], fill="#2d3644", width=1)
-            for v,col,lbl in (((1,0,0),"#ff5d6c","X"),((0,1,0),"#3ecf8e","Y"),((0,0,1),"#5ab0ff","Z")):
-                x2,y2=proj(v); cv.create_line(cx,cy,x2,y2, fill=col, width=3, arrow="last"); cv.create_text(x2,y2-11,text=lbl,fill=col,font=(WORDMARK,10,"bold"))
-            self._live_trail.append((f[10],f[12]))
-            if len(self._live_trail)>600: self._live_trail=self._live_trail[-600:]
-            tx0,ty0,tw,th=W*0.66,H*0.12,W*0.31,H*0.76
-            cv.create_rectangle(tx0,ty0,tx0+tw,ty0+th, outline="#2d3644"); cv.create_text(tx0+tw/2,ty0-9,text="path (top-down, mm)",fill=MUT,font=(WORDMARK,9))
-            xs=[q[0] for q in self._live_trail]; zs=[q[1] for q in self._live_trail]
-            rng=max(max(xs)-min(xs), max(zs)-min(zs), 50.0); mx,mz=(max(xs)+min(xs))/2,(max(zs)+min(zs))/2
-            pts=[(tx0+tw/2+(x-mx)/rng*tw*0.9, ty0+th/2-(z-mz)/rng*th*0.9) for x,z in self._live_trail]
-            if len(pts)>1: cv.create_line(*[c for q in pts for c in q], fill=AC, width=2)
-            if pts: cv.create_oval(pts[-1][0]-4,pts[-1][1]-4,pts[-1][0]+4,pts[-1][1]+4, fill="#ffb020", outline="")
-            dt=time.time()-self._live_t
-            self.live_rate.configure(text=("%.0f pkt/s"%(self._live_n/dt)) if dt>0.5 else "")
-            self.live_txt.configure(text=("orientation (quat)\n x %+.3f\n y %+.3f\n z %+.3f\n w %+.3f\n\nposition (mm)\n x %8.1f\n y %8.1f\n z %8.1f\n\ngyro\n %+.3f %+.3f %+.3f\n\naccel (g)\n %+.3f %+.3f %+.3f"
-                                          %(f[0],f[1],f[2],f[3],f[10],f[11],f[12],f[4],f[5],f[6],f[7],f[8],f[9])), text_color=TX)
-        self.after(40, self._live_draw)
 
-    # ---- Live tab sources ----
-    def _live_src_changed(self, v):
-        if "USB" in v: self.live_miraco.grid_remove(); self.live_range.grid()      # the camera panel serves the RANGE and the MIRACO in PC mode alike
-        else: self.live_range.grid_remove(); self.live_miraco.grid()
-    # ---- RANGE: tethered scanner as a live camera source (range.py) ----
-    def range_toggle(self):
-        if self._range_busy: return
-        if self._range_on: self._range_disconnect(); return
-        self._range_busy=True; self.range_btn.configure(state="disabled")
-        self.range_status.configure(text="Looking for the RANGE…", text_color=MUT); self.hold_banner("RANGE - connecting…", AC)
-        threading.Thread(target=self._range_connect_worker, daemon=True).start()
-    def _range_connect_worker(self):
-        try:
-            import range as R
-            dev=R.find_device()
-            if not dev or not dev.get("node"):
-                self.q.put(("range_err", "No scanner cameras on USB. MIRACO: choose \"Use MIRACO in PC Mode\" on its screen when you plug it in. RANGE: a direct USB port (not a hub); if it just disconnected, it's rebooting: give it ~10 s.")); return
-            name=dev.get("name","RANGE"); w,h=dev.get("w",640), dev.get("h",400)
-            if dev["on_hub"] and dev.get("pid")=="110c":                 # the MIRACO has its own battery; the RANGE does not
-                self.q.put(("range_err", "RANGE is on a USB hub port (500 mA). It needs 5V/1A: move it to a rear motherboard port.")); return
-            xu=R.XU(dev["node"])
-            try: fw=xu.firmware()
-            except Exception as e: log_line("%s: firmware read failed: %s" % (name, e)); fw=""
-            if not fw and dev.get("pid")=="110c":
-                self.q.put(("range_err", "RANGE is still booting - give it a few seconds and try again.")); return
-            try: intr=xu.intrinsics(w, h)
-            except Exception as e: log_line("%s: intrinsics: %s" % (name, e)); intr=None
-            try: xu.projector(True)
-            except Exception as e: log_line("%s: projector: %s" % (name, e))
-            time.sleep(2.5)
-            st=R.DepthStream(dev["node"], w, h); st.start()
-            col=None
-            rw,rh=dev.get("rgb_w",1280), dev.get("rgb_h",800)
-            if dev.get("rgb_node"):
-                col=R.ColorStream(dev["rgb_node"], rw, rh, show=(w, h)); col.start()
-            self.q.put(("range_ok", (dev, xu, intr, st, col, fw)))
-            threading.Thread(target=self._range_calib_worker, args=(xu, rw, rh), daemon=True).start()
-        except Exception as e:
-            log_error("range-connect", e); self.q.put(("range_err", "RANGE connect failed: %s" % e))
-    def _range_calib_worker(self, xu, rw, rh):
-        """Color-alignment calibration (LC_RT.bin/Prgb.bin/Distort.bin) is a nice-to-have for the
-        Combined view, not needed to stream - fetched after connect, off the critical path, each
-        read capped so a missing file on this device/firmware can't stall anything for minutes."""
-        def _bounded(fn, timeout=4):
-            box={}
-            def _run():
-                try: box["v"]=fn()
-                except Exception as e: box["e"]=e
-            t=threading.Thread(target=_run, daemon=True); t.start(); t.join(timeout)
-            if t.is_alive(): return None            # timed out - thread is abandoned, harmless (read-only)
-            if "e" in box: raise box["e"]
-            return box.get("v")
-        rgb_intr=extr=rgb_dist=None
-        try: rgb_intr=_bounded(lambda: xu.rgb_intrinsics(rw, rh))
-        except Exception as e: log_line("rgb intrinsics: %s" % e)
-        try: extr=_bounded(lambda: xu.extrinsics())
-        except Exception as e: log_line("extrinsics: %s" % e)
-        try: rgb_dist=_bounded(lambda: xu.rgb_distort())
-        except Exception as e: log_line("rgb distort: %s" % e)
-        if rgb_intr and extr: self.q.put(("range_calib", (rgb_intr, extr, rgb_dist)))
-    def _range_disconnect(self):
-        self._range_on=False; self._range_busy=True; st=self._range_stream; col=self._range_color; xu=self._range
-        self.range_btn.configure(text="▶ Connect", fg_color=AC, state="disabled"); self.set_status("Stopping…")
-        def _off():
-            try:
-                if xu: xu.projector(False)        # while still streaming; the reboot below would also kill it
-                time.sleep(0.8)
-                if col: col.stop()
-                if st: st.stop()
-            except Exception as e: log_error("range-disconnect", e)
-            self.q.put(("range_off", None))
-        threading.Thread(target=_off, daemon=True).start()
-        self.after(15000, lambda: self._range_busy and self.q.put(("range_off", None)))   # watchdog: never leave the button dead
-    def _range_layout(self):
-        v=self.range_view.get()
-        if v=="All": self.range_single.grid_remove(); self.range_grid.grid()
-        else: self.range_grid.grid_remove(); self.range_single.grid()
-    def _range_rotate(self):
-        self.range_rot=(self.range_rot+90)%360; self.cfg["range_rot"]=self.range_rot
-        self.range_rot_btn.configure(text="↻ %d°" % self.range_rot)
-    def _range_frame(self, key):
-        """PIL image for one view (rotated to taste), or None if that stream has no frame yet."""
-        pil=self._range_raw(key)
-        return pil.rotate(self.range_rot, expand=True) if (pil is not None and self.range_rot) else pil
-    def _range_raw(self, key):
-        import range as R
-        st=self._range_stream; col=self._range_color
-        if key=="Depth":  return Image.fromarray(R.depth_to_image(st.latest)) if st and st.latest is not None else None
-        if key=="IR L":   return Image.fromarray(R.ir_to_image(st.ir_left)) if st and st.ir_left is not None else None
-        if key=="IR R":   return Image.fromarray(R.ir_to_image(st.ir_right)) if st and st.ir_right is not None else None
-        if key=="Color":  return Image.fromarray(col.latest) if col and col.latest is not None else None
-        if key=="Combined":
-            if st and st.latest is not None and col and col.latest is not None:
-                return Image.fromarray(R.combined_image(st.latest, col.latest, self._range_intr, self._range_rgb_intr, self._range_extr, self._range_rgb_dist))
-            return self._range_raw("Depth")
-        return None
-    def _range_show(self, label, pil, pad=16):
-        if pil is None: return
-        w=max(64, label.winfo_width()-pad); h=max(64, label.winfo_height()-pad); iw,ih=pil.size
-        sc=min(w/float(iw), h/float(ih)); size=(max(32,int(iw*sc)), max(32,int(ih*sc)))
-        key="range_%d" % id(label)
-        self.imgs[key]=ctk.CTkImage(light_image=pil, dark_image=pil, size=size)
-        label.configure(image=self.imgs[key], text="")
-    def _range_draw(self):
-        if not self._range_on: return
-        try:
-            import numpy as np
-            import range as R
-            st=self._range_stream; col=self._range_color
-            # a stream's own pump saw EOF (its v4l2-ctl process died - unplugged, powered off,
-            # crashed) or its device node just vanished. WE didn't ask for this (a deliberate
-            # disconnect already set _range_on False before this could run), so it's a surprise -
-            # reset the connection state instead of leaving stale frames on screen forever.
-            if (st is not None and (not st._on or not os.path.exists(st.node))) or \
-               (col is not None and (not col._on or not os.path.exists(col.node))):
-                self._range_lost("scanner disconnected"); return
-            if st and st.latest is not None:
-                n=st.count
-                if n != getattr(self, "_range_last_n", None):
-                    self._range_last_n=n; self._range_stale_t0=time.time()
-                elif time.time()-getattr(self, "_range_stale_t0", time.time()) > 8:
-                    self._range_lost("no frames for 8s"); return
-            v=self.range_view.get()
-            if v=="All":
-                for key,lab in self.range_tiles.items(): self._range_show(lab, self._range_frame(key), pad=6)
-            else:
-                self._range_show(self.range_single, self._range_frame(v))
-            if st and st.latest is not None:
-                fr=st.latest; nz=fr[fr>0]
-                self.range_info.configure(text="depth frames %d  ·  color frames %d  ·  valid %.0f%%  ·  depth %.0f-%.0f mm (median %.0f)" % (
-                    st.count, col.count if col else 0, 100*(fr>0).mean(), (nz.min()*0.1 if nz.size else 0), (nz.max()*0.1 if nz.size else 0), (np.median(nz)*0.1 if nz.size else 0)))
-                self._range_last_zones=R.distance_histogram(fr); self._range_dist_draw(self._range_last_zones)
-            else: self._range_last_zones=None; self._range_dist_draw(None)
-        except Exception as e: log_error("range-draw", e)
-        self.after(80, self._range_draw)
-    def _range_lost(self, reason):
-        """Unexpected loss of the scanner (unplugged, powered off, or a stalled stream) while we
-        thought we were connected: reset all our state and the UI immediately so nothing is left
-        stuck showing stale frames or a dead Connect button - the actual cable/USB is untouched,
-        this only cleans up our own side."""
-        if not self._range_on: return
-        self._range_on=False; self._range_busy=False
-        st=self._range_stream; col=self._range_color
-        self._range=None; self._range_stream=None; self._range_color=None
-        self._range_rgb_intr=None; self._range_extr=None; self._range_rgb_dist=None
-        self.range_btn.configure(text="▶ Connect", fg_color=AC, state="normal")
-        self.range_status.configure(text="Lost connection to the scanner (%s). Plug it back in, then hit Connect." % reason, text_color=WARN)
-        self.set_banner("Lost connection to the scanner - it may have been unplugged or powered off. Reconnect it, then hit Connect again.", WARN)
-        self.set_status("")
-        def _cleanup():                    # the process is already gone in the usual case; this is just belt-and-suspenders
-            for s in (col, st):
-                if not s: continue
-                try: s.stop()
-                except Exception as e: log_error("range-lost-cleanup", e)
-        threading.Thread(target=_cleanup, daemon=True).start()
-    def _range_dist_draw(self, zones):
-        """The scanner's own distance strip, recreated: a horizontal bar of Too Near/Excellent/Good/
-        Far/Too Far, filled by the live share of depth pixels in each zone."""
-        cv=self.range_dist; cv.delete("z")
-        w=max(1, cv.winfo_width()); h=cv.winfo_height() or 26
-        if not zones:
-            cv.create_text(6, h//2, text="no depth yet", fill=MUT, font=("", 10), anchor="w", tags="z"); return
-        cols={"Too Near": WARN, "Excellent": OK, "Good": AC, "Far": WARN, "Too Far": DANGER}
-        x=0
-        for lab, share in zones:
-            seg=max(1, w/len(zones))
-            fill=cols.get(lab, MUT); on=share>0.005
-            cv.create_rectangle(x, 2, x+seg-2, h-2, fill=(fill if on else "#1a1e28"), outline="", tags="z")
-            cv.create_text(x+seg/2, h//2, text=("%s %.0f%%" % (lab, share*100)) if seg>70 else ("%.0f%%" % (share*100)),
-                           fill=(BG if on else DIM), font=("", 9, "bold" if on else "normal"), tags="z")
-            x+=seg
-    def range_capture(self):
-        st=self._range_stream
-        if not self._range_on or st is None or st.latest is None:
-            self.set_banner("Connect the RANGE first, then Capture.", WARN); return
-        fr=st.latest.copy(); intr=self._range_intr; col=self._range_color
-        rgb=col.latest.copy() if col and col.latest is not None else None
-        dest=os.path.join(self.dest.get() or DEFAULT_DEST, "range"); os.makedirs(dest, exist_ok=True)
-        base=os.path.join(dest, "range_%s" % time.strftime("%Y%m%d_%H%M%S")); rot=self.range_rot
-        def _save():
-            try:
-                import range as R
-                P=R.rotate_cloud(R.backproject(fr, intr), rot)
-                if len(P)<100: self.q.put(("range_err", "Almost no depth in view - point the RANGE at something 30-80 cm away.")); return
-                R.save_cloud(P, base+".ply")
-                if rgb is not None: Image.fromarray(rgb).rotate(rot, expand=True).save(base+".jpg", quality=90)
-                self.q.put(("range_captured", (base+".ply", len(P))))
-            except Exception as e: log_error("range-capture", e); self.q.put(("range_err", "Capture failed: %s" % e))
-        threading.Thread(target=_save, daemon=True).start()
 
     # ---- WiFi: the scanner's Share to PC > Wi-Fi, received by us (wifi.py) ----
     def on_wifi(self):
@@ -6678,7 +6558,7 @@ class App(ctk.CTk):
         top=tk.Toplevel(self); top.title("Importing"); top.configure(bg=BG)
         try: top.transient(self.winfo_toplevel())
         except Exception: pass
-        top.geometry("520x500"); self._imp_top=top   # was 430: the graph + 4 stat tiles + button row overflowed, clipping the buttons
+        top.geometry(self._centred(520, 500)); self._imp_top=top   # was 430: the graph + 4 stat tiles + button row overflowed, clipping the buttons
         card=ctk.CTkFrame(top, fg_color=CARD, corner_radius=16); card.pack(fill="both", expand=True, padx=16, pady=16)
         self.imp_title=ctk.CTkLabel(card, text="Importing…", text_color=TX, font=ctk.CTkFont(size=15, weight="bold")); self.imp_title.pack(pady=(16,2))
         self.imp_sub=ctk.CTkLabel(card, text="Copying off the scanner…", text_color=MUT, font=ctk.CTkFont(size=11)); self.imp_sub.pack()
@@ -7504,7 +7384,7 @@ class App(ctk.CTk):
         return est
     def _start_zip(self, sel, dest, mode, scope="current"):
         self.pulling=True
-        self.zip_btn.configure(state="disabled")
+        self._btn_busy(self.zip_btn, "Zipping…")
         self.progress.grid(row=1,column=0, columnspan=4, sticky="ew", pady=(8,0)); self.progline.grid(row=2,column=0, columnspan=4, sticky="w", padx=(20,0), pady=(0,10))
         threading.Thread(target=self._zip_worker, args=(sel,dest,mode,scope), daemon=True).start()
     def _project_meshes(self, base, name):
@@ -7776,7 +7656,7 @@ class App(ctk.CTk):
                 elif kind=="done": self._finish(rest[0],rest[1], no_models=rest[2] if len(rest)>2 else [])
                 elif kind=="cancelled": self._finish(rest[0],rest[1], cancelled=True, no_models=rest[2] if len(rest)>2 else [])
                 elif kind=="zipped":
-                    zpath,sz,zfails=rest; self.pulling=False; self.zip_btn.configure(state="normal")
+                    zpath,sz,zfails=rest; self.pulling=False; self._btn_idle(self.zip_btn)
                     self.progress.set(0); self.progress.grid_remove()
                     self.progline.configure(text="Zipped -> %s (%s)"%(os.path.basename(zpath), human(sz)))
                     if self.auto_open.get(): subprocess.Popen(["xdg-open", os.path.dirname(zpath)])   # same option as imports
@@ -7786,7 +7666,7 @@ class App(ctk.CTk):
                         self.set_banner("ZIP ready in your save folder.", OK)
                     if self.auto_open.get(): self.open_folder()
                 elif kind=="zipfail":
-                    self.pulling=False; self.zip_btn.configure(state="normal"); self.progress.grid_remove()
+                    self.pulling=False; self._btn_idle(self.zip_btn); self.progress.grid_remove()
                     self.set_banner("ZIP failed: "+rest[0], WARN)
                 elif kind=="loader_msg":
                     token,msg=(rest[0], rest[1]) if len(rest)>1 else (None, rest[0])
@@ -7858,7 +7738,7 @@ class App(ctk.CTk):
                 elif kind=="fuse_done":
                     job_name,payload=(rest[0], rest[1]) if len(rest)>1 else (getattr(self, "_fuse_name", None), rest[0])
                     self._close_loader(); self._fusing=False
-                    try: self.proc_btn.configure(state="normal")
+                    try: self._btn_idle(self.proc_btn)
                     except Exception: pass
                     status, info = payload
                     if status=="ok":
@@ -7874,42 +7754,7 @@ class App(ctk.CTk):
                     else:
                         self.set_banner("Building the model failed - see Help > Log. %s" % (info or ""), WARN); self.set_status("")
                         if self.selected: self._proc_render(self.selected)
-                elif kind=="live_found":
-                    if rest[0]:
-                        self.live_ip.set(rest[0]); self.hold_banner("Scanner found at %s"%rest[0], OK)
-                        self.set_banner("Scanner found at %s - hit Connect on the Live tab."%rest[0], OK)
-                    else:
-                        self.set_status(""); self.set_banner("No scanner answering on port 9999 on this network (is its WiFi on?).", WARN)
-                elif kind=="live_err":
-                    self.live_btn.configure(text="▶ Connect", fg_color=AC); self.live_rate.configure(text="")
-                    self.live_txt.configure(text=rest[0], text_color=WARN); self.set_banner(rest[0], WARN); self._live_empty()
-                elif kind=="range_ok":
-                    dev,xu,intr,st,col,fw=rest[0]
-                    self._range=xu; self._range_intr=intr; self._range_stream=st; self._range_color=col; self._range_on=True; self._range_busy=False
-                    self._range_rgb_intr=None; self._range_extr=None; self._range_rgb_dist=None
-                    self._range_dev_name=dev.get("name","RANGE"); self._range_usb_path=dev["usb_path"]; self._range_fw=fw or "?"; self._range_has_col=bool(col)
-                    self.range_btn.configure(text="■ Disconnect", fg_color="#3a2530", state="normal")
-                    self.range_status.configure(text="%s connected  ·  usb %s  ·  firmware %s  ·  projector on%s" % (dev.get("name","RANGE"), dev["usb_path"], fw or "?", "" if col else "  ·  no color camera found"), text_color=OK)
-                    self.hold_banner("RANGE live", OK); self._range_layout(); self._range_draw()
-                elif kind=="range_calib":
-                    rgb_intr,extr,rgb_dist=rest[0]
-                    if self._range_on:
-                        self._range_rgb_intr=rgb_intr; self._range_extr=extr; self._range_rgb_dist=rgb_dist
-                        self.range_status.configure(text="%s connected  ·  usb %s  ·  firmware %s  ·  projector on  ·  aligned" %
-                                                     (getattr(self,"_range_dev_name","RANGE"), getattr(self,"_range_usb_path","?"), getattr(self,"_range_fw","?")), text_color=OK)
-                elif kind=="range_err":
-                    self._range_busy=False; self.range_btn.configure(state="normal")
-                    self.set_banner(rest[0], WARN); self.set_status(""); self.range_status.configure(text=rest[0], text_color=WARN)
-                elif kind=="range_off":
-                    if self._range_busy or self._range_on:
-                        self._range=None; self._range_stream=None; self._range_color=None; self._range_on=False; self._range_busy=False; self.set_status("")
-                        self._range_rgb_intr=None; self._range_extr=None; self._range_rgb_dist=None
-                        self.range_btn.configure(text="▶ Connect", fg_color=AC, state="normal")
-                        self.range_status.configure(text="Disconnected. The RANGE reboots itself now (normal after a stream stops) - back in about 10 s.", text_color=MUT)
-                elif kind=="range_captured":
-                    out,n=rest[0]
-                    self.set_banner("Captured %d points -> %s" % (n, os.path.basename(out)), OK); self.set_status("Captured -> %s" % os.path.basename(out))
-                    if self.auto_open.get(): subprocess.Popen(["xdg-open", os.path.dirname(out)])
+                elif self.live_on_queue(kind, rest): pass   # dev live-view events (no-op in shipped builds)
                 elif kind=="wifi": self._wifi_event(rest[0], rest[1])
                 elif kind=="loader_close":
                     self._close_loader(rest[0] if rest else None)
@@ -7917,7 +7762,7 @@ class App(ctk.CTk):
                     token,payload=(rest[0], rest[1]) if len(rest)>1 else (None, rest[0])
                     if token is not None and token!=getattr(self, "_base_job", None): return
                     self._close_loader(token); self._basing=False
-                    try: self.base_btn.configure(state="normal")
+                    try: self._btn_idle(self.base_btn)
                     except Exception: pass
                     status, info = payload[0], payload[1]
                     if status=="ok":
