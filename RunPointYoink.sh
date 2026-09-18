@@ -1,2 +1,3 @@
 #!/usr/bin/env bash
-exec "$HOME/pointyoink/venv/bin/python" "$HOME/pointyoink/pointyoink.py"
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/venv/bin/python" "$DIR/pointyoink.py"

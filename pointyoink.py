@@ -5981,7 +5981,7 @@ class App(LiveMixin, ctk.CTk):
         if not vs: return
         cur=self._proc_current(name, node) or vs[0]
         _home=os.path.expanduser("~")
-        def _tilde(p): return ("~"+p[len(_home):]) if p and (p==_home or p.startswith(_home+os.sep)) else p   # show ~/... not /home/<user>/... (dir boundary, so /home/rick_x isn't matched)
+        def _tilde(p): return ("~"+p[len(_home):]) if p and (p==_home or p.startswith(_home+os.sep)) else p   # show ~/... not /home/<user>/... (dir boundary, so /home/user_x isn't matched)
         t=self._top("Export · %s" % self._scan_label(name, node), 640, 360, key="export")
         if t is None: return
         card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)

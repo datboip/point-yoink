@@ -5,9 +5,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Linux-informational)
 
-**Get your Revopoint MIRACO scans onto Linux, and take them the rest of the way to a printable model.**
+**Pull your Revopoint MIRACO scans onto Linux, clean them up, and export them for printing.**
 
-Revo Scan, the software that goes with Revopoint scanners, runs on Windows, macOS, iOS and Android. There is no Linux version. PointYoink is a small desktop app that fills that gap: plug the MIRACO in (or use WiFi), pull the scans off, then build, cut the table off, combine sides, clean up and export STL, OBJ, GLB or PLY. Nothing leaves your machine and the originals are never touched.
+Revo Scan, the software that goes with Revopoint scanners, runs on Windows, macOS, iOS and Android. There is no Linux version. PointYoink is a small desktop app that fills that gap: plug the MIRACO in (or use WiFi), pull the scans off, then build, cut the base off, combine scans, clean up and export to STL, OBJ, GLB or PLY. Nothing goes online. The scanner's files are only copied, never changed, and every edit on the PC is saved as a new version.
 
 <p align="center">
   <img src="docs/img/v1/02-projects-preview.png" alt="PointYoink with a project open: the scan in 3D, the next step ready to go" width="920">
@@ -43,7 +43,7 @@ I did try the workaround everyone points to, running Revo Scan through Wine. It 
 - **MIRACO Pro**: tested and working. This is the scanner PointYoink was built on.
 - **MIRACO and MIRACO Plus**: same standalone design, so they should work, but I don't own one. Reports welcome.
 
-Tethered Revopoint scanners (POP, INSPIRE, RANGE, MINI, MetroX) are not supported. They keep their data on the host PC rather than on the device, so there is nothing to pull off them.
+Tethered Revopoint scanners (POP, INSPIRE, RANGE, MINI, MetroX) keep their scans on the host PC, not on the device, so there is nothing for PointYoink to pull; they are not supported.
 
 ## Install
 
@@ -70,7 +70,6 @@ python3 -m venv --system-site-packages venv
 
 Optional, for building and combining on the PC: `./venv/bin/pip install open3d` (about 400 MB; uses the GPU when there is one).
 
-You need a USB-C **data** cable. Some bundled cables only charge. If nothing shows up, try another cable before anything else.
 
 ## How to use
 
@@ -99,7 +98,7 @@ The app has three pages. **Import** is the scanner. **Projects** is this PC. **C
 
 <p align="center">
   <img src="docs/img/v1/g2-combine.png" alt="Combine: matching spots on two scans, then the overlay" width="450">
-  <img src="docs/img/v1/d3-export.png" alt="Export: format, folder, and the mesh check" width="450">
+  <img src="docs/img/v1/d3-export-dialog.png" alt="Export: format, folder, and the mesh check" width="450">
 </p>
 
 ## How it works
@@ -123,8 +122,10 @@ revopoint-scans-models/
 
 ## Troubleshooting
 
-- **Nothing detected:** tap File Transfer on the scanner; plugging in alone isn't enough. Try another USB-C cable, some only charge.
-- **Connect fails or hangs:** unplug, replug, tap File Transfer again.
+- **Nothing detected:** tap **File Transfer** on the scanner; plugging in alone isn't enough.
+- **The File Transfer pop-up never appears:** a quick replug often isn't enough. Unplug the cable, wait about ten seconds, plug it back in, and the scanner asks again.
+- **Still nothing:** try another USB-C cable. Some only charge.
+- **Connect fails or hangs:** unplug, wait, replug, tap File Transfer again.
 - **Previews are blank:** the scanner is still waking up. Click the project again.
 - Anything else: open **Log** from the menu, copy it, and open an issue.
 
@@ -132,8 +133,6 @@ revopoint-scans-models/
 
 - Pick a face to lay flat, the way slicers do, as another way to set the base.
 - Confirm the base MIRACO and MIRACO Plus and note any differences from the Pro.
-- An assembly view for parts that belong together but must stay separate.
-- Presets and a job queue for repeat work.
 
 ## Privacy
 
