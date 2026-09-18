@@ -106,7 +106,13 @@ def main():
         mesh.remove_duplicated_vertices(); mesh.remove_duplicated_triangles()
         mesh.remove_degenerate_triangles(); mesh.remove_unreferenced_vertices()
         if len(mesh.triangles) == 0: print("ball-pivoting produced no faces"); sys.exit(4)
-        tmp = a.outfile + ".tmp.ply"; o3d.io.write_triangle_mesh(tmp, mesh); os.replace(tmp, a.outfile)
+        tmp = a.outfile + ".tmp.%d.ply" % os.getpid()
+        ok = o3d.io.write_triangle_mesh(tmp, mesh)
+        if not ok or not os.path.exists(tmp) or os.path.getsize(tmp) < 64:   # never replace a good file with a failed write
+            try: os.remove(tmp)
+            except Exception: pass
+            print("ERROR could not write %s" % a.outfile, flush=True); return 3
+        os.replace(tmp, a.outfile)
         emit("done", out=os.path.basename(a.outfile), faces=len(mesh.triangles), verts=len(mesh.vertices))
         return
 

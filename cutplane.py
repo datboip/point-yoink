@@ -38,10 +38,11 @@ def main():
     if len(sys.argv) > 4 and sys.argv[3] == "--plane":
         v = sys.argv[4].split(","); given = ([float(v[0]), float(v[1]), float(v[2])], float(v[3]), v[4].lower() in ("1", "true", "yes"))
     import numpy as np, trimesh
-    m = trimesh.load(infile, force="mesh")
-    if len(m.faces) > 800000:
+    m_full = trimesh.load(infile, force="mesh")
+    m = m_full
+    if len(m_full.faces) > 800000 and given is None:     # the interactive view gets a lighter copy; the saved cut is always the full mesh
         import fast_simplification
-        v, f = fast_simplification.simplify(m.vertices, m.faces, target_count=800000)
+        v, f = fast_simplification.simplify(m_full.vertices, m_full.faces, target_count=800000)
         m = trimesh.Trimesh(v, f, process=False)
     V = np.asarray(m.vertices)
     rng = np.random.default_rng(0)
@@ -49,8 +50,8 @@ def main():
     # cut axis = dominant-plane normal (the table's normal); build 2 in-plane axes
     normal = np.array(given[0], float) if given else ransac_normal(V, rng)
     if given:
-        H = V.dot(normal); state = {"cut": given[1], "keep_above": given[2], "apply": True}
-        return finish(m, H, normal, state, outfile)
+        state = {"cut": given[1], "keep_above": given[2], "apply": True}
+        return finish(m_full, normal, state, outfile)
     a = np.array([1.0, 0, 0]) if abs(normal[0]) < 0.9 else np.array([0, 1.0, 0])
     u = np.cross(normal, a); u /= np.linalg.norm(u)
     w = np.cross(normal, u)
@@ -127,20 +128,23 @@ def main():
     if not state["apply"]:
         print("CUT_CANCELLED", flush=True); return 0
 
-    return finish(m, H, normal, state, outfile)
+    return finish(m_full, normal, state, outfile)
 
-def finish(m, H, normal, state, outfile):
-    import numpy as np, trimesh
-    # apply the cut to the (decimated) mesh, then keep the largest piece
+def finish(m, normal, state, outfile):
+    import numpy as np
+    # apply the cut to the full mesh. Everything on the kept side stays, including small separate pieces:
+    # the dialog promises "grey stays", and removing loose pieces is Prepare's job, not the cut's.
+    H = np.asarray(m.vertices).dot(normal)
     keepv = (H > state["cut"]) if state["keep_above"] else (H < state["cut"])
     keep_f = keepv[m.faces].all(axis=1)
     m.update_faces(keep_f); m.remove_unreferenced_vertices()
-    comps = trimesh.graph.connected_components(m.face_adjacency, min_len=1)
-    if len(comps) > 1:
-        largest = max(comps, key=len)
-        mask = np.zeros(len(m.faces), bool); mask[largest] = True
-        m.update_faces(mask); m.remove_unreferenced_vertices()
-    m.export(outfile)
+    tmp = "%s.tmp.%d.ply" % (outfile[:-4] if outfile.lower().endswith(".ply") else outfile, os.getpid())
+    m.export(tmp, file_type="ply")
+    if not os.path.exists(tmp) or os.path.getsize(tmp) < 64:
+        try: os.remove(tmp)
+        except Exception: pass
+        print("CUT_ERROR could not write the result", flush=True); return 3
+    os.replace(tmp, outfile)                          # never leave a half-written file where a good one was
     print("CUT_DONE " + json.dumps({"faces": len(m.faces), "mb": round(os.path.getsize(outfile) / 1048576, 1),
           "plane": {"n": [float(x) for x in normal], "d": float(state["cut"]), "keep_above": bool(state["keep_above"])}}), flush=True)
     return 0

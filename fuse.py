@@ -69,9 +69,9 @@ def main():
     ap.add_argument("--filter", type=float, default=3.0, help="per-frame clean-up: drop depth pixels at jumps bigger than this many mm and at grazing view angles (0 = off; the scanner does this)")
     ap.add_argument("--grazing", type=float, default=80.0, help="with --filter: drop pixels whose surface tilts more than this many degrees from the view ray")
     a = ap.parse_args()
-    if not a.gpu: apply_mem_cap()
-
     import numpy as np, open3d as o3d
+    # decide the real backend first: "--gpu" on a machine without CUDA runs on the CPU and needs the cap
+    if not (a.gpu and o3d.core.cuda.is_available()): apply_mem_cap()
     # one or more frame sets: (frames dir, calib, 4x4 transform in mm or None)
     sets = []
     if a.set:
@@ -224,7 +224,11 @@ def main():
     # back to mm for the rest of the pipeline
     mesh.scale(1000.0, center=(0, 0, 0))
     _tmp = a.out + ".tmp.%d.ply" % os.getpid()   # write to a temp then atomically replace: a crash/OOM mid-write must not truncate the previous good model (a rebuild has no .versions backup)
-    o3d.io.write_triangle_mesh(_tmp, mesh, write_ascii=False)
+    ok = o3d.io.write_triangle_mesh(_tmp, mesh, write_ascii=False)
+    if not ok or not os.path.exists(_tmp) or os.path.getsize(_tmp) < 64:   # a failed writer must never replace the previous good file
+        try: os.remove(_tmp)
+        except Exception: pass
+        print("ERROR could not write %s" % a.out, flush=True); return 3
     os.replace(_tmp, a.out)
     emit("done", verts=len(mesh.vertices), faces=len(mesh.triangles),
          mb=round(os.path.getsize(a.out) / 1048576, 1))

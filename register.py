@@ -55,8 +55,8 @@ def main():
     ap.add_argument("--chain-only", action="store_true", help="diagnostic: compose the neighbour fits by hand, no graph optimisation")
     ap.add_argument("--adj-max-shift", type=float, default=2.0, help="mm: a neighbour fit that moves further than this from the tracking is not trusted (the tracking is kept)")
     a = ap.parse_args()
-    if not a.gpu: apply_mem_cap()
     import open3d as o3d
+    if not (a.gpu and o3d.core.cuda.is_available()): apply_mem_cap()   # the CPU path is capped even when --gpu was asked for
     t0 = time.time()
     dphs = sorted(glob.glob(os.path.join(a.frames, "*.dph")))[::max(1, a.every)]
     dphs = [d for d in dphs if os.path.exists(d[:-4] + ".inf")]

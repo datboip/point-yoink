@@ -4567,7 +4567,7 @@ class App(LiveMixin, ctk.CTk):
             if st["H"] is None: return
             try: mm=float(cutvar.get())
             except Exception: return
-            st["cut"]=min(st["Hmax"], max(st["Hmin"], st["Hmin"]+mm))
+            st["cut"]=min(st["Hmax"], max(st["Hmin"], st["Hmin"]+mm)); st["anchor"]=None
             slider.set(1000.0*(st["cut"]-st["Hmin"])/max(1e-6, st["Hmax"]-st["Hmin"])); schedule()
         def _cut_step(d):
             try: v=float(cutvar.get())
@@ -4648,7 +4648,7 @@ class App(LiveMixin, ctk.CTk):
         def schedule():
             if st["job"] is None: st["job"]=t.after(60, paint)
         def on_slide(v):
-            st["cut"]=st["Hmin"]+(st["Hmax"]-st["Hmin"])*float(v)/1000.0; schedule()
+            st["cut"]=st["Hmin"]+(st["Hmax"]-st["Hmin"])*float(v)/1000.0; st["anchor"]=None; schedule()
         slider.configure(command=on_slide)
         def flip(): st["keep_above"]=not st["keep_above"]; schedule()
         flipb.configure(command=flip)
@@ -4665,7 +4665,7 @@ class App(LiveMixin, ctk.CTk):
             low=H[H<lo+0.35*rng]; hist,edges=np.histogram(low, bins=60); h_tab=float(0.5*(edges[hist.argmax()]+edges[hist.argmax()+1]))
             st["n"]=n; st["H"]=H; st["Hmin"]=lo; st["Hmax"]=float(H.max())
             st["cut"]=float(start) if start is not None else min(st["Hmax"], h_tab+0.02*(st["Hmax"]-st["Hmin"]))
-            if base: st["keep_above"]=True; st["n_base"]=n.copy(); _tilt_zero()
+            if base: st["keep_above"]=True; st["n_base"]=n.copy(); st["anchor"]=None; _tilt_zero()
             self._btn_idle(applyb)                             # a plane exists: Apply is live
             slider.set(1000.0*(st["cut"]-st["Hmin"])/max(1e-6, st["Hmax"]-st["Hmin"])); paint()
         def _blank_cut():
@@ -4684,7 +4684,7 @@ class App(LiveMixin, ctk.CTk):
             if k<3: _blank_cut(); dirhint.configure(text="%d of 3 spots" % k); return
             # best-fit plane through every spot (least squares): more spots average out a wobbly click
             P=np.array(st["picks"]); c=P.mean(0); _,sv,vt=np.linalg.svd(P-c); n=vt[2]
-            if k==3 and sv[1]<1e-6: _blank_cut(); dirhint.configure(text="those spots are in a line, click another"); return
+            if sv[1] < 1e-3*max(sv[0], 1e-9): _blank_cut(); dirhint.configure(text="those spots are in a line, click another"); return
             n=n/np.linalg.norm(n)
             if float(np.dot(n, -st["V"].mean(0)))<0: n=-n                     # toward the camera = up
             level=float(c.dot(n)); spread=float(np.abs((P-c).dot(n)).max())
@@ -4701,6 +4701,10 @@ class App(LiveMixin, ctk.CTk):
             st["picks"].append(w); view.markers.append((viewpt, self.PAIR_COLOURS[(len(st["picks"])-1) % len(self.PAIR_COLOURS)]))
             _fit_spots()
         def undo_spot(_=None):
+            try:
+                f=t.focus_get()
+                if f is not None and f.winfo_class() in ("Entry", "TEntry", "Text"): return   # typing in a field: leave it alone
+            except Exception: pass
             if not st["picks"] or view.on_pick is None: return                 # only while clicking spots
             st["picks"].pop()
             if view.markers: view.markers.pop()
@@ -4736,11 +4740,19 @@ class App(LiveMixin, ctk.CTk):
             def _deg(v):
                 try: return max(-30.0, min(30.0, float(v.get())))
                 except Exception: return 0.0
-            ax=np.radians(_deg(tiltx)); ay=np.radians(_deg(tilty))
+            dx, dy=_deg(tiltx), _deg(tilty)
+            try:
+                if float(tiltx.get())!=dx: tiltx.set(dx)
+                if float(tilty.get())!=dy: tilty.set(dy)
+            except Exception: pass
+            ax=np.radians(dx); ay=np.radians(dy)
+            if st.get("anchor") is None and st["n"] is not None:              # pivot: the point on the current plane nearest the model centre
+                m=st["V"].mean(0); n0=st["n"]; st["anchor"]=m+n0*(st["cut"]-float(m.dot(n0)))
             a=np.array([1.0,0.0,0.0]) if abs(nb[0])<0.9 else np.array([0.0,1.0,0.0])
             u=np.cross(nb,a); u/=np.linalg.norm(u)+1e-9; w=np.cross(nb,u)
             def rot(v,k,th): return v*np.cos(th)+np.cross(k,v)*np.sin(th)+k*np.dot(k,v)*(1-np.cos(th))
-            use_normal(rot(rot(nb,u,ax),w,ay), start=st["cut"], base=False)
+            n2=rot(rot(nb,u,ax),w,ay); n2/=np.linalg.norm(n2)+1e-9
+            anc=st.get("anchor"); use_normal(n2, start=(float(anc.dot(n2)) if anc is not None else st["cut"]), base=False)
         def ready(ok):
             if not t.winfo_exists(): return
             if not ok or getattr(view, "_src", None) is None or view.tf is None:
@@ -4770,8 +4782,10 @@ class App(LiveMixin, ctk.CTk):
             try:                                   # keep whatever prepared copy the cut is about to replace (Prepare does the same)
                 if os.path.exists(out):
                     vdir=os.path.join(local, ".versions"); os.makedirs(vdir, exist_ok=True)
-                    bk=os.path.join(vdir, "%s_clean_%s.ply" % (node, time.strftime("%Y%m%d-%H%M%S"))); shutil.copy2(out, bk)
-                    self.records.setdefault(name,{}).setdefault("base_cut_backup",{})[node]=bk; self._persist()
+                    bk=self._unique_archive(vdir, "%s_clean" % node); shutil.copy2(out, bk)
+                    _r=self.records.setdefault(name,{})
+                    _r.setdefault("base_cut_backup",{})[node]={"file": bk, "plane": (_r.get("base_plane",{}) or {}).get(node), "current": (_r.get("current",{}) or {}).get(node)}
+                    self._persist()
             except Exception as e:                 # no backup, no cut: never overwrite the only copy
                 log_error("cut-backup", e); st["busy"]=False; self._btn_idle(applyb)
                 status.configure(text="Couldn't back up the current prepared model, so the cut was not run (see Help > Log).", text_color=WARN); return
@@ -4812,6 +4826,15 @@ class App(LiveMixin, ctk.CTk):
             except Exception as e:
                 log_error("base-copy", e); done(("err", "copy failed", node, None, name)); return
         out=os.path.join(outdir, "%s_%s_clean.ply" % (name, node)) if node else os.path.splitext(path)[0]+"_clean.ply"
+        if node and os.path.exists(out):               # keep the prepared copy the cut will replace; no backup, no cut
+            try:
+                vdir=os.path.join(outdir, ".versions"); os.makedirs(vdir, exist_ok=True)
+                bk=self._unique_archive(vdir, "%s_clean" % node); shutil.copy2(out, bk)
+                _r=self.records.setdefault(name,{})
+                _r.setdefault("base_cut_backup",{})[node]={"file": bk, "plane": (_r.get("base_plane",{}) or {}).get(node), "current": (_r.get("current",{}) or {}).get(node)}
+            except Exception as e:
+                log_error("cut-backup", e); done(("err", "could not back up the current prepared model, so the cut was not run", node, None, name)); return
+        ended=False
         try:
             os.makedirs(outdir, exist_ok=True)
             tool=os.path.join(HERE, "cutplane.py")
@@ -4826,14 +4849,17 @@ class App(LiveMixin, ctk.CTk):
                     elif ln.startswith("CUT_DONE"):
                         try: payload=json.loads(ln[9:])
                         except Exception: payload={}
-                        done(("ok", out, node, payload.get("plane"), name)); break
-                    elif ln.startswith("CUT_CANCELLED"): done(("cancel", None, node, None, name)); break
-                    elif ln.startswith("CUT_ERROR"): log_line("cutplane: "+ln); done(("err", ln, node, None, name)); break
+                        done(("ok", out, node, payload.get("plane"), name)); ended=True; break
+                    elif ln.startswith("CUT_CANCELLED"): done(("cancel", None, node, None, name)); ended=True; break
+                    elif ln.startswith("CUT_ERROR"): log_line("cutplane: "+ln); done(("err", ln, node, None, name)); ended=True; break
                 proc.wait()
             finally:
                 self._forget_child(proc)
+            if not ended:                              # the tool died without saying so (killed, OOM, crash): never leave the button stuck
+                done(("err", "the cut tool stopped without finishing (exit code %s)" % proc.returncode, node, None, name))
         except Exception as e:
-            log_error("base-launch", e); done(("err", str(e), node, None, name))
+            log_error("base-launch", e)
+            if not ended: done(("err", str(e), node, None, name))
 
     # ---- process on PC: raw depth frames -> fused mesh, via fuse.py (Open3D TSDF) ----
     # ---- Process page ----
@@ -5188,20 +5214,40 @@ class App(LiveMixin, ctk.CTk):
             return ("Prepare the %s model" % lab.lower() if target=="combined" else "Prepare %s" % lab, "Remove floating pieces, smooth, fill holes. You see before and after and keep or discard.",
                     "✦  Prepare…", lambda: self._prepare_dialog(name, target), 3, undo)
         return ("Export", "%s is prepared. Save it as STL for a slicer, or OBJ, GLB, PLY." % lab, "⬆  Export…", lambda: self._export_dialog(name, target), 4, undo)
+    def _unique_archive(self, vdir, stem):
+        """A new file name under .versions/ that cannot collide with anything already there, even two
+        saves in the same second: created exclusively, so the caller can write to it straight away."""
+        base=time.strftime("%Y%m%d-%H%M%S")
+        for i in range(1000):
+            cand=os.path.join(vdir, "%s_%s%s.ply" % (stem, base, "" if i==0 else "-%d" % i))
+            try:
+                fd=os.open(cand, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644); os.close(fd); return cand
+            except FileExistsError: continue
+        raise OSError("could not find a free archive name in %s" % vdir)
     def _undo_base_cut(self, name, node):
         """Put a scan back the way it was before Remove base: the cut copy is trashed (or the prepared copy it
         replaced is restored), the remembered plane is forgotten, and the scan shows the scanner's model again."""
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name); out=os.path.join(local, "%s_%s_clean.ply" % (name, node))
-        rec=self.records.setdefault(name,{}); bk=(rec.get("base_cut_backup",{}) or {}).get(node); restored=False
+        rec=self.records.setdefault(name,{}); ent=(rec.get("base_cut_backup",{}) or {}).get(node)
+        if isinstance(ent, str): ent={"file": ent, "plane": None, "current": None}        # older record shape
+        bk=(ent or {}).get("file"); restored=False
+        if bk and not os.path.exists(bk):
+            # a backup was recorded but its file is gone: refuse rather than trash what may be the restored model
+            self.set_banner("Can't undo: the saved copy from before the cut is missing (%s)." % os.path.basename(bk), WARN); return
         try:
-            if bk and os.path.exists(bk): shutil.move(bk, out); os.utime(out, None); restored=True
+            if bk: shutil.move(bk, out); restored=True
             elif os.path.exists(out):
                 if not self._trash(out): raise OSError("could not move %s to the trash" % out)
-        except Exception as e:                     # nothing changed on disk, so change nothing in the records either
+        except Exception as e:                     # the move or trash did not happen, so leave the records alone
             log_error("undo-base-cut", e); self.set_banner("Couldn't undo the cut (see Help > Log).", WARN); return
+        if restored:
+            try: os.utime(out, None)               # freshness for the preview cache; the restore itself already succeeded
+            except Exception: pass
         (rec.get("base_cut_backup",{}) or {}).pop(node, None)
-        (rec.get("base_plane",{}) or {}).pop(node, None)
-        if restored: rec.setdefault("current",{})[node]="clean"
+        prior=(ent or {}).get("plane")
+        if restored and prior: rec.setdefault("base_plane",{})[node]=prior      # the copy we restored was itself a cut: keep its plane
+        else: (rec.get("base_plane",{}) or {}).pop(node, None)
+        if restored: rec.setdefault("current",{})[node]=(ent or {}).get("current") or "clean"
         else: (rec.get("current",{}) or {}).pop(node, None)          # back to the default: the scanner's model
         self._persist(); self.projects_sig=None; self._mesh_stats={}; self.gallery_cache.pop(name, None)
         self.set_banner("%s: base cut undone%s." % (self._scan_label(name, node), " - the prepared copy is back" if restored else ""), OK)
@@ -5761,7 +5807,9 @@ class App(LiveMixin, ctk.CTk):
             vdir=os.path.join(os.path.dirname(final), ".versions"); os.makedirs(vdir, exist_ok=True)
             cur_arch=None
             if os.path.exists(final):
-                cur_arch=os.path.join(vdir, "%s_clean_%s.ply" % (node, time.strftime("%Y%m%d-%H%M%S"))); shutil.copy2(final, cur_arch)
+                cur_arch=self._unique_archive(vdir, "%s_clean" % node)
+                if os.path.abspath(cur_arch)==os.path.abspath(arch): raise OSError("backup would overwrite the version being restored")
+                shutil.copy2(final, cur_arch)
             shutil.copy2(arch, final); os.utime(final, None)   # copy2 keeps the archive's OLD mtime; bump it to now, or the freshness-by-mtime preview/mesh cache serves the PREVIOUS version and Restore shows the wrong model
         except Exception as e: log_error("prep restore", e); self.set_banner("Could not restore that version (see Help > Log).", WARN); return
         for h in hist:
@@ -5808,7 +5856,8 @@ class App(LiveMixin, ctk.CTk):
         t=self._top("Prepare · %s" % self._scan_label(name, node), 960, 780, key="prepare")
         if t is None: return
         t.resizable(False, False)     # lock it: long option text / the After render must not make the window jump sizes
-        src=cur[2]; final=os.path.join(os.path.dirname(src), "%s_%s_clean.ply" % (name, node)); tmp=final[:-4]+".tmp.ply"
+        src=cur[2]; final=os.path.join(self.dest.get() or DEFAULT_DEST, name, "%s_%s_clean.ply" % (name, node))   # project root: where the version list looks, even for a nested source
+        tmp="%s.tmp-%d-%x.ply" % (final[:-4], os.getpid(), id(t))          # unique to this dialog: two open Prepare windows never share a result file
         pstate={"opts": None}     # the settings that produced the current tmp, recorded into history on Save
         card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
         ctk.CTkLabel(card, text="Starting from the version “%s” · %s" % (cur[1], human(os.path.getsize(src))), text_color=MUT, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=18, pady=(14,6))
@@ -5865,6 +5914,7 @@ class App(LiveMixin, ctk.CTk):
         def able(b, on, fill=AC):
             b.configure(state=("normal" if on else "disabled"), fg_color=(fill if on else CARD2), text_color=("#04121f" if on else DIM), text_color_disabled=DIM)
         def close():
+            pstate["closed"]=True
             try:
                 if os.path.exists(tmp): os.remove(tmp)
             except Exception: pass
@@ -5878,7 +5928,7 @@ class App(LiveMixin, ctk.CTk):
                     # This MUST succeed before we overwrite: the UI promises earlier versions are preserved,
                     # so if the backup fails we abort rather than destroy the previous version.
                     vdir=os.path.join(os.path.dirname(final), ".versions"); os.makedirs(vdir, exist_ok=True)
-                    prev_archive=os.path.join(vdir, "%s_clean_%s.ply" % (node, time.strftime("%Y%m%d-%H%M%S")))
+                    prev_archive=self._unique_archive(vdir, "%s_clean" % node)
                     shutil.copy2(final, prev_archive)
                 os.replace(tmp, final)
             except Exception as e:
@@ -5904,6 +5954,9 @@ class App(LiveMixin, ctk.CTk):
             t.after(1000, tick)
             def work():
                 ok=self._clean_subprocess(src, tmp, clean_opts)
+                if pstate.get("closed"):                         # dialog closed while we ran: drop the orphaned result
+                    try: os.remove(tmp)
+                    except Exception: pass
                 def done():
                     if not t.winfo_exists(): return
                     able(runb, True)
@@ -7441,7 +7494,11 @@ class App(LiveMixin, ctk.CTk):
                     for f in glob.glob(os.path.join(base,"*")):
                         if f.endswith(".tmp.ply") or not f.lower().endswith((".ply",".stl",".obj",".glb")): continue
                         st=os.path.splitext(os.path.basename(f))[0]
-                        if st in keep or f.endswith("_cloud.ply"): files.append((f, os.path.basename(f)))
+                        if st in keep or f.endswith("_cloud.ply"):
+                            if not f.lower().endswith(".ply"):           # a converted copy: only if it is at least as new as its PLY
+                                src=os.path.join(base, st+".ply")
+                                if os.path.exists(src) and os.path.getmtime(f) < os.path.getmtime(src): log_line("zip: skipping stale %s" % os.path.basename(f)); continue
+                            files.append((f, os.path.basename(f)))
                     for p in self._scope_meshes(base, name, "current"):      # nested device-mirror layout
                         if os.sep+"data"+os.sep in p:
                             node=os.path.basename(os.path.dirname(p)); stem,ext=os.path.splitext(os.path.basename(p))
@@ -7456,21 +7513,28 @@ class App(LiveMixin, ctk.CTk):
                             files.append((f, "%s_%s_%s%s" % (name, node, stem, ext)))
                 else:  # all
                     for root,dirs,fs in os.walk(base):
-                        dirs[:]=[d for d in dirs if d!="cache"]
                         for f in fs:
-                            if f.endswith(".tmp.ply"): continue      # never ship a half-written Prepare temp file
+                            if ".tmp" in f and f.endswith(".ply"): continue      # never ship a half-written temp file
                             fp=os.path.join(root,f); files.append((fp, os.path.join(name, os.path.relpath(fp, base))))
             if not files:
                 self.q.put(("zipfail", ("%d conversion(s) failed, nothing to zip - see Help > Log" % zfails) if zfails
                             else ("no current model version to export - pick a model for each scan, or choose All versions" if scope=="current"
                                   else "no matching files (try importing with that format first)"))); return
-            total=len(files)
-            with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
-                for i,(fp,arc) in enumerate(files):
-                    self.q.put(("prog", i/total, "Zipping %d/%d - %s"%(i+1,total,os.path.basename(fp))))
-                    try: z.write(fp, arc)
-                    except Exception as e: zfails+=1; log_error("zip "+arc, e)
-            self.q.put(("zipped", zpath, os.path.getsize(zpath), zfails))
+            total=len(files); ztmp="%s.tmp-%d.zip" % (zpath[:-4] if zpath.lower().endswith(".zip") else zpath, os.getpid())
+            try:
+                with zipfile.ZipFile(ztmp, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+                    for i,(fp,arc) in enumerate(files):
+                        self.q.put(("prog", i/total, "Zipping %d/%d - %s"%(i+1,total,os.path.basename(fp))))
+                        try: z.write(fp, arc)
+                        except Exception as e: zfails+=1; log_error("zip "+arc, e)
+                if zfails:                                   # incomplete: keep whatever ZIP was there before
+                    os.remove(ztmp); self.q.put(("zipfail", "%d file(s) could not be added, so the ZIP was not written - see Help > Log" % zfails)); return
+                os.replace(ztmp, zpath)
+            except Exception:
+                try: os.remove(ztmp)
+                except Exception: pass
+                raise
+            self.q.put(("zipped", zpath, os.path.getsize(zpath), 0))
         except Exception as e:
             log_error("zip", e); self.q.put(("zipfail", str(e)))
     def _finish(self, dest, failed, cancelled=False, no_models=None):
