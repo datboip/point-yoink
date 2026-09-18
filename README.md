@@ -10,6 +10,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Linux-informational)
 
+[Download](https://github.com/datboip/point-yoink/releases/latest) · [Install](#install) · [Report a bug](https://github.com/datboip/point-yoink/issues/new) · [Request a feature](https://github.com/datboip/point-yoink/issues/new)
+
 **Pull your Revopoint MIRACO scans onto Linux, clean them up, and export them for editing or printing.**
 
 Revo Scan, the software that goes with Revopoint scanners, runs on Windows, macOS, iOS and Android. There is no Linux version. PointYoink is a small desktop app that fills that gap: plug the MIRACO in (or use WiFi), pull the scans off, then build, cut the base off, combine scans, clean up and export to STL, OBJ, GLB or PLY. Your scans stay on your computer. The scanner's files are only copied, never changed.
