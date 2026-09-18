@@ -1,5 +1,6 @@
 <p align="center">
-  <img src="docs/img/v1/splash.gif" alt="PointYoink starting up" width="260">
+  <img src="docs/img/v1/splash.gif" alt="PointYoink starting up" width="300">
+  <img src="docs/img/v1/spin-model.gif" alt="A scan turning in the 3D preview" width="420">
 </p>
 
 # PointYoink
