@@ -3,7 +3,7 @@
 # MIT licensed. See LICENSE.
 # Unofficial. Not affiliated with or endorsed by Revopoint.
 # "Revopoint" and "MIRACO" are trademarks of their respective owners.
-import os, re, json, time, glob, shutil, threading, subprocess, queue, faulthandler, signal
+import os, re, json, time, glob, shutil, threading, subprocess, queue, faulthandler, signal, tempfile
 # Every subprocess we spawn for heavy work (fuse.py, process.py, align.py, cutplane.py) already
 # caps BLAS threading - but in-process numpy/scipy/trimesh calls (mesh stats, thumbnails) never
 # did, so a single call could spawn one BLAS thread per CPU core and peg the whole machine for
@@ -47,7 +47,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "1.0.0-rc1"
+APP = "PointYoink"; VERSION = "1.0.0-rc2"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -78,6 +78,11 @@ def _icon(name, state="default", size=18, color=None):
             ci=ctk.CTkImage(dark_image=img, light_image=img, size=(size, size)); break
         except Exception: continue
     _icon_cache[key]=ci; return ci
+def _is_tmp(path):
+    """True for any in-progress output file (Prepare/rebuild/export/ZIP temps: <stem>.tmp.<pid>.ext,
+    <stem>.tmp-<pid>-<id>.ext, <stem>.part-<pid>.ext). One rule for every place that lists or ships models,
+    so a half-written file never shows up as a scan or lands in a ZIP."""
+    b=os.path.basename(path); return ".tmp." in b or ".tmp-" in b or ".part-" in b
 def _icon_blank(size=16):
     """A transparent square the size of an icon, so rows without one still line up with rows that have one."""
     key=("", "blank", size, None)
@@ -607,7 +612,7 @@ def list_local_projects(dest):
             for suf in ("_pcfused","_clean"):
                 if n.endswith(suf): n=n[:-len(suf)]
             return n
-        flat=[x for x in glob.glob(os.path.join(pdir, name+"_*.ply")) if not x.endswith("_cloud.ply") and not x.endswith(".tmp.ply")]
+        flat=[x for x in glob.glob(os.path.join(pdir, name+"_*.ply")) if not x.endswith("_cloud.ply") and not _is_tmp(x)]
         nested=glob.glob(os.path.join(pdir, "data", "*", "fuse_mesh.ply"))
         clouds=glob.glob(os.path.join(pdir, name+"_*_cloud.ply")) or glob.glob(os.path.join(pdir, "data", "*", "fuse.ply"))
         mesh_nodes=set(node_of(x) for x in flat) | set(os.path.basename(os.path.dirname(x)) for x in nested)
@@ -1258,12 +1263,15 @@ class App(LiveMixin, ctk.CTk):
     def _stall_guard(self, proc, idle, what, cancel=False):
         """Stop a child that goes quiet: if it prints nothing for `idle` seconds (or, with cancel=True, the
         user cancels) it is terminated, then killed, so its read loop ends and the job reports a failure
-        instead of hanging forever. Returns touch(); call it on every line the child prints."""
-        last=[time.monotonic()]
+        instead of hanging forever. Returns touch(); call it on every line the child prints. touch.off()
+        ends the watch for a child that is meant to go quiet (the interactive viewer once it is drawn)."""
+        last=[time.monotonic()]; off=[False]
         def touch(): last[0]=time.monotonic()
+        touch.off=lambda: off.__setitem__(0, True)
         def run():
-            while proc is not None and proc.poll() is None:
+            while proc is not None and proc.poll() is None and not off[0]:
                 time.sleep(2.0)
+                if off[0]: return
                 quiet=time.monotonic()-last[0] > idle
                 if quiet or (cancel and self.cancel):
                     try: log_line("%s: %s, stopping it" % (what, "no output for %ds" % idle if quiet else "cancelled"))
@@ -1727,7 +1735,7 @@ class App(LiveMixin, ctk.CTk):
         pm=self.mode_frames["Projects"]
         pm.grid_columnconfigure(2, weight=1); pm.grid_rowconfigure(0, weight=1)
 
-        # -- left: On your scanner --
+        # Left: On your scanner
         left=ctk.CTkFrame(pm, fg_color="transparent", width=300); left.grid(row=0,column=0, sticky="nsew")
         left.grid_propagate(False); left.grid_rowconfigure(2, weight=1); left.grid_columnconfigure(0, weight=1)
         lh=ctk.CTkFrame(left, fg_color="transparent"); lh.grid(row=0,column=0, sticky="ew", padx=(18,10), pady=(14,8))
@@ -1739,7 +1747,7 @@ class App(LiveMixin, ctk.CTk):
                       font=ctk.CTkFont(size=10), command=self.select_all); b2.pack(side="right")
         self.list_selbtns=[b1, b2]
         srow=ctk.CTkFrame(left, fg_color="transparent"); srow.grid(row=1,column=0, sticky="ew", padx=18, pady=(0,6)); srow.grid_columnconfigure(0, weight=1)
-        se=ctk.CTkEntry(srow, placeholder_text="⌕  Search projects…", height=34, corner_radius=8,
+        se=ctk.CTkEntry(srow, placeholder_text="Search projects…", height=34, corner_radius=8,
                         fg_color="#0d0f14", border_color=STROKE, text_color=TX, placeholder_text_color=MUT, font=ctk.CTkFont(size=12))
         se.grid(row=0,column=0, sticky="ew"); self._search_entry=se
         se.bind("<KeyRelease>", lambda e: (self.search.set(se.get()), self._sync_search_clear()))
@@ -1756,7 +1764,7 @@ class App(LiveMixin, ctk.CTk):
         self.sel_lbl.grid(row=4,column=0, sticky="ew", padx=18, pady=(7,12))
         tk.Frame(pm, bg=STROKE, width=1, bd=0, highlightthickness=0).grid(row=0,column=1, sticky="ns")
 
-        # -- centre: title, tabs (3D preview | Files), preview, scan strip --
+        # Centre: title, tabs (3D preview | Files), preview, scan strip
         centre=ctk.CTkFrame(pm, fg_color="transparent"); centre.grid(row=0,column=2, sticky="nsew", padx=14)
         centre.grid_columnconfigure(0, weight=1); centre.grid_rowconfigure(1, weight=1)
         tb=ctk.CTkFrame(centre, fg_color="transparent"); tb.grid(row=0,column=0, sticky="ew", pady=(12,2)); tb.grid_columnconfigure(0, weight=1)
@@ -1844,7 +1852,7 @@ class App(LiveMixin, ctk.CTk):
         self.files_list.grid(row=1,column=0, sticky="ew"); self.files_list.grid_columnconfigure(0, weight=1); self._autohide(self.files_list)
         self._folder_tab=fl
 
-        # -- right: Import options (always visible, scrolls) --
+        # Right: Import options (always visible, scrolls)
         tk.Frame(pm, bg=STROKE, width=1, bd=0, highlightthickness=0).grid(row=0,column=3, sticky="ns")
         self.side=ctk.CTkFrame(pm, fg_color="transparent", width=278); self.side.grid(row=0,column=4, sticky="nsew")
         self.side.grid_propagate(False); self.side.grid_columnconfigure(0, weight=1); self.side.grid_rowconfigure(0, weight=1)
@@ -1856,7 +1864,7 @@ class App(LiveMixin, ctk.CTk):
         self._build_edit_palette(self.editpanel)   # the point/mesh editor tools live here (shown in place of the project panel while editing)
         self.rail_btns={}; self.rail_bars={}
 
-        # -- Process mode: the selected project's scans, each with its versions and the tools --
+        # Process mode: the selected project's scans, each with its versions and the tools
         self._build_process_page(self.mode_frames["Process"])
 
         # Captures mode: device screenshots AND screen recordings, out of the project list
@@ -1865,7 +1873,7 @@ class App(LiveMixin, ctk.CTk):
         sctop=ctk.CTkFrame(sc, fg_color="transparent"); sctop.grid(row=0,column=0, sticky="ew", padx=10, pady=(10,4))
         self.shots_lbl=ctk.CTkLabel(sctop, text="Screenshots & recordings on the device", text_color=MUT,
                                     font=ctk.CTkFont(size=12)); self.shots_lbl.pack(side="left")
-        _pab=ctk.CTkButton(sctop, text="⤓ Pull all", width=96, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
+        _pab=ctk.CTkButton(sctop, text="Pull all", image=_icon("import", "default", 14), compound="left", width=96, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
                       hover_color=CARD2, text_color=TX, command=self.pull_screenshots); _pab.pack(side="right", padx=4)
         self._tip(_pab, "Copy every screenshot & recording off the scanner into your save folder's “captures” subfolder (Open folder shows where).")
         ctk.CTkButton(sctop, text="Refresh", image=_icon("refresh", "default", 14), compound="left", width=96, height=30, corner_radius=8, fg_color=CARD2,
@@ -1961,7 +1969,7 @@ class App(LiveMixin, ctk.CTk):
         self._title(op, "Destination")
         dr=ctk.CTkFrame(op, fg_color="transparent"); dr.pack(fill="x", padx=6, pady=(2,0)); dr.grid_columnconfigure(0, weight=1)
         ctk.CTkEntry(dr, textvariable=self.dest, fg_color="#0d0f14", border_color=STROKE, text_color=TX, corner_radius=8, height=36).grid(row=0,column=0, sticky="ew")
-        bb=ctk.CTkButton(dr, text="\U0001F4C1", width=40, height=36, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
+        bb=ctk.CTkButton(dr, text="", image=_icon("box", "default", 16), width=40, height=36, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
                          hover_color=CARD2, text_color=TX, command=self.browse); bb.grid(row=0,column=1, padx=(6,0)); self._tip(bb, "Choose the save folder")
         self._opt(op, "check", "Open folder when done", None, self.auto_open)
         # save folder browser: in the Files tab under the project's file list
@@ -2932,7 +2940,7 @@ class App(LiveMixin, ctk.CTk):
             ml=ctk.CTkFrame(txt, fg_color="transparent"); ml.pack(anchor="w", fill="x", pady=(2,0))
             badges=[]
             if p.get("local"): badges.append(("on this PC", AC, "#15304d"))
-            elif self.is_imported(name): badges.append(("↑ updated", WARN, "#3d2f14") if self.changed(name) else ("Imported", OK, "#173a2a"))
+            elif self.is_imported(name): badges.append(("updated", WARN, "#3d2f14") if self.changed(name) else ("Imported", OK, "#173a2a"))
             else: badges.append(("on the scanner", MUT, CARD2))
             if p.get("nodes") and (p.get("local") or p.get("on_pc")):
                 dm=p.get("dev_meshed") or 0
@@ -3768,7 +3776,7 @@ class App(LiveMixin, ctk.CTk):
                 if os.path.exists(out) and os.path.getsize(out)>1024:   # keep the previous edited model
                     # if we can't back it up, ABORT rather than overwrite it - the old edited version must not be lost
                     vdir=os.path.join(local, ".versions"); os.makedirs(vdir, exist_ok=True)
-                    shutil.copy2(out, os.path.join(vdir, "%s_edited_%s.ply" % (node, time.strftime("%Y%m%d-%H%M%S"))))
+                    shutil.copy2(out, self._unique_archive(vdir, node+"_edited"))
                 if is_mesh:
                     import trimesh
                     verts,faces=payload
@@ -4444,7 +4452,7 @@ class App(LiveMixin, ctk.CTk):
     def _find_mesh(self, name):
         """Largest mesh for a project: prefer the local flat copy, then a full-import mirror, then the device."""
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
-        flat=[p for p in glob.glob(os.path.join(local, name+"_*.ply")) if not p.endswith("_cloud.ply") and not p.endswith(".tmp.ply")]
+        flat=[p for p in glob.glob(os.path.join(local, name+"_*.ply")) if not p.endswith("_cloud.ply") and not _is_tmp(p)]
         if flat:
             try: return max(flat, key=os.path.getsize)
             except Exception: return flat[0]
@@ -4493,7 +4501,7 @@ class App(LiveMixin, ctk.CTk):
             got=False; tail=[]; touch=self._stall_guard(proc, 900, "3D viewer")
             for ln in proc.stdout:
                 touch(); tail=(tail+[ln.strip()])[-5:]
-                if "PYVIEW_READY" in ln: got=True; self.q.put(("view_done", token, None)); break
+                if "PYVIEW_READY" in ln: got=True; touch.off(); self.q.put(("view_done", token, None)); break   # drawn: it stays silent while you look, that is not a stall
                 if "PYVIEW_ERROR" in ln: got=True; log_line("viewer: "+ln.strip()); self.q.put(("view_done", token, ln.strip())); break
             if not got:
                 log_line("viewer exited before drawing: %s" % " | ".join(tail))
@@ -4530,7 +4538,7 @@ class App(LiveMixin, ctk.CTk):
         dest=self.dest.get() or DEFAULT_DEST; local=os.path.join(dest, name); out=os.path.join(local, "%s_%s_clean.ply" % (name, node))
         root=ctk.CTkFrame(t, fg_color="transparent"); root.pack(fill="both", expand=True, padx=12, pady=12)
         root.grid_columnconfigure(0, weight=1); root.grid_rowconfigure(0, weight=1)
-        # -- left: the 3D view, full height --
+        # Left: the 3D view, full height
         card=ctk.CTkFrame(root, fg_color=CARD, corner_radius=14); card.grid(row=0,column=0, sticky="nsew", padx=(0,10))
         card.grid_columnconfigure(0, weight=1); card.grid_rowconfigure(0, weight=1)
         box=ctk.CTkFrame(card, fg_color="#0a0c10", corner_radius=10); box.grid(row=0,column=0, sticky="nsew", padx=10, pady=(10,4))
@@ -4541,7 +4549,7 @@ class App(LiveMixin, ctk.CTk):
             self._start_thread(self._base_worker, name, src, node, dest, token, name="base"); return
         load=ctk.CTkLabel(box, text="Loading the 3D view…", text_color=MUT, font=ctk.CTkFont(size=14), fg_color="#0a0c10"); load.grid(row=0,column=0, sticky="nsew", padx=4, pady=4); load.lift()
         status=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w"); status.grid(row=1,column=0, sticky="ew", padx=16, pady=(0,10))
-        # -- right: the tool palette (same style as the Import options / Edit palette) --
+        # Right: the tool palette (same style as the Import options / Edit palette)
         pal=ctk.CTkFrame(root, fg_color=CARD, corner_radius=14, width=340); pal.grid(row=0,column=1, sticky="nsew"); pal.grid_propagate(False)
         pal.grid_columnconfigure(0, weight=1); pal.grid_rowconfigure(1, weight=1)
         head=ctk.CTkFrame(pal, fg_color="transparent"); head.grid(row=0,column=0, sticky="ew", padx=16, pady=(14,4))
@@ -4631,7 +4639,7 @@ class App(LiveMixin, ctk.CTk):
         self._tip(skipb, "The scanner already dropped the floor (its scan settings can do that), or there was none. Marks the Cut base step done for this scan.")
         _bp=(self.records.get(name,{}).get("base_plane",{}) or {}).get(node)
         if _bp and not (isinstance(_bp, dict) and _bp.get("skip")) and os.path.exists(out):
-            undob=ctk.CTkButton(body, text="↩ Restore scan before cut", height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=WARN, hover_color=CARD2, text_color=WARN, font=ctk.CTkFont(size=12),
+            undob=ctk.CTkButton(body, text="Restore scan before cut", image=_icon("history", "muted", 14), compound="left", height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=WARN, hover_color=CARD2, text_color=WARN, font=ctk.CTkFont(size=12),
                                 command=lambda: (close(), self._undo_base_cut(name, node))); undob.pack(fill="x", padx=14, pady=(0,4))
             self._tip(undob, "Undo the base cut on this scan: the cut copy goes to the trash (a prepared copy it replaced comes back), the remembered plane is forgotten, and the scan shows the scanner's model again.")
         foot=ctk.CTkFrame(pal, fg_color="transparent"); foot.grid(row=2,column=0, sticky="ew", padx=14, pady=(6,14)); foot.grid_columnconfigure(0, weight=1)
@@ -4668,8 +4676,10 @@ class App(LiveMixin, ctk.CTk):
             height in the lower third (the table), or where asked."""
             V=st["V"]; n=np.asarray(n, float); n/=np.linalg.norm(n)+1e-9
             # which way is up: the scanner always looks at the table from above, and the first frame's camera sits at the
-            # origin of the scan's coordinates, so the table's normal points from the scan toward the origin
-            if float(np.dot(n, -V.mean(0)))<0: n=-n
+            # origin of the scan's coordinates, so the table's normal points from the scan toward the origin.
+            # Only when a new base is chosen: a tilt (base=False) is a small nudge of a direction already settled,
+            # and re-deciding the sign there would flip the kept side and move the plane off its pivot.
+            if base and float(np.dot(n, -V.mean(0)))<0: n=-n
             H=V.dot(n)
             lo=float(H.min()); rng=float(H.max()-lo)
             low=H[H<lo+0.35*rng]; hist,edges=np.histogram(low, bins=60); h_tab=float(0.5*(edges[hist.argmax()]+edges[hist.argmax()+1]))
@@ -4936,7 +4946,7 @@ class App(LiveMixin, ctk.CTk):
         for d in glob.glob(os.path.join(local, "data", "*")):
             if os.path.isdir(d): nodes.add(os.path.basename(d))
         for f in glob.glob(os.path.join(local, name+"_*.ply")):
-            if f.endswith(".tmp.ply"): continue      # a Prepare temp file mid-write, not a scan node
+            if _is_tmp(f): continue      # a Prepare temp file mid-write, not a scan node
             n=os.path.basename(f)[len(name)+1:-4]
             for suf in ("_cloud","_pcfused","_clean","_edited"):
                 if n.endswith(suf): n=n[:-len(suf)]
@@ -5645,7 +5655,7 @@ class App(LiveMixin, ctk.CTk):
                     ml=ctk.CTkLabel(mchip, text="Showing:  "+clabel, height=26, anchor="w", text_color=AC, font=ctk.CTkFont(size=12, weight="bold"))
                     ml.pack(side="left", fill="x", expand=True, padx=(10,0), pady=3)
                     self._tip(ml, _vtip+"\n\nFile: "+os.path.basename(cpath)+_sz(cpath))
-                    info=ctk.CTkLabel(mchip, text="ⓘ", width=20, text_color=AC, font=ctk.CTkFont(size=12)); info.pack(side="right", padx=(0,8))
+                    info=ctk.CTkLabel(mchip, text="", image=_icon("search", "accent", 12), width=20, text_color=AC, font=ctk.CTkFont(size=12)); info.pack(side="right", padx=(0,8))
                     self._tip(info, _vtip)
                 others=[(k,l,p) for (k,l,p) in vs if not (cur and k==cur[0])]
                 if others:
@@ -6077,17 +6087,21 @@ class App(LiveMixin, ctk.CTk):
             while os.path.exists(out): out=os.path.join(ddir, "%s_%d.%s" % (nm, n, fmt)); n+=1
             self._btn_busy(gob, "Writing…"); status.configure(text="Writing %s…" % os.path.basename(out), text_color=MUT)
             def work():
-                err=None; self._op_begin(); _root,_ext=os.path.splitext(out); tmp="%s.part-%d%s" % (_root, os.getpid(), _ext)   # keep the extension: the converter picks the format from it
+                err=None; self._op_begin(); _root,_ext=os.path.splitext(out); tmp=None
                 try:
                     os.makedirs(ddir, exist_ok=True)
+                    # an exclusive temp per job, with the extension kept (the converter picks the format from it):
+                    # two exports of the same name started back to back must never share a half-written file
+                    _fd,tmp=tempfile.mkstemp(prefix=os.path.basename(_root)+".part-", suffix=_ext, dir=ddir); os.close(_fd)
                     if fmt=="ply": shutil.copyfile(src, tmp)
                     elif not self._convert_subprocess(src, tmp):   # capped child: a huge model can't take the app down
                         raise RuntimeError("could not convert to %s - see Help > Log" % fmt.upper())
                     os.replace(tmp, out)                              # the named file only ever appears complete
                 except Exception as e:
                     err=e; log_error("export", e)
-                    try: os.remove(tmp)
-                    except Exception: pass
+                    if tmp:
+                        try: os.remove(tmp)
+                        except Exception: pass
                 finally: self._op_end()
                 def done():
                     if not t.winfo_exists(): return
@@ -6291,9 +6305,13 @@ class App(LiveMixin, ctk.CTk):
             if auto and not self._require_open3d("Auto alignment"): return
             st["busy"]=True; keepb.pack_forget(); busy_on("Starting…" if not auto else "Starting Auto… this takes a minute or two")
             job={"base": st["base"], "moving": st["moving"], "pairs": [list(pr) for pr in st["pairs"]], "id": "%d-%x" % (os.getpid(), int(time.time()*1000))}
-            base_p=self._proc_current(name, job["base"])[2]; mov_p=self._proc_current(name, job["moving"])[2]
-            os.makedirs(THUMBS, exist_ok=True); pj=os.path.join(THUMBS, "align_pairs_%s.json" % job["id"]); oj=os.path.join(THUMBS, "align_result_%s.json" % job["id"])
-            json.dump({"pairs": job["pairs"]}, open(pj, "w"))
+            try:   # setup can fail too (cache dir unwritable, disk full): report it and free the controls, never leave them stuck busy
+                base_p=self._proc_current(name, job["base"])[2]; mov_p=self._proc_current(name, job["moving"])[2]
+                os.makedirs(THUMBS, exist_ok=True); pj=os.path.join(THUMBS, "align_pairs_%s.json" % job["id"]); oj=os.path.join(THUMBS, "align_result_%s.json" % job["id"])
+                json.dump({"pairs": job["pairs"]}, open(pj, "w"))
+            except Exception as e:
+                log_error("align-setup", e); st["busy"]=False; busy_off()
+                status.configure(text="Could not start: %s" % str(e)[:120], text_color=WARN); return
             def work():
                 res=None; err=""
                 try:
@@ -6756,7 +6774,7 @@ class App(LiveMixin, ctk.CTk):
         elif kind=="badcode":
             if info["locked"]:
                 if ui: self.wifi_state.configure(text="Too many wrong codes - closing this share. Click WiFi for a new code.", text_color=WARN)
-                self.after(2500, self._wifi_cancel)
+                self.after(2500, lambda rx=rx: (self._wifi is rx) and self._wifi_cancel())   # only this share: a new one started meanwhile keeps running
             elif ui:
                 self.wifi_state.configure(text="Wrong code entered on the scanner - try again (%d attempts left)." % (5-rx.bad), text_color=WARN)
         elif kind=="connected":
@@ -7004,18 +7022,21 @@ class App(LiveMixin, ctk.CTk):
                       command=lambda: (self._dialogs.pop("wifiname", None), t.destroy())).pack(side="right", padx=6)
     def _swap_dir(self, old, do_replace):
         """Replace the directory `old` with what do_replace() produces there. The previous contents are
-        renamed aside first and only deleted once do_replace() succeeded; on failure they are put back."""
+        renamed aside first and only deleted once do_replace() ran to completion; on failure, or when the
+        user cancelled part-way (do_replace returns normally then), they are put back."""
         aside=None
         if os.path.isdir(old):
             aside="%s.replacing-%d" % (old, os.getpid()); os.rename(old, aside)
+        def restore():
+            if not aside: return
+            shutil.rmtree(old, ignore_errors=True)
+            try: os.rename(aside, old)
+            except Exception as e2: log_error("swap-restore", e2)
         try:
             r=do_replace()
         except Exception:
-            if aside:
-                shutil.rmtree(old, ignore_errors=True)
-                try: os.rename(aside, old)
-                except Exception as e2: log_error("swap-restore", e2)
-            raise
+            restore(); raise
+        if self.cancel: restore(); return r
         if aside: shutil.rmtree(aside, ignore_errors=True)
         return r
     def _wifi_finish_worker(self, stage, keep, dest, mo, fmts, cleanup, replace=False, clean_opts=None):
@@ -7455,7 +7476,7 @@ class App(LiveMixin, ctk.CTk):
     def _mesh_cloud_sources(self, name, dest):
         """(mesh_plys, cloud_plys) for a project: local flat > local nested > device nested."""
         local=os.path.join(dest, name)
-        m=[p for p in glob.glob(os.path.join(local, name+"_*.ply")) if not p.endswith("_cloud.ply") and not p.endswith(".tmp.ply")]
+        m=[p for p in glob.glob(os.path.join(local, name+"_*.ply")) if not p.endswith("_cloud.ply") and not _is_tmp(p)]
         c=glob.glob(os.path.join(local, name+"_*_cloud.ply"))
         if not m:
             m=glob.glob(os.path.join(local, "data","*","fuse_mesh.ply")) or glob.glob(os.path.join(PROJECTS, name, "data","*","fuse_mesh.ply"))
@@ -7501,7 +7522,7 @@ class App(LiveMixin, ctk.CTk):
         threading.Thread(target=self._zip_worker, args=(sel,dest,mode,scope,scoped), daemon=True).start()
     def _project_meshes(self, base, name):
         """Mesh .ply files for an imported project (flat layout, else nested mirror)."""
-        flat=[p for p in glob.glob(os.path.join(base, name+"_*.ply")) if not p.endswith("_cloud.ply") and not p.endswith(".tmp.ply")]
+        flat=[p for p in glob.glob(os.path.join(base, name+"_*.ply")) if not p.endswith("_cloud.ply") and not _is_tmp(p)]
         if flat: return sorted(flat)
         return sorted(glob.glob(os.path.join(base, "data", "*", "fuse_mesh.ply")))
     def _scope_meshes(self, base, name, scope):
@@ -7547,7 +7568,7 @@ class App(LiveMixin, ctk.CTk):
                     # only the version picked per scan: its ply, any same-stem converted file, and point clouds
                     keep={os.path.splitext(os.path.basename(p))[0] for p in scoped.get(name, {}).get("current", [])}
                     for f in glob.glob(os.path.join(base,"*")):
-                        if f.endswith(".tmp.ply") or not f.lower().endswith((".ply",".stl",".obj",".glb")): continue
+                        if _is_tmp(f) or not f.lower().endswith((".ply",".stl",".obj",".glb")): continue
                         st=os.path.splitext(os.path.basename(f))[0]
                         if st in keep or f.endswith("_cloud.ply"):
                             if not f.lower().endswith(".ply"):           # a converted copy: only if it is at least as new as its PLY
@@ -7560,16 +7581,16 @@ class App(LiveMixin, ctk.CTk):
                             files.append((p, "%s_%s_%s%s" % (name, node, stem, ext)))
                 elif mode=="models":
                     for f in glob.glob(os.path.join(base,"*")):
-                        if f.lower().endswith((".ply",".stl",".obj",".glb")) and not f.endswith(".tmp.ply"): files.append((f, os.path.basename(f)))
+                        if f.lower().endswith((".ply",".stl",".obj",".glb")) and not _is_tmp(f): files.append((f, os.path.basename(f)))
                     for f in glob.glob(os.path.join(base,"data","*","*")):
                         # nested scans all have the same file names (fuse_mesh.ply): make each entry unique
-                        if f.lower().endswith((".ply",".stl",".obj",".glb")) and not f.endswith(".tmp.ply"):
+                        if f.lower().endswith((".ply",".stl",".obj",".glb")) and not _is_tmp(f):
                             node=os.path.basename(os.path.dirname(f)); stem,ext=os.path.splitext(os.path.basename(f))
                             files.append((f, "%s_%s_%s%s" % (name, node, stem, ext)))
                 else:  # all
                     for root,dirs,fs in os.walk(base):
                         for f in fs:
-                            if ".tmp" in f and f.endswith(".ply"): continue      # never ship a half-written temp file
+                            if _is_tmp(f): continue      # never ship a half-written temp file
                             fp=os.path.join(root,f); files.append((fp, os.path.join(name, os.path.relpath(fp, base))))
             if not files:
                 self.q.put(("zipfail", ("%d conversion(s) failed, nothing to zip - see Help > Log" % zfails) if zfails

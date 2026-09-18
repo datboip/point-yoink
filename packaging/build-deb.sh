@@ -29,6 +29,7 @@ mkdir -p "$PKG/DEBIAN" \
 V="$PKG/$LIB/vendor"
 rm -rf "$V"/PIL* "$V"/Pillow* "$V"/pillow* "$V"/numpy* "$V"/matplotlib* "$V"/networkx* "$V"/bin "$V"/__pycache__ 2>/dev/null || true
 find "$V" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+rm -rf "$V/OpenGL/DLLS"   # PyOpenGL's bundled Windows DLLs (freeglut, GLE): useless on Linux, and their notices would otherwise need shipping
 
 # --- app files (the module files keep their names, they just live under point-yoink/) ---
 for f in pointyoink.py viewer.py process.py cutplane.py fuse.py wifi.py shade.py meshview.py glview.py align.py register.py icon.png; do
@@ -39,6 +40,8 @@ mkdir -p "$PKG/$LIB/assets" && cp -r "$ROOT"/assets/. "$PKG/$LIB/assets/"
 find "$PKG/$LIB/assets" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 cp "$ROOT/icon.png"      "$PKG/usr/share/icons/hicolor/512x512/apps/point-yoink.png"
 cp "$ROOT/LICENSE" "$ROOT/README.md" "$ROOT/CHANGELOG.md" "$ROOT/THIRD_PARTY_NOTICES.md" "$PKG/usr/share/doc/point-yoink/" 2>/dev/null || true
+# PyOpenGL's wheel carries no license file, so its text ships from the repo instead
+mkdir -p "$PKG/usr/share/doc/point-yoink/licenses" && cp "$ROOT"/packaging/licenses/*.txt "$PKG/usr/share/doc/point-yoink/licenses/"
 
 # --- launcher (the command is `point-yoink`) ---
 cat > "$PKG/usr/bin/point-yoink" <<EOF

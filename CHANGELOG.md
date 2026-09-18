@@ -3,6 +3,20 @@
 All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 is the first public release.
 
+## 1.0.0 (unreleased, rc2 on the dev branch)
+
+- Cancelling a WiFi Replace part-way now puts the previous project back instead of deleting it.
+- The 3D viewer is no longer closed after 15 quiet minutes; the stall watch ends once it has drawn.
+- Files still being written by Prepare, a rebuild or an export never show up as scans or land in a ZIP.
+- A failed mesh write in the processing child now reports failure instead of exiting clean; its ordinary export path writes to a temp file and replaces only when complete.
+- Two exports of the same name started back to back get separate temp files.
+- Saving two mesh edits in the same second keeps both archived versions.
+- The wrong-code lockout timer only closes the share it belonged to.
+- A failure while starting Combine (cache folder unwritable, disk full) frees the controls and says why.
+- Tilting the cut plane no longer flips its side or moves it off the pivot near the sign boundary.
+- Package: PyOpenGL's Windows DLL folder is no longer installed; its license text ships under /usr/share/doc/point-yoink/licenses. README states the actual memory limits per job.
+- The last glyph labels (search, Pull all, Browse, updated, Restore, info) use icons or plain text.
+
 ## 1.0.0 (unreleased, rc1 on the dev branch)
 
 - Every button, menu item and step marker now uses the icon set; the last unicode glyph labels are gone, so the UI no longer depends on which symbols the system font happens to have.

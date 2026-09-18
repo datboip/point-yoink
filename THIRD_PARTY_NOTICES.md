@@ -4,7 +4,7 @@ PointYoink is MIT licensed (see LICENSE). It stands on the following open-source
 
 ## Bundled in the Debian package
 
-The `.deb` ships these Python packages inside `/usr/lib/point-yoink/vendor/` so it works without pip. Each one's full license text is kept alongside it in its `*.dist-info` folder.
+The `.deb` ships these Python packages inside `/usr/lib/point-yoink/vendor/` so it works without pip. Each one's full license text is kept alongside it in its `*.dist-info` folder, except PyOpenGL, whose wheel carries none: its license is shipped as `/usr/share/doc/point-yoink/licenses/PyOpenGL.txt` (in the repo at `packaging/licenses/PyOpenGL.txt`). PyOpenGL's Windows-only DLL folder is not installed.
 
 | Package | Version | License | Author / project |
 |---|---|---|---|
@@ -19,7 +19,7 @@ The `.deb` ships these Python packages inside `/usr/lib/point-yoink/vendor/` so 
 
 ## Used at runtime, installed from your distribution
 
-Not bundled; pulled in as package dependencies: Python 3, Tk (`python3-tk`), Pillow (`python3-pil`, `python3-pil.imagetk`), NumPy, Matplotlib, NetworkX, `jmtpfs` / `libmtp` (MTP access to the scanner), `rsync`, `xdg-utils`, FUSE. Optional: Open3D (`pip install open3d`) for building and combining models on the PC.
+Not bundled; pulled in as package dependencies (and `ffmpeg`, optional, for capture thumbnails and lengths): Python 3, Tk (`python3-tk`), Pillow (`python3-pil`, `python3-pil.imagetk`), NumPy, Matplotlib, NetworkX, `jmtpfs` / `libmtp` (MTP access to the scanner), `rsync`, `xdg-utils`, FUSE. Optional: Open3D (`pip install open3d`) for building and combining models on the PC.
 
 ## Fonts
 

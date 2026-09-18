@@ -262,9 +262,20 @@ def main():
             m = trimesh.Trimesh(v, f, process=False)
         emit("cleaned", faces=len(m.faces))
 
-    m.export(a.outfile)
+    # write beside the target and replace only when complete, so a failed or interrupted export never
+    # leaves a truncated file where a good one was (same rule as the fused output above)
+    root, ext = os.path.splitext(a.outfile)
+    tmp = "%s.tmp.%d%s" % (root, os.getpid(), ext or ".ply")
+    try:
+        m.export(tmp)
+        if not os.path.exists(tmp) or os.path.getsize(tmp) < 64: raise OSError("empty output")
+        os.replace(tmp, a.outfile)
+    except Exception as e:
+        try: os.remove(tmp)
+        except Exception: pass
+        print("ERROR could not write %s: %s" % (a.outfile, str(e)[:200]), flush=True); return 3
     emit("done", out=os.path.basename(a.outfile), faces=len(m.faces),
          mb=round(os.path.getsize(a.outfile) / 1048576, 1), warnings=warnings)
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

@@ -242,7 +242,7 @@ if __name__ == "__main__":
         msg = str(e)
         # A GPU that runs out of VRAM (big combines fuse hundreds of frames at once) shouldn't just fail:
         # re-exec on CPU. A fresh process means no leftover CUDA context and the CPU memory cap applies
-        # cleanly; the parent keeps reading this same stdout, so the fallback is seamless (just slower).
+        # cleanly; the parent keeps reading this same stdout, so the fallback needs nothing from it (just slower).
         if "--gpu" in sys.argv and ("out of memory" in msg.lower() or "cuda" in msg.lower()):
             emit("warn", msg="GPU out of memory - falling back to CPU (slower)")
             os.execv(sys.executable, [sys.executable] + [a for a in sys.argv if a != "--gpu"])

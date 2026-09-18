@@ -105,7 +105,7 @@ The app has three pages. **Import** is the scanner. **Projects** is this PC. **C
 
 A MIRACO project holds thousands of raw depth frames plus the finished, fused output. **Finished models** copies just the output, so an import moves megabytes instead of gigabytes. **Full project** keeps the scanner's layout with the raw frames, which is what Build and Combine read.
 
-Build fuses the frames in a TSDF volume ([Open3D](https://www.open3d.org/), GPU when available) using the registered poses the scanner writes with every scan. Combine solves a rigid fit from your point pairs (or from feature matching with Auto), refines it with ICP, and fuses every scan's frames into one volume with each scan's table plane removed first. The heavy work runs in child processes; CPU processing runs under a memory limit (10 GB by default, `POINTYOINK_MEM_CAP_GB` to change it).
+Build fuses the frames in a TSDF volume ([Open3D](https://www.open3d.org/), GPU when available) using the registered poses the scanner writes with every scan. Combine solves a rigid fit from your point pairs (or from feature matching with Auto), refines it with ICP, and fuses every scan's frames into one volume with each scan's table plane removed first. The heavy work runs in child processes; CPU jobs run under an address-space limit: 12 GB for building and registration, 8 GB for alignment, 10 GB for mesh processing. Set `POINTYOINK_MEM_CAP_GB` to override them.
 
 Imported files land in a flat layout with unique names:
 
