@@ -14,7 +14,7 @@
 #      project folder itself with no body; it must be answered too or the scanner says "failed".
 #   Every reply is {"code":0}. A 1 GB project takes about 50 s on ordinary WiFi.
 # Usage as a script: python3 wifi.py [--dest DIR] [--code 1234]
-import argparse, socket, struct, threading, time, re, os, secrets
+import argparse, socket, struct, threading, time, re, os, sys, secrets
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 PORT = 9706
@@ -169,13 +169,18 @@ class Receiver:
         if h.get("datatype", "file") != "file" or os.path.isdir(out) or (not body and "/" not in rel):
             os.makedirs(out, exist_ok=True); return           # a folder entry (the project dir comes last)
         os.makedirs(os.path.dirname(out), exist_ok=True)
-        with self._lock:
+        part = out + ".part"                                 # assembled here; takes its real name only once every part is in,
+        with self._lock:                                     # so a transfer cut off half way never leaves a whole-looking file
             if not self._on: return
             fresh = rel not in self.files                    # first part of this file in this transfer
-            with open(out, "wb" if (fresh or not os.path.exists(out)) else "r+b") as f:
+            with open(part, "wb" if (fresh or not os.path.exists(part)) else "r+b") as f:
                 f.seek((idx - 1) * PART); f.write(body)
             self.files.setdefault(rel, set()).add(idx); self.bytes += len(body)
             self.parts[rel] = int(h.get("partnum") or self.parts.get(rel) or 1)   # total parts the scanner will send for this file
+            want = self.parts[rel]
+            if self.files[rel] == set(range(1, want + 1)):
+                try: os.replace(part, out)
+                except Exception as e: sys.stderr.write("rename %s: %s\n" % (rel, e))
             self.total = int(h.get("totalsize") or self.total or 0)
             now = time.time(); avg = self.bytes / max(0.1, now - (self.t0 or now))
             self._hist.append((now, self.bytes)); self._hist = [x for x in self._hist if now - x[0] <= 1.0]

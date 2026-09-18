@@ -1374,7 +1374,8 @@ class App(LiveMixin, ctk.CTk):
             self._alert("Open3D needed",
                 ("%s needs Open3D, which isn't installed for this Python.\n\n"
                  "Install it with:\n  pip3 install --user --break-system-packages open3d\n\n"
-                 "(~400 MB. The GPU is used automatically when available.)") % action)
+                 "(~400 MB. The GPU is used automatically when available.) Then press the button again.") % action)
+            _has_open3d_cache=None                              # forget the miss: the next press probes again, no restart needed
             return False
         self._start_open3d_probe()
         self.set_status("Checking Open3D…")
@@ -5836,7 +5837,13 @@ class App(LiveMixin, ctk.CTk):
                 cur_arch=self._unique_archive(vdir, "%s_clean" % node)
                 if os.path.abspath(cur_arch)==os.path.abspath(arch): raise OSError("backup would overwrite the version being restored")
                 shutil.copy2(final, cur_arch)
-            shutil.copy2(arch, final); os.utime(final, None)   # copy2 keeps the archive's OLD mtime; bump it to now, or the freshness-by-mtime preview/mesh cache serves the PREVIOUS version and Restore shows the wrong model
+            tmp="%s.tmp.%d.ply" % (final[:-4], os.getpid())    # beside the live file, swapped in whole: a failed copy leaves the live file untouched
+            try: shutil.copy2(arch, tmp); os.utime(tmp, None); os.replace(tmp, final)
+            except Exception:
+                try: os.remove(tmp)
+                except Exception: pass
+                raise
+            # (utime: copy2 keeps the archive's old mtime; bumped to now so the mtime-keyed preview/mesh cache does not serve the previous version)
         except Exception as e: log_error("prep restore", e); self.set_banner("Could not restore that version (see Help > Log).", WARN); return
         for h in hist:
             if h.get("current"): h["current"]=False; h["archive"]=cur_arch
@@ -6850,6 +6857,10 @@ class App(LiveMixin, ctk.CTk):
         except Exception: return
         stage=None; projects=[]
         for c in cands:
+            # a file still named .part was cut off mid-transfer: drop it, the scanner has to send it again
+            for f in glob.glob(os.path.join(c, "**", "*.part"), recursive=True):
+                try: os.remove(f)
+                except Exception: pass
             try: pj=sorted(d for d in os.listdir(c) if os.path.isdir(os.path.join(c, d, "data")))
             except Exception: pj=[]
             if pj: stage, projects=c, pj; break
