@@ -878,6 +878,31 @@ class _ModeSwitch:
     def set(self, name): self.strip.set(MODE_LABEL.get(name, name))
     def get(self): return MODE_KEY.get(self.strip.get(), self.strip.get())
 
+def _popup_menu(master, anchor, items, below=True, width=220):
+    """A small dark popup of actions next to `anchor`: (text, command, icon_or_None) rows, an optional
+    None row for a separator. Built hidden and shown only once it is placed, so it never flashes at the top
+    left first. Closes on a click or on losing focus. Returns the toplevel."""
+    m=ctk.CTkToplevel(master); m.withdraw(); m.overrideredirect(True); m.configure(fg_color=CARD2)
+    try: m.attributes("-topmost", True)
+    except Exception: pass
+    box=ctk.CTkFrame(m, fg_color=CARD2, corner_radius=10, border_width=1, border_color=STROKE); box.pack(fill="both", expand=True)
+    icons=any(it and it[2] for it in items)
+    for it in items:
+        if it is None: tk.Frame(box, bg=STROKE, height=1, bd=0, highlightthickness=0).pack(fill="x", padx=8, pady=4); continue
+        text,cmd,icon=it
+        # when any row has an icon, every row carries an image (a blank one if needed) so the labels line up
+        img=(_icon(icon, "default", 16) if icon else (_icon_blank(16) if icons else None))
+        ctk.CTkButton(box, text=("  " if icons else "")+text, image=img, compound="left", anchor="w", width=width, height=32, corner_radius=6, fg_color="transparent", hover_color=STROKE, text_color=TX,
+                      font=ctk.CTkFont(size=12), command=lambda c=cmd: (m.destroy(), c())).pack(fill="x", padx=6, pady=1)
+    m.update_idletasks()
+    w=m.winfo_reqwidth(); h=m.winfo_reqheight()
+    ax=anchor.winfo_rootx(); ay=anchor.winfo_rooty(); aw=anchor.winfo_width(); ah=anchor.winfo_height()
+    x=max(0, ax+aw-w) if below else max(0, ax+aw-w)
+    y=(ay+ah+4) if below else (ay-h-4)
+    m.geometry("+%d+%d" % (x, max(0, y))); m.deiconify()
+    m.after(50, lambda: (m.winfo_exists() and (m.focus_force(), m.bind("<FocusOut>", lambda e: m.winfo_exists() and m.destroy()))))
+    return m
+
 class SplitButton(ctk.CTkFrame):
     """The one filled button in the window: a primary action plus a chevron with related actions."""
     def __init__(self, master, text, command, items, **kw):
@@ -891,11 +916,9 @@ class SplitButton(ctk.CTkFrame):
                                 font=ctk.CTkFont(size=13, weight="bold"), command=self._menu)
         self.more.grid(row=0,column=2)
     def _menu(self):
-        m=tk.Menu(self, tearoff=0, bg=CARD2, fg=TX, activebackground=SELB, activeforeground=TX, bd=0, relief="flat",
-                  font=("TkDefaultFont", 10), activeborderwidth=0)
-        for label,cmd in self._items: m.add_command(label=label, command=cmd)
-        try: m.tk_popup(self.winfo_rootx(), self.winfo_rooty()-len(self._items)*30-8)
-        finally: m.grab_release()
+        old=getattr(self, "_pop", None)
+        if old is not None and old.winfo_exists(): old.destroy(); self._pop=None; return   # second click closes it
+        self._pop=_popup_menu(self, self, [(label, cmd, None) for label,cmd in self._items], below=False, width=200)
     def configure(self, require_redraw=False, **kw):
         if "text" in kw: self.main.configure(text=kw.pop("text"))
         if "state" in kw:
@@ -1664,24 +1687,13 @@ class App(LiveMixin, ctk.CTk):
         """The app menu under the ≡ button: a small dark popup that closes on click or focus loss."""
         old=getattr(self, "_menu_pop", None)
         if old is not None and old.winfo_exists(): old.destroy(); self._menu_pop=None; return
-        m=ctk.CTkToplevel(self); m.overrideredirect(True); m.configure(fg_color=CARD2); self._menu_pop=m
-        try: m.attributes("-topmost", True)
-        except Exception: pass
-        box=ctk.CTkFrame(m, fg_color=CARD2, corner_radius=10, border_width=1, border_color=STROKE); box.pack(fill="both", expand=True)
-        def item(text, cmd, icon, sep=False):
-            if sep: tk.Frame(box, bg=STROKE, height=1, bd=0, highlightthickness=0).pack(fill="x", padx=8, pady=4)
-            # every row carries an image (a blank one when there is no icon) so the labels line up
-            ctk.CTkButton(box, text="  "+text, image=(_icon(icon, "default", 16) if icon else _icon_blank(16)), compound="left", anchor="w", width=220, height=32, corner_radius=6, fg_color="transparent", hover_color=STROKE, text_color=TX,
-                          font=ctk.CTkFont(size=12), command=lambda: (m.destroy(), cmd())).pack(fill="x", padx=6, pady=1)
-        item("Settings…", self.dlg_settings, "settings")
-        item("How this works (the five steps)", self._howto_dialog, "play", sep=True)
-        item("Help", self.dlg_help, None)
-        item("Open error log", self.dlg_logs, "projects")
-        item("About "+APP, self.dlg_about, None, sep=True)
-        item("PointYoink on GitHub", lambda: subprocess.Popen(["xdg-open", GITHUB]), "external-link")
-        self.update_idletasks()
-        x=self._menu_btn.winfo_rootx()+self._menu_btn.winfo_width()-236; y=self._menu_btn.winfo_rooty()+self._menu_btn.winfo_height()+4
-        m.geometry("+%d+%d" % (max(0, x), y)); m.after(50, lambda: (m.focus_force(), m.bind("<FocusOut>", lambda e: m.winfo_exists() and m.destroy())))
+        self._menu_pop=_popup_menu(self, self._menu_btn, [
+            ("Settings…", self.dlg_settings, "settings"), None,
+            ("How this works (the five steps)", self._howto_dialog, "play"),
+            ("Help", self.dlg_help, None),
+            ("Open error log", self.dlg_logs, "projects"), None,
+            ("About "+APP, self.dlg_about, None),
+            ("PointYoink on GitHub", lambda: subprocess.Popen(["xdg-open", GITHUB]), "external-link")])
     # ---- device bar: scanner, state, connection controls ----
     def _statusbar(self):
         d=ctk.CTkFrame(self, fg_color=CARD, corner_radius=0, height=54); d.grid(row=1,column=0, sticky="ew"); d.grid_propagate(False)
@@ -7158,7 +7170,7 @@ class App(LiveMixin, ctk.CTk):
         try:
             shutil.copyfile(src, local)
             def done():
-                self._dev_hold=0.0                                  # release the top banner back to device state
+                self._dev_hold=0.0; self.refresh_loop()             # release the top banner back to device state
                 self.set_status("Playing %s" % nm[:24]); self.after(4000, lambda: self.set_status(""))   # a bottom-bar note that clears itself
                 try: subprocess.Popen(["xdg-open", local])
                 except Exception as e: log_error("xdg-open rec", e)
@@ -7842,13 +7854,13 @@ class App(LiveMixin, ctk.CTk):
                     self._open3d_probe_busy=False
                     if self._status_msg=="Checking Open3D…": self.set_status("")
                 elif kind=="shots":
-                    self._shots_busy=False; self._shots_loaded=True; self._dev_hold=0.0   # loaded once; release the "Reading…" hold and let the probe own the device banner
+                    self._shots_busy=False; self._shots_loaded=True; self._dev_hold=0.0; self.refresh_loop()   # loaded once; release the "Reading…" hold and let the probe own the device banner
                     self.render_shots(rest[0]); self.set_status("")   # the capture count lives in the panel header, NOT the device banner (or it leaks onto Import/Projects)
                 elif kind=="shots_offline":
-                    self._shots_busy=False; self._shots_loaded=True; self._dev_hold=0.0
+                    self._shots_busy=False; self._shots_loaded=True; self._dev_hold=0.0; self.refresh_loop()
                     self.render_shots(rest[0]); self.set_status("")
                 elif kind=="shots_unmounted":
-                    self._shots_busy=False; self.set_status(""); self._dev_hold=0.0
+                    self._shots_busy=False; self.set_status(""); self._dev_hold=0.0; self.refresh_loop()
                     self.set_banner("No saved captures yet · connect the scanner over USB (tap File Transfer).", WARN)
                     try:
                         self.shots.grid_remove()
@@ -7864,7 +7876,7 @@ class App(LiveMixin, ctk.CTk):
                     self.hold_banner("Pulling captures… %d of %d%s" % (i, t, extra), AC)
                 elif kind=="shots_pulled":
                     n, d = rest[0]; self.set_status(""); self._dev_hold=0.0
-                    self.set_banner("Pulled %d capture%s → %s" % (n, "" if n==1 else "s", d), OK)
+                    self.set_banner("Pulled %d capture%s to %s" % (n, "" if n==1 else "s", d), OK)
                     self.refresh_screenshots_soft()   # flip the "on device" badges to "on PC" now they're saved
                     if self.auto_open.get(): subprocess.Popen(["xdg-open", d])
                 elif kind=="fuse_node": self._proc_progress(rest[0], rest[1], rest[2])
