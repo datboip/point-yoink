@@ -32,3 +32,7 @@ config.json
 packaging/build/
 # internal design notes, mockups, device reference - local only
 dev/
+brag-output*/
+
+# demo videos: the GIFs are committed, the MP4s are not
+docs/img/**/*.mp4

@@ -2,125 +2,111 @@
 
 [![Release](https://img.shields.io/github/v/release/datboip/point-yoink?color=4aa3ff)](https://github.com/datboip/point-yoink/releases)
 [![Downloads](https://img.shields.io/github/downloads/datboip/point-yoink/total?color=3ecf8e)](https://github.com/datboip/point-yoink/releases)
-[![Stars](https://img.shields.io/github/stars/datboip/point-yoink?color=ffb454)](https://github.com/datboip/point-yoink/stargazers)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Linux-informational)
 
-**Get your Revopoint MIRACO 3D scans onto Linux, without Revo Scan, Wine, or a Windows VM.**
+**Get your Revopoint MIRACO scans onto Linux, and take them the rest of the way to a printable model.**
 
-Revopoint's Revo Scan software is Windows, macOS, iOS and Android only. There is no Linux version, so getting your finished scans off a MIRACO on a Linux machine usually means dual-booting, running a Windows VM, or fighting a raw MTP copy that drags thousands of tiny files across a slow connection.
+Revo Scan, the software that goes with Revopoint scanners, runs on Windows, macOS, iOS and Android. There is no Linux version. PointYoink is a small desktop app that fills that gap: plug the MIRACO in (or use WiFi), pull the scans off, then build, cut the table off, combine sides, clean up and export STL, OBJ, GLB or PLY. Nothing leaves your machine and the originals are never touched.
 
-PointYoink is a small desktop app that does it directly, over USB or WiFi, and then takes the scans the rest of the way: build a model from raw frames on your graphics card, cut the table off, line up the sides you scanned separately and fuse them into one model, clean it up, and export STL, OBJ, GLB or PLY with a mesh check. Originals are never changed; every step saves a new version.
+<p align="center">
+  <img src="docs/img/v1/02-projects-preview.png" alt="PointYoink with a project open: the scan in 3D, the next step ready to go" width="920">
+</p>
 
 > Unofficial. Not affiliated with or endorsed by Revopoint. "Revopoint" and "MIRACO" are trademarks of their respective owners. PointYoink only reads files off your own device and contains none of Revopoint's software.
 
-## Screenshots
+## Why this exists
 
-<p align="center">
-  <img src="images/splash.png" alt="PointYoink" width="440">
-</p>
+I kept giving these companies a chance. I'd back a scanner, wait around for the software to actually show up, and every single one let me down the same way: no love for the penguin.
 
-<p align="center">
-  <img src="images/app_connected.png" alt="PointYoink main window - connected, with projects and a scan preview" width="920">
-</p>
+First the Revopoint Range. It needs a computer to do anything, and the computer has to run Windows or a Mac. Then a 3DMakerpro Seal, same story with different software. Then the MIRACO, which scans on its own without a PC, so I figured this was the one. It is a really nice scanner. It still had nothing for the machine I actually use, so it collected dust for a while.
+
+I did try the workaround everyone points to, running Revo Scan through Wine. It launches, sometimes, and mostly can't see the scanner. So I built the thing I wanted instead. That's PointYoink.
 
 ## What it does
 
-Two pages. **Import** is the scanner: what is on it, the import options, one Import button. **Projects** is this PC: everything you imported, a 3D view you can turn, and a NEXT bar that says what to do now and does it with one button.
+<p align="center">
+  <img src="docs/img/v1/remove-base-demo.gif" alt="Removing the table from a scan: pick Floor grid or Auto-detect, or click a few spots on the table and the cut plane snaps to them" width="920">
+</p>
 
-- **Import over USB** (File Transfer mode lists every project) or **over WiFi** (the scanner's Share to PC sends one project to a 4-digit code PointYoink shows you; about 20 MB/s, faster than the cable). Finished models is quick; Full project also brings the raw frames.
-- **Build**: turn a scan's raw frames into a 3D model on your PC, using the scanner's own registration. Seconds on an NVIDIA card, minutes on a CPU. Measured against the scanner's One-tap Edit: 0.2 mm median.
-- **Cut base**: drag one line above the table in the 3D view; grey stays, red goes. The cut is remembered per scan and applied again when scans are combined, so the table never gets fused in.
-- **Combine**: scanned each side separately? Click three to five matching spots on two scans, or press Auto, check the orange overlay, keep it, repeat for each side, then build one model from all the frames at once. Your points stay editable.
-- **Prepare**: remove floating pieces, smooth, fill small holes, reduce triangles, with the scanner's defaults. Before and after side by side, Keep or Discard.
-- **Export**: version, format and folder together, with the model's size in mm, triangle count, pieces and open edges shown first.
-- Badges tell you what the scanner already did (raw only, partly scanner-edited, scanner-edited) and what you made (combined, prepared). Compare any two versions in linked 3D views.
-- Rename projects, remember what was imported, export a project as one ZIP, cancel and retry, a built-in error log, a dark UI, and a first-run "How this works" panel.
-
-## Why not just...
-
-| Option | What it is | Why it falls short for a MIRACO on Linux |
-|---|---|---|
-| Revo Scan under Wine | The Windows app via Wine | Launches but usually cannot see the scanner over USB; version 5/6 crash. |
-| Windows VM | A full Windows guest | Works but heavy, and USB passthrough is fiddly. Overkill for copying files. |
-| jmtpfs / gvfs by hand | Mount MTP, copy manually | Works, but you drag every raw depth frame through slow MTP and have to know which folders to skip. |
-| android-file-transfer | Generic Android MTP tool | No idea what a scan project is, so it copies everything, slowly. |
-| revopoint-python | Controls an older Pop/MINI over WiFi | A live-capture tool for tethered scanners, not a MIRACO extractor. |
-
-PointYoink is the one that understands the MIRACO's on-device project layout and pulls only the finished meshes and point clouds.
+- **Import** over USB (the scanner's File Transfer mode) or WiFi (Share to PC, with a 4-digit code the app shows you). Finished models only takes seconds; Full project also brings the raw frames.
+- **Build** a model from raw frames on your own PC, using the scanner's registration. Seconds on an NVIDIA card, a few minutes on a CPU. On the scans I have checked it lands within about half a millimetre of the scanner's own One-tap Edit result.
+- **Remove base.** Say where the table is: the floor grid, auto-detect, or click three or more spots on it and the plane fits through them. Then set the height by dragging or by typing an exact number, nudge the tilt in half-degree steps if the table sits slightly off, flip sides, apply. The cut is remembered and used again when scans are combined, and you can undo it.
+- **Combine** sides you scanned separately. Click matching spots on two scans, or press Auto, check the overlay, keep it, repeat, then build one model from all the frames at once.
+- **Prepare** removes floating pieces, smooths, fills small holes and reduces triangles, with the scanner's own defaults. Before and after side by side, then Keep or Discard.
+- **Export** as STL, OBJ, GLB or PLY, with the model's size in millimetres, triangle count, separate pieces and open edges shown before you save.
+- **Captures** pulls the scanner's screenshots and screen recordings off the device.
+- Every step saves a new version. You pick which one the preview and the exports use. Rename projects and scans, compare two versions in linked 3D views, export a project as one ZIP.
 
 ## Supported scanners
 
-- **MIRACO Pro** - tested and working (this is what PointYoink was built and verified against).
-- **MIRACO and MIRACO Plus** - same standalone design, should work, but not yet confirmed. Reports welcome.
+- **MIRACO Pro**: tested and working. This is the scanner PointYoink was built on.
+- **MIRACO and MIRACO Plus**: same standalone design, so they should work, but I don't own one. Reports welcome.
 
-These are the standalone MIRACO models that store finished projects on the device and expose them over USB. Tethered scanners (POP, INSPIRE, RANGE, MINI, MetroX) are not supported, because those keep their data on whatever computer or phone ran Revo Scan, not on the scanner. If you have one of those, your files are already on that machine.
-
-## Requirements
-
-- Linux with Python 3.10 or newer.
-- System packages: `sudo apt install python3-tk python3-pil.imagetk python3-matplotlib python3-networkx jmtpfs rsync`
-- Python packages: `pip install customtkinter pillow trimesh "pyglet<2" fast-simplification networkx matplotlib`
-- Optional, for Process on PC: `pip3 install --user --break-system-packages open3d` (~400 MB; uses your GPU when available).
-- A USB-C **data** cable. Some bundled cables only charge. If nothing shows up, try a different cable.
+Tethered Revopoint scanners (POP, INSPIRE, RANGE, MINI, MetroX) are not supported. They keep their data on the host PC rather than on the device, so there is nothing to pull off them.
 
 ## Install
 
-### Debian / Ubuntu (recommended)
+### Debian / Ubuntu
 
-Download the latest `.deb` from [Releases](https://github.com/datboip/point-yoink/releases), then install it (this pulls in the dependencies automatically):
+Download the latest `.deb` from [Releases](https://github.com/datboip/point-yoink/releases) and install it. Dependencies come along automatically.
 
 ```bash
-sudo apt install ./pointyoink_0.8.0_amd64.deb
+sudo apt install ./point-yoink_1.0.0_amd64.deb
 ```
 
-PointYoink then shows up in your application menu - launch it from there, or run `pointyoink`. No pip, no virtualenv.
+PointYoink then shows up in your application menu, or run `point-yoink`.
 
-### From source (any distro)
+### From source
 
 ```bash
-sudo apt install python3-tk python3-pil.imagetk python3-matplotlib python3-networkx jmtpfs rsync
+sudo apt install python3-tk python3-pil.imagetk python3-numpy python3-matplotlib python3-networkx jmtpfs rsync
 git clone https://github.com/datboip/point-yoink
-cd pointyoink
+cd point-yoink
 python3 -m venv --system-site-packages venv
-./venv/bin/pip install customtkinter pillow trimesh "pyglet<2" fast-simplification networkx matplotlib
+./venv/bin/pip install customtkinter pillow numpy trimesh PyOpenGL pyopengltk "pyglet<2" fast-simplification networkx matplotlib
 ./venv/bin/python pointyoink.py
 ```
 
+Optional, for building and combining on the PC: `./venv/bin/pip install open3d` (about 400 MB; uses the GPU when there is one).
+
+You need a USB-C **data** cable. Some bundled cables only charge. If nothing shows up, try another cable before anything else.
+
 ## How to use
 
-1. **Import.** Plug in a USB-C data cable and tap **File Transfer** on the scanner, or click **WiFi** and enter the code on the scanner under Share to PC > Wi-Fi. Tick, Import. Choose **Full project** if you want to build or combine on the PC.
+The app has three pages. **Import** is the scanner. **Projects** is this PC. **Captures** is the scanner's screenshots and recordings.
 
-<table>
-  <tr>
-    <td align="center"><img src="assets/device/scanner-usb-tab.png" alt="Scanner USB File Transfer tab" width="240"></td>
-    <td align="center"><img src="assets/device/scanner-share-icon.png" alt="Scanner project Share icon" width="240"></td>
-    <td align="center"><img src="assets/device/scanner-wifi-code.png" alt="Scanner Wi-Fi share code entry" width="240"></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>USB: tap <b>File Transfer</b> on the scanner</sub></td>
-    <td align="center"><sub>Wi-Fi: the <b>Share</b> icon, top right of a project</sub></td>
-    <td align="center"><sub>Wi-Fi: type the 4-digit code PointYoink shows</sub></td>
-  </tr>
-</table>
+1. **Import.** Plug in and tap **File Transfer** on the scanner, or click **WiFi** and enter the code on the scanner under Share to PC. Tick the projects, Import. Choose **Full project** if you want to build or combine on the PC.
 
-2. **Projects.** The imported project appears with its scans. Follow the **NEXT** bar: it walks you through the five steps below and each one is a single button.
+<p align="center">
+  <img src="docs/img/v1/01-import.png" alt="The Import page" width="920">
+</p>
 
-| Step | What happens | Where the result goes |
+2. **Follow the NEXT bar.** With a project open, the bar at the top says what to do now and does it with one button. It walks through the five steps below. **How this works** opens a short guide with a screenshot of each step, on the scanner and in the app.
+
+| Step | What happens | Result |
 |---|---|---|
-| Build | raw frames become a 3D model (One-tap Edit on the scanner does this too; build here when that did not turn out right) | `<project>_<scan>_pcfused.ply` |
-| Cut base | one line above the table, Apply; the plane is remembered | `<project>_<scan>_clean.ply` |
-| Combine | line up the sides on matching points, then fuse all their frames into one model, table already dropped | `<project>_combined_pcfused.ply` |
-| Prepare | floating pieces, smoothing, holes, triangle count; before and after | `<project>_<scan>_clean.ply` |
+| Build | raw frames become a 3D model (the scanner's One-tap Edit does this too; build here when that didn't turn out right) | `<project>_<scan>_pcfused.ply` |
+| Remove base | the table goes red, the part stays grey, Apply | `<project>_<scan>_clean.ply` |
+| Combine | line up the sides on matching spots, then fuse all their frames into one model with the tables already gone | `<project>_combined_pcfused.ply` |
+| Prepare | floating pieces, smoothing, holes, triangle count, before and after | `<project>_<scan>_clean.ply` |
 | Export | STL, OBJ, GLB or PLY with a size and mesh check | the folder you choose |
 
-Every step saves a new version and you pick which one the preview and exports use, so an original from the scanner is never overwritten.
+<p align="center">
+  <img src="docs/img/v1/rb4-spots-top.png" alt="Remove base: seven spots clicked on the turntable, the plane fitted through them" width="450">
+  <img src="docs/img/v1/rb5-spots-angle.png" alt="The same cut from a low angle: the plane sits flat on the table" width="450">
+</p>
+
+<p align="center">
+  <img src="docs/img/v1/g2-combine.png" alt="Combine: matching spots on two scans, then the overlay" width="450">
+  <img src="docs/img/v1/d3-export.png" alt="Export: format, folder, and the mesh check" width="450">
+</p>
 
 ## How it works
 
-A MIRACO project holds thousands of raw depth frames plus the finished, fused output. **Finished models** copies just the finished output, so an import moves megabytes instead of gigabytes. **Full project** keeps the scanner's nested layout with the raw frames, which is what Build and Combine read.
+A MIRACO project holds thousands of raw depth frames plus the finished, fused output. **Finished models** copies just the output, so an import moves megabytes instead of gigabytes. **Full project** keeps the scanner's layout with the raw frames, which is what Build and Combine read.
 
-Build fuses the frames in a TSDF volume ([Open3D](https://www.open3d.org/), GPU when there is one) using the globally registered poses the scanner writes with every scan (`cache/global_register_pose.pose`). That table is what makes multi-pass scans line up the way they do on the device: on three test scans the result sits 0.2 mm median from the scanner's own One-tap Edit model. Combine solves a rigid fit from your point pairs (or from FPFH features with Auto), refines it with ICP, and then fuses every scan's frames into one volume with each scan's base plane culled first. All the heavy work runs in memory-capped subprocesses so a huge mesh can never take the machine down.
+Build fuses the frames in a TSDF volume ([Open3D](https://www.open3d.org/), GPU when available) using the registered poses the scanner writes with every scan. Combine solves a rigid fit from your point pairs (or from feature matching with Auto), refines it with ICP, and fuses every scan's frames into one volume with each scan's table plane removed first. The heavy work runs in memory-capped subprocesses, so a huge mesh can't take the machine down.
 
 Imported files land in a flat layout with unique names:
 
@@ -135,47 +121,44 @@ revopoint-scans-models/
     data/<scan>/...                            # raw frames and the scanner's own files (Full project)
 ```
 
-**Export ZIP** bundles the selected projects with clean flat names.
-
 ## Troubleshooting
 
-- **Nothing detected:** make sure you tapped File Transfer on the scanner, not just plugged it in. Try a different USB-C cable, since some only charge.
-- **Connect fails or hangs:** unplug and replug, tap File Transfer again. PointYoink clears stale connections on its own.
+- **Nothing detected:** tap File Transfer on the scanner; plugging in alone isn't enough. Try another USB-C cable, some only charge.
+- **Connect fails or hangs:** unplug, replug, tap File Transfer again.
 - **Previews are blank:** the scanner is still waking up. Click the project again.
-- Anything else: open **Log** in the app, copy it, and file an issue.
+- Anything else: open **Log** from the menu, copy it, and open an issue.
 
 ## Roadmap
 
-- Selection tools in the 3D view (lasso, brush) for removing bad regions, and smoothing only a selected area.
+- Pick a face to lay flat, the way slicers do, as another way to set the base.
+- Confirm the base MIRACO and MIRACO Plus and note any differences from the Pro.
 - An assembly view for parts that belong together but must stay separate.
 - Presets and a job queue for repeat work.
-- A **Live** view showing the scanner's real-time orientation (the MIRACO streams pose and IMU data over WiFi); the tethered Revopoint RANGE already streams into it.
-- Confirm the base MIRACO and MIRACO Plus, and document any differences from the Pro.
 
 ## Privacy
 
-Everything happens locally over USB. Nothing is uploaded anywhere.
+Everything happens on your machine, over USB or your local network. Nothing is uploaded anywhere.
 
 ## Contributing
 
-Issues and pull requests are welcome, especially test reports from MIRACO Pro and Plus owners.
+Issues and pull requests are welcome, especially test reports from MIRACO and MIRACO Plus owners.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
 
+## Credits
+
+Full license notices for everything bundled in the `.deb` are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 ## Built with
 
-`jmtpfs` and `libmtp` (device access), `rsync` (transfer), CustomTkinter and Pillow (UI), and `trimesh` (STL/OBJ/GLB export). PointYoink contains no code from other Revopoint tools - the MIRACO project layout was worked out directly.
+`jmtpfs` and `libmtp` for device access, `rsync` for the transfer, CustomTkinter and Pillow for the UI, PyOpenGL for the 3D views, `trimesh` for export, and Open3D for building and combining. The MIRACO's on-device project layout was worked out by looking at the files it produces.
 
 ## Related projects
 
-Different scanners or different problems, listed so you can find the right tool if PointYoink isn't the fit:
+Different scanners, different problems, listed in case one of these is the better fit:
 
-- [HazenBabcock/revopoint-python](https://github.com/HazenBabcock/revopoint-python) - live control and capture of older **tethered** scanners (POP/MINI) over Wi-Fi.
-- [ifilipis/metrox](https://github.com/ifilipis/metrox) - reverse-engineering and raw-frame processing for the **MetroX**, from PC-cached project files.
-- [frostworx/revopoint-pop2-linux-info](https://github.com/frostworx/revopoint-pop2-linux-info) - notes on running a **POP2** on Linux (Wine/SSH).
-
----
-
-Keywords: revopoint linux, revo scan linux, miraco linux, revopoint miraco linux, miraco pro linux, transfer miraco scans to linux, get files off miraco linux, revopoint mtp linux, revopoint ply export linux, revopoint no linux version, 3d scanner linux.
+- [HazenBabcock/revopoint-python](https://github.com/HazenBabcock/revopoint-python), live control and capture of older tethered scanners (POP, MINI) over WiFi.
+- [ifilipis/metrox](https://github.com/ifilipis/metrox), raw-frame processing for the MetroX from PC-side project files.
+- [frostworx/revopoint-pop2-linux-info](https://github.com/frostworx/revopoint-pop2-linux-info), notes on running a POP2 on Linux.
