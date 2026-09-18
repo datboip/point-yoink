@@ -3,7 +3,7 @@
 All notable changes to PointYoink. 0.7.0 was the first tagged release; the
 0.9.x line was development builds on the way to 1.0.0.
 
-## 1.0.0 (unreleased, rc2 on the dev branch)
+## 1.0.0 (2026-09-18)
 
 - Cancelling a WiFi Replace part-way now puts the previous project back instead of deleting it.
 - The 3D viewer is no longer closed after 15 quiet minutes; the stall watch ends once it has drawn.
