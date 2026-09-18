@@ -8,7 +8,7 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # app version as written in pointyoink.py; a pre-release suffix becomes Debian's "~" so 1.0.0~rc1 sorts BEFORE 1.0.0
 VER="${1:-$(grep -oP 'VERSION = "\K[0-9A-Za-z.-]+' "$ROOT/pointyoink.py")}"
-VER="${VER//-/~}"                     # an explicit version argument gets the same Debian pre-release form
+VER="$(printf '%s' "$VER" | sed 's/-/~/')"   # explicit or default, a pre-release suffix becomes Debian's ~ (quoted: bash would expand a bare ~)
 BUILD="$ROOT/packaging/build"
 NAME="point-yoink"
 LIB="usr/lib/point-yoink"
