@@ -4,6 +4,8 @@ All notable changes to PointYoink. Versions before 1.0.0 are pre-release
 builds; 1.0.0 is the first public release.
 
 ## 1.0.0 (unreleased, rc1 on the dev branch)
+
+- Every button, menu item and step marker now uses the icon set; the last unicode glyph labels are gone, so the UI no longer depends on which symbols the system font happens to have.
 The first public release, being finished on the dev branch.
 - Pull Revopoint MIRACO scans onto Linux over USB (MTP) or WiFi. No Revo Scan, no Windows, no VM.
 - Build the mesh on the GPU, remove the base, combine sides, prepare the surface, and export STL / OBJ / GLB / PLY, with a mesh check before you save.

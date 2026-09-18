@@ -61,19 +61,29 @@ if os.environ.get("POINTYOINK_CONFIG"):
 HERE = os.path.dirname(os.path.abspath(__file__)); ICON = os.path.join(HERE, "icon.png")
 _ICON_ROOT = os.path.join(HERE, "assets", "icons", "png"); _icon_cache = {}
 _ICON_SRC_SIZES=(32, 36, 40, 48)   # the source folders actually shipped
-def _icon(name, state="default", size=18):
+def _icon(name, state="default", size=18, color=None):
     """Load a PointYoink line icon as a CTkImage (states: default/accent/muted/danger/on-accent). Prefers the
     2x (size*2) source, but falls back to the largest shipped source and scales, so any display size works
-    (the shipped sources are only 32/36/40/48). Returns None if missing, so callers keep their text label."""
-    key=(name, state, size)
+    (the shipped sources are only 32/36/40/48). `color` ("#rrggbb") tints the icon any colour the states
+    don't cover (the green of a finished step): the source's alpha becomes a mask over a solid fill.
+    Returns None if missing, so callers keep their text label."""
+    key=(name, state, size, color)
     if key in _icon_cache: return _icon_cache[key]
     ci=None
     for src in (size*2, 48, 40, 36, 32):   # try exact 2x, then the biggest available down to the smallest
         try:
-            img=Image.open(os.path.join(_ICON_ROOT, state, str(src), name+".png"))
+            img=Image.open(os.path.join(_ICON_ROOT, state, str(src), name+".png")).convert("RGBA")
+            if color:
+                tint=Image.new("RGBA", img.size, color); tint.putalpha(img.getchannel("A")); img=tint
             ci=ctk.CTkImage(dark_image=img, light_image=img, size=(size, size)); break
         except Exception: continue
     _icon_cache[key]=ci; return ci
+def _icon_blank(size=16):
+    """A transparent square the size of an icon, so rows without one still line up with rows that have one."""
+    key=("", "blank", size, None)
+    if key not in _icon_cache:
+        img=Image.new("RGBA", (size, size), (0, 0, 0, 0)); _icon_cache[key]=ctk.CTkImage(dark_image=img, light_image=img, size=(size, size))
+    return _icon_cache[key]
 def _build_id():
     """A short stamp so two builds of the same VERSION are tellable apart: the git short hash while
     running from the repo (with '+' if there are uncommitted changes), else the source file's date-time."""
@@ -1647,16 +1657,17 @@ class App(LiveMixin, ctk.CTk):
         try: m.attributes("-topmost", True)
         except Exception: pass
         box=ctk.CTkFrame(m, fg_color=CARD2, corner_radius=10, border_width=1, border_color=STROKE); box.pack(fill="both", expand=True)
-        def item(text, cmd, sep=False):
+        def item(text, cmd, icon, sep=False):
             if sep: tk.Frame(box, bg=STROKE, height=1, bd=0, highlightthickness=0).pack(fill="x", padx=8, pady=4)
-            ctk.CTkButton(box, text=text, anchor="w", width=220, height=32, corner_radius=6, fg_color="transparent", hover_color=STROKE, text_color=TX,
+            # every row carries an image (a blank one when there is no icon) so the labels line up
+            ctk.CTkButton(box, text="  "+text, image=(_icon(icon, "default", 16) if icon else _icon_blank(16)), compound="left", anchor="w", width=220, height=32, corner_radius=6, fg_color="transparent", hover_color=STROKE, text_color=TX,
                           font=ctk.CTkFont(size=12), command=lambda: (m.destroy(), cmd())).pack(fill="x", padx=6, pady=1)
-        item("⚙  Settings…", self.dlg_settings)
-        item("✦  How this works (the five steps)", self._howto_dialog, sep=True)
-        item("?  Help", self.dlg_help)
-        item("▤  Open error log", self.dlg_logs)
-        item("i  About "+APP, self.dlg_about, sep=True)
-        item("↗  PointYoink on GitHub", lambda: subprocess.Popen(["xdg-open", GITHUB]))
+        item("Settings…", self.dlg_settings, "settings")
+        item("How this works (the five steps)", self._howto_dialog, "play", sep=True)
+        item("Help", self.dlg_help, None)
+        item("Open error log", self.dlg_logs, "projects")
+        item("About "+APP, self.dlg_about, None, sep=True)
+        item("PointYoink on GitHub", lambda: subprocess.Popen(["xdg-open", GITHUB]), "external-link")
         self.update_idletasks()
         x=self._menu_btn.winfo_rootx()+self._menu_btn.winfo_width()-236; y=self._menu_btn.winfo_rooty()+self._menu_btn.winfo_height()+4
         m.geometry("+%d+%d" % (max(0, x), y)); m.after(50, lambda: (m.focus_force(), m.bind("<FocusOut>", lambda e: m.winfo_exists() and m.destroy())))
@@ -1732,7 +1743,7 @@ class App(LiveMixin, ctk.CTk):
                         fg_color="#0d0f14", border_color=STROKE, text_color=TX, placeholder_text_color=MUT, font=ctk.CTkFont(size=12))
         se.grid(row=0,column=0, sticky="ew"); self._search_entry=se
         se.bind("<KeyRelease>", lambda e: (self.search.set(se.get()), self._sync_search_clear()))
-        self.search_clear=ctk.CTkButton(srow, text="✕", width=30, height=34, corner_radius=8, fg_color="transparent",
+        self.search_clear=ctk.CTkButton(srow, text="", image=_icon("close", "muted", 14), width=30, height=34, corner_radius=8, fg_color="transparent",
                                         hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=13), command=self._clear_search)
         self._tip(self.search_clear, "Clear the search")   # shown only while there's text (see _sync_search_clear)
         self.llist=ctk.CTkScrollableFrame(left, fg_color="transparent"); self.llist.grid(row=2,column=0, sticky="nsew", padx=(8,2), pady=0); self._autohide(self.llist)
@@ -1756,7 +1767,7 @@ class App(LiveMixin, ctk.CTk):
         nr=ctk.CTkFrame(self.projbar, fg_color="transparent"); nr.pack(fill="x")
         self.hdr_name=ctk.CTkLabel(nr, text="", text_color=TX, anchor="w", justify="left", font=ctk.CTkFont(size=19, weight="bold"), wraplength=360)
         self.hdr_name.pack(side="left")
-        rn=ctk.CTkButton(nr, text="✎", width=28, height=26, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT,
+        rn=ctk.CTkButton(nr, text="", image=_icon("edit", "muted", 14), width=28, height=26, corner_radius=6, fg_color="transparent", hover_color=CARD2, text_color=MUT,
                          font=ctk.CTkFont(size=14), command=lambda: self.selected and self.rename_project(self.selected)); rn.pack(side="left", padx=(6,0))
         self._tip(rn, "Rename this project (the scanner's id is kept as a reference)")
         ir=ctk.CTkFrame(self.projbar, fg_color="transparent"); ir.pack(fill="x", pady=(2,6))
@@ -1771,7 +1782,7 @@ class App(LiveMixin, ctk.CTk):
         except Exception: pass
         self._preview_tab=pv   # the Edit tab reuses this same live-view frame (keeps the camera/object); it has no frame of its own
         ctl=ctk.CTkFrame(self.tabs.bar, fg_color="transparent"); ctl.pack(side="right", pady=(0,4)); self._tab_ctl=ctl   # the 3D-only toolbar (View in 3D / Solid-Wireframe / Reset view); hidden for a flat 2D scanner preview
-        self.view_btn=ctk.CTkButton(ctl, text="⟳  View in 3D", width=98, height=30, corner_radius=8, fg_color="transparent", border_width=1,
+        self.view_btn=ctk.CTkButton(ctl, text="View in 3D", image=_icon("view-3d", "default", 16), compound="left", width=98, height=30, corner_radius=8, fg_color="transparent", border_width=1,
                                     border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=12), command=self.on_view_3d)
         self._tip(self.view_btn, "Open this scan in the interactive viewer: drag to rotate, scroll to zoom.")
         self.shade_sw=ctk.CTkSegmentedButton(ctl, values=["Solid","Wireframe"], command=self._shade_mode_changed, height=30, corner_radius=8,
@@ -1857,7 +1868,7 @@ class App(LiveMixin, ctk.CTk):
         _pab=ctk.CTkButton(sctop, text="⤓ Pull all", width=96, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
                       hover_color=CARD2, text_color=TX, command=self.pull_screenshots); _pab.pack(side="right", padx=4)
         self._tip(_pab, "Copy every screenshot & recording off the scanner into your save folder's “captures” subfolder (Open folder shows where).")
-        ctk.CTkButton(sctop, text="↻ Refresh", width=96, height=30, corner_radius=8, fg_color=CARD2,
+        ctk.CTkButton(sctop, text="Refresh", image=_icon("refresh", "default", 14), compound="left", width=96, height=30, corner_radius=8, fg_color=CARD2,
                       hover_color=STROKE, text_color=TX, command=self.refresh_screenshots).pack(side="right", padx=4)
         self.shots=ctk.CTkScrollableFrame(sc, fg_color="#0a0c10", corner_radius=10); self._autohide(self.shots)
         self.shots.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.shots, "vertical"), add="+")
@@ -1942,7 +1953,7 @@ class App(LiveMixin, ctk.CTk):
         self._hr(op)
         # editing is an action with a result, not an import option: it lives on the Process page
         ctk.CTkLabel(op, text="After importing", text_color=TX, font=ctk.CTkFont(size=13, weight="bold"), anchor="w").pack(fill="x", padx=16, pady=(4,2))
-        eb=ctk.CTkButton(op, text="▤  Open the Projects page…", height=32, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
+        eb=ctk.CTkButton(op, text="Open the Projects page…", image=_icon("projects", "default", 16), compound="left", height=32, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
                          hover_color=CARD2, text_color=TX, anchor="w", command=lambda: self._set_mode("Local"))
         eb.pack(fill="x", padx=14, pady=(0,4))
         self._tip(eb, "Everything on this PC lives on the Projects page: build 3D models from raw data, line up scans, prepare, export.")
@@ -1967,7 +1978,7 @@ class App(LiveMixin, ctk.CTk):
         ob=ctk.CTkButton(fh, text="open", width=50, height=24, corner_radius=6, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2,
                          text_color=TX, font=ctk.CTkFont(size=10), command=self.open_folder); ob.pack(side="right", padx=(4,0))
         self._tip(ob, "Open the save folder in your file manager")
-        ctk.CTkButton(fh, text="↻", width=28, height=24, corner_radius=6, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2,
+        ctk.CTkButton(fh, text="", image=_icon("refresh", "muted", 14), width=28, height=24, corner_radius=6, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2,
                       text_color=TX, command=self.refresh_folder).pack(side="right")
         tw=ctk.CTkFrame(fp, fg_color="#0a0c10", corner_radius=10); tw.grid(row=3,column=0, sticky="nsew", pady=(0,10))
         tw.grid_columnconfigure(0, weight=1); tw.grid_rowconfigure(0, weight=1); self._tree_wrap=tw
@@ -2358,7 +2369,7 @@ class App(LiveMixin, ctk.CTk):
         row=ctk.CTkFrame(t, fg_color="transparent"); row.pack(fill="x", padx=22, pady=(2,16))
         ctk.CTkButton(row, text="Open error log", corner_radius=16, fg_color=CARD2, hover_color=STROKE,
                       text_color=TX, command=self.dlg_logs).pack(side="left")
-        ctk.CTkButton(row, text="GitHub ↗", corner_radius=16, fg_color=AC, hover_color=AC_H,
+        ctk.CTkButton(row, text="GitHub", image=_icon("external-link", "on-accent", 14), compound="right", corner_radius=16, fg_color=AC, hover_color=AC_H,
                       text_color="#04121f", command=lambda: subprocess.Popen(["xdg-open",GITHUB])).pack(side="right")
 
     def dlg_about(self):
@@ -2385,7 +2396,7 @@ class App(LiveMixin, ctk.CTk):
         ctk.CTkLabel(t, text="Unofficial. Not affiliated with or endorsed by Revopoint.\n"
                      "“Revopoint” and “MIRACO” are trademarks of their owners.",
                      text_color=MUT, font=ctk.CTkFont(size=11), justify="center").pack(pady=(6,0))
-        ctk.CTkButton(t, text="GitHub  ↗", corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f",
+        ctk.CTkButton(t, text="GitHub", image=_icon("external-link", "on-accent", 14), compound="right", corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f",
                       command=lambda: subprocess.Popen(["xdg-open",GITHUB])).pack(pady=12)
         ctk.CTkLabel(t, text="Changelog", text_color=MUT, font=ctk.CTkFont(size=12,weight="bold"), anchor="w").pack(fill="x", padx=24)
         box=ctk.CTkTextbox(t, fg_color=CARD, text_color=TX, corner_radius=12, wrap="word", height=150)
@@ -2720,7 +2731,7 @@ class App(LiveMixin, ctk.CTk):
         self._sync_search_clear()
         if self.projects: self.render_list(self.projects)
     def _sync_search_clear(self):
-        """Show the search clear (✕) only while there's text to clear."""
+        """Show the search clear (x) only while there's text to clear."""
         try:
             if (self.search.get() or "").strip():
                 if not self.search_clear.winfo_manager(): self.search_clear.grid(row=0,column=1, padx=(4,0))
@@ -2755,16 +2766,16 @@ class App(LiveMixin, ctk.CTk):
             # editing saved scans without a scanner is normal - don't cry wolf. Prompt only on the Import page.
             if self.page=="import": self._probe_banner("Scanner not detected - plug in the USB-C cable, or use WiFi.", WARN)
             else: self._probe_banner("Working on saved scans · connect the scanner over USB or WiFi to import more.", MUT)
-            self.action_btn.configure(text="🔌  USB", state="normal"); self.auto_tried=False
+            self.action_btn.configure(text="  USB", state="normal"); self.auto_tried=False
         elif st=="adb":
             self._probe_banner("MIRACO detected · Not connected - tap “File Transfer” on the scanner", WARN)
-            self.action_btn.configure(text="🔌  USB", state="normal"); self.auto_tried=False
+            self.action_btn.configure(text="  USB", state="normal"); self.auto_tried=False
         elif st=="mtp" and not mounted:
-            self.action_btn.configure(text="🔌  USB", state="normal")
+            self.action_btn.configure(text="  USB", state="normal")
             if self._mounting: self._probe_banner("Connecting…", AC)
             else: self._probe_banner("MIRACO detected · click USB when you're ready to read it", AC)
         elif mounted:
-            self.action_btn.configure(text="🔌  Rescan", state="normal")
+            self.action_btn.configure(text="  Rescan", state="normal")
             if self.listed_src=="device" and self.listed:
                 if self.page=="import": self._probe_banner("Connected - tick scans to import, click one to preview.", OK)
                 else: self._probe_banner("MIRACO connected - open the Import tab to bring its projects over.", OK)   # guide, don't leave them wondering
@@ -2880,7 +2891,7 @@ class App(LiveMixin, ctk.CTk):
                 self.list_empty=ctk.CTkFrame(self.llist, fg_color="transparent"); self.list_empty.grid(row=0,column=0, sticky="nsew")
                 ctk.CTkLabel(self.list_empty, text="Nothing on this PC yet", text_color=TX, font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(60,4))
                 ctk.CTkLabel(self.list_empty, text="Import a project from the scanner first.\nIt shows up here with everything you make from it.", text_color=MUT, font=ctk.CTkFont(size=12), justify="center").pack()
-                ctk.CTkButton(self.list_empty, text="⬇  Go to Import", width=140, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=lambda: self._set_mode("Projects")).pack(pady=14)
+                ctk.CTkButton(self.list_empty, text="Go to Import", image=_icon("import", "on-accent", 16), compound="left", width=140, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=lambda: self._set_mode("Projects")).pack(pady=14)
             else:
                 self.list_empty=self._empty_state(self.llist, "projects"); self.list_empty.grid(row=0,column=0, sticky="nsew")
                 self._fit_empty("list_empty", self.llist)
@@ -2921,15 +2932,15 @@ class App(LiveMixin, ctk.CTk):
             ml=ctk.CTkFrame(txt, fg_color="transparent"); ml.pack(anchor="w", fill="x", pady=(2,0))
             badges=[]
             if p.get("local"): badges.append(("on this PC", AC, "#15304d"))
-            elif self.is_imported(name): badges.append(("↑ updated", WARN, "#3d2f14") if self.changed(name) else ("✓ Imported", OK, "#173a2a"))
+            elif self.is_imported(name): badges.append(("↑ updated", WARN, "#3d2f14") if self.changed(name) else ("Imported", OK, "#173a2a"))
             else: badges.append(("on the scanner", MUT, CARD2))
             if p.get("nodes") and (p.get("local") or p.get("on_pc")):
                 dm=p.get("dev_meshed") or 0
                 if not dm: badges.append(("raw only", WARN, "#3d2f14"))
                 elif dm<p["nodes"]: badges.append(("partly scanner-edited", WARN, "#3d2f14"))
                 else: badges.append(("scanner-edited", OK, "#173a2a"))
-            if p.get("combined"): badges.append(("⧉ combined", OK, "#173a2a"))
-            if p.get("prepared"): badges.append(("✦ prepared", OK, "#173a2a"))
+            if p.get("combined"): badges.append(("combined", OK, "#173a2a"))
+            if p.get("prepared"): badges.append(("prepared", OK, "#173a2a"))
             b0=badges[0]
             ctk.CTkLabel(ml, text=b0[0], text_color=b0[1], fg_color=b0[2], corner_radius=6, width=1, height=18, font=ctk.CTkFont(size=10)).pack(side="left", padx=(0,6), ipadx=6)
             if parts: ctk.CTkLabel(ml, text=" · ".join(parts), text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left")
@@ -4551,7 +4562,7 @@ class App(LiveMixin, ctk.CTk):
         self._opt(body, "radio", "Auto-detect", "The flattest surface in the scan.", dirvar, "Auto-detect", _pick_dir)
         self._opt(body, "radio", "Click spots on the table", "Click 3 or more spots on the table.", dirvar, "Click spots on the table", _pick_dir)
         spots=ctk.CTkFrame(body, fg_color="transparent"); spots.pack(fill="x", padx=12, pady=(0,2))
-        clearb=ctk.CTkButton(spots, text="↺ Clear points", width=118, height=28, corner_radius=14, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11)); clearb.pack(side="left", padx=(24,0))
+        clearb=ctk.CTkButton(spots, text="Clear points", image=_icon("clear-selection", "muted", 14), compound="left", width=118, height=28, corner_radius=14, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11)); clearb.pack(side="left", padx=(24,0))
         clearb.configure(state="disabled")
         self._tip(clearb, "Remove all the clicked spots. Click a dot again to remove just that one; Backspace undoes the last.")
         dirhint=ctk.CTkLabel(body, text="", text_color=DIM, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=280); dirhint.pack(fill="x", padx=(36,12), pady=(2,4))
@@ -4610,7 +4621,7 @@ class App(LiveMixin, ctk.CTk):
         brow=ctk.CTkFrame(body, fg_color="transparent"); brow.pack(fill="x", padx=14, pady=(8,2))
         flipb=ctk.CTkButton(brow, text="Flip side", width=110, height=32, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX); flipb.pack(side="left", padx=(0,8))
         self._tip(flipb, "Swap which side is kept: the red half becomes grey and the grey half red.")
-        resetb=ctk.CTkButton(brow, text="↺ Reset", width=96, height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=12)); resetb.pack(side="left")
+        resetb=ctk.CTkButton(brow, text="Reset", image=_icon("undo", "muted", 14), compound="left", width=96, height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=12)); resetb.pack(side="left")
         self._tip(resetb, "Deselect everything: no table direction, no spots, no cut shown. Start again from scratch.")
         self._hr(body, pady=(6,2))
         def no_table():
@@ -4625,7 +4636,7 @@ class App(LiveMixin, ctk.CTk):
             self._tip(undob, "Undo the base cut on this scan: the cut copy goes to the trash (a prepared copy it replaced comes back), the remembered plane is forgotten, and the scan shows the scanner's model again.")
         foot=ctk.CTkFrame(pal, fg_color="transparent"); foot.grid(row=2,column=0, sticky="ew", padx=14, pady=(6,14)); foot.grid_columnconfigure(0, weight=1)
         cancelb=ctk.CTkButton(foot, text="Cancel", width=96, height=34, corner_radius=17, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX); cancelb.grid(row=0,column=0, sticky="w")
-        applyb=ctk.CTkButton(foot, text="✂  Apply cut", width=140, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=12, weight="bold")); applyb.grid(row=0,column=1, sticky="e")
+        applyb=ctk.CTkButton(foot, text="Apply cut", image=_icon("cut-base", "on-accent", 16), compound="left", width=140, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=12, weight="bold")); applyb.grid(row=0,column=1, sticky="e")
         st={"n":None, "H":None, "Hmin":0.0, "Hmax":1.0, "cut":0.0, "keep_above":True, "V":None, "job":None, "busy":False, "picks":[], "n_auto":None, "n_grid":None}
         KEEP=np.array([0.74,0.76,0.80], np.float32); GONE=np.array([1.0,0.36,0.42], np.float32)
         def close():
@@ -4675,7 +4686,7 @@ class App(LiveMixin, ctk.CTk):
             except Exception: pass
             view.plane=None; view.draw()
             slider.set(0); val.configure(text=""); cutvar.set(0.0); _tilt_zero()
-            self._btn_busy(applyb, "✂  Apply cut")          # nothing to apply yet
+            self._btn_busy(applyb, "Apply cut")          # nothing to apply yet
         def _fit_spots():
             """Re-fit the cut plane from the clicked spots (3+); with fewer, show no cut at all."""
             k=len(st["picks"])
@@ -4875,13 +4886,13 @@ class App(LiveMixin, ctk.CTk):
         self.proc_title=ctk.CTkLabel(ph, text="", text_color=MUT, font=ctk.CTkFont(size=12)); self.proc_title.pack(side="left")
         ctk.CTkButton(ph, text="Delete project from this PC", width=190, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
                       hover_color="#3a2530", text_color=MUT, command=self._proc_delete_project).pack(side="right")
-        self.base_btn=ctk.CTkButton(ph, text="✂  Remove base", width=130, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
+        self.base_btn=ctk.CTkButton(ph, text="Remove base", image=_icon("cut-base", "default", 16), compound="left", width=130, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
                                     hover_color=CARD2, text_color=TX, command=self.on_remove_base); self.base_btn.pack(side="right", padx=8)
         self._tip(self.base_btn, "Slice the table or turntable off the current scan with a cut plane. Saves a cleaned copy; the original is kept.")
-        self.align_btn=ctk.CTkButton(ph, text="⧉  Combine scans…", width=150, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
+        self.align_btn=ctk.CTkButton(ph, text="Combine scans…", image=_icon("combine", "default", 16), compound="left", width=150, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
                                      hover_color=CARD2, text_color=TX, command=lambda: self._align_dialog(self.selected)); self.align_btn.pack(side="right", padx=8)
         self._tip(self.align_btn, "Scanned each side separately? Line the scans up on matching points (or automatically) and build one model from all of them.")
-        self.proc_btn=ctk.CTkButton(ph, text="⚙  Build all models", width=150, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=AC,
+        self.proc_btn=ctk.CTkButton(ph, text="Build all models", image=_icon("build", "accent", 16), compound="left", width=150, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=AC,
                                     hover_color=CARD2, text_color=AC, command=self.on_process_pc); self.proc_btn.pack(side="right", padx=8)
         self._tip(self.proc_btn, "Build the 3D model of every scan that has raw scan data, on this PC.")
         dr=ctk.CTkFrame(pr, fg_color="transparent"); dr.grid(row=2,column=0, sticky="ew", padx=16, pady=(0,10))
@@ -4969,7 +4980,7 @@ class App(LiveMixin, ctk.CTk):
             self.set_banner("Now showing the %s of %s." % (label, self._scan_label(name, node)), MUT)
             try: self._request_shaded(name, node)               # re-render the preview from the chosen version now
             except Exception: pass
-            if self.page=="projects": self._schedule_panel_refresh(50)   # move the ✓ / rebuild the version chips (deferred: don't destroy the clicked button mid-callback)
+            if self.page=="projects": self._schedule_panel_refresh(50)   # move the check / rebuild the version chips (deferred: don't destroy the clicked button mid-callback)
         self.after(0, lambda: self._proc_render(name))          # rebuild the cards page too, deferred for the same reason
     def _trash(self, path, tdir=None):
         """Move a file or folder to the desktop trash (gio), else into <dest>/.trash. Can be slow
@@ -5072,10 +5083,10 @@ class App(LiveMixin, ctk.CTk):
             for key,label,path in vs:
                 is_cur=(cur and cur[0]==key)
                 chip=ctk.CTkFrame(vr, fg_color=("#15304d" if is_cur else CARD2), corner_radius=9); chip.pack(side="left", padx=3)
-                b=ctk.CTkButton(chip, text=("✓ " if is_cur else "")+label, height=22, corner_radius=9, fg_color="transparent", hover_color=STROKE,
+                b=ctk.CTkButton(chip, text=label, image=(_icon("check", "default", 12, color=OK) if is_cur else None), compound="left", height=22, corner_radius=9, fg_color="transparent", hover_color=STROKE,
                                 text_color=(AC if is_cur else TX), font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key: self._pick_version(n, nd, k)); b.pack(side="left", padx=(6,0))
                 self._tip(b, "%s · %s\nClick to make this the version the preview and exports use." % (os.path.basename(path), human(os.path.getsize(path))))
-                x=ctk.CTkButton(chip, text="✕", width=22, height=22, corner_radius=9, fg_color="transparent", hover_color="#3a2530", text_color=MUT,
+                x=ctk.CTkButton(chip, text="", image=_icon("close", "muted", 12), width=22, height=22, corner_radius=9, fg_color="transparent", hover_color="#3a2530", text_color=MUT,
                                 font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key,pth=path: self._proc_delete_version(n, nd, k, pth)); x.pack(side="left", padx=(0,4))
                 self._tip(x, "Delete this version (to the trash)")
             act=ctk.CTkFrame(card, fg_color="transparent"); act.grid(row=0,column=2, rowspan=2, padx=14, pady=12, sticky="e")
@@ -5084,16 +5095,16 @@ class App(LiveMixin, ctk.CTk):
             primary="build" if (raw and not vs) else ("prepare" if (vs and not has_prep) else ("export" if vs else None))
             def mk(kind, text, tip, enabled, cmd):
                 filled=(kind==primary and enabled)
-                b=ctk.CTkButton(act, text=text, width=150, height=30, corner_radius=8, fg_color=(AC if filled else "transparent"),
+                b=ctk.CTkButton(act, text=text, image=_icon(kind, "on-accent" if filled else ("default" if enabled else "muted"), 16), compound="left", width=150, height=30, corner_radius=8, fg_color=(AC if filled else "transparent"),
                                 hover_color=(AC_H if filled else CARD2), border_width=(0 if filled else 1), border_color=STROKE,
                                 text_color=("#04121f" if filled else (TX if enabled else MUT)), state=("normal" if enabled else "disabled"), command=cmd)
                 b.pack(side="top", fill="x", pady=2); self._tip(b, tip); return b
-            bb=mk("build", "⚙  Build model", "Build this scan's 3D model from its raw data, on this PC." if raw else "No raw scan data on this PC for this scan (share the project over WiFi as Full project).",
+            bb=mk("build", "Build model", "Build this scan's 3D model from its raw data, on this PC." if raw else "No raw scan data on this PC for this scan (share the project over WiFi as Full project).",
                   bool(raw), lambda n=name,nd=node: self._proc_build(n, [nd]))
             if node=="combined": bb.pack_forget()                     # the combined model is rebuilt from the Combine window, not here
-            cb=mk("prepare", "✦  Prepare…", "Remove floating pieces, smooth the surface, fill small holes, reduce triangles. You see before and after, then keep or discard.",
+            cb=mk("prepare", "Prepare…", "Remove floating pieces, smooth the surface, fill small holes, reduce triangles. You see before and after, then keep or discard.",
                   bool(vs), lambda n=name,nd=node: self._prepare_dialog(n, nd))
-            xb=mk("export", "⬆  Export…", "Save this scan as STL, OBJ, GLB or PLY, with its size and a mesh check.", bool(vs), lambda n=name,nd=node: self._export_dialog(n, nd))
+            xb=mk("export", "Export…", "Save this scan as STL, OBJ, GLB or PLY, with its size and a mesh check.", bool(vs), lambda n=name,nd=node: self._export_dialog(n, nd))
             pb=ctk.CTkProgressBar(card, height=6, corner_radius=3, progress_color=AC, fg_color="#0d0f14"); pb.set(0)
             pl=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w")
             self._proc_rows[node]={"card":card, "bar":pb, "lbl":pl, "build":bb, "prepare":cb, "export":xb}
@@ -5150,7 +5161,7 @@ class App(LiveMixin, ctk.CTk):
             self.q.put(("base_geom", path, sig, r))
         threading.Thread(target=work, daemon=True).start()
     def _proc_next(self, name, nodes, local):
-        """What to do now for this project: (title, detail, button text, command, step index into STEPS)."""
+        """What to do now for this project: (title, detail, button text, command, step index into STEPS, alt button, icon name)."""
         scans=[n for n in nodes if n!="combined"]
         unbuilt=[n for n in scans if not self._proc_versions(name, n) and self._has_raw_frames(local, n)]
         built=[n for n in scans if self._proc_versions(name, n)]
@@ -5160,7 +5171,7 @@ class App(LiveMixin, ctk.CTk):
         if sel is not None and sel in unbuilt:
             return ("Build %s" % self._scan_label(name, sel),
                     "This scan is still raw data. Build its 3D model on this PC (a few seconds on a graphics card), or use One-tap Edit on the scanner.",
-                    "⚙  Build model", lambda n=sel: self._proc_build(name, [n]), 0, None)
+                    "Build model", lambda n=sel: self._proc_build(name, [n]), 0, None, "build")
         # base cut is about the scan you're looking at. If that scan's base is already done, don't nag about
         # another scan's base while you inspect a finished one - move on to the project step (Combine still
         # flags any uncut bases before it merges).
@@ -5174,16 +5185,16 @@ class App(LiveMixin, ctk.CTk):
                 # and keep "cut anyway" as the fallback for a table the detector may have missed.
                 return ("No table detected on %s" % self._scan_label(name, n0),
                         "The geometry shows no flat table under this scan, so there is probably nothing to cut. Skip it (the scanner most likely trimmed it already), or cut anyway if a table is still on the part.",
-                        "✓  Looks clear - skip base cut", skip, 1,
-                        ("Cut base anyway", go))
+                        "Looks clear - skip base cut", skip, 1,
+                        ("Cut base anyway", go, "cut-base"), "check")
             return ("Cut the base off %s" % self._scan_label(name, n0),
                     "%d of %d scan%s may still have the table under the part. Drag one line above it and apply, or skip if this scan has no base. The cut is remembered and applied when the scans are combined." % (len(nobase), len(built), "" if len(built)==1 else "s"),
-                    "✂  Remove base on %s" % self._scan_label(name, n0), go, 1,
-                    ("No base - skip", skip))
+                    "Remove base on %s" % self._scan_label(name, n0), go, 1,
+                    ("No base - skip", skip, None), "cut-base")
         if unbuilt:
             return ("Build the 3D model%s" % ("" if len(unbuilt)==1 else "s"),
                     "%d scan%s %s raw data only. Easiest is One-tap Edit on the scanner, then share the project again. Or build here now (seconds on a graphics card) and prepare it yourself." % (len(unbuilt), "" if len(unbuilt)==1 else "s", "has" if len(unbuilt)==1 else "have"),
-                    "⚙  Build %d model%s here" % (len(unbuilt), "" if len(unbuilt)==1 else "s"), lambda: self._proc_build(name, unbuilt), 0, None)
+                    "Build %d model%s here" % (len(unbuilt), "" if len(unbuilt)==1 else "s"), lambda: self._proc_build(name, unbuilt), 0, None, "build")
         keep_sep=bool(self.records.get(name, {}).get("keep_separate"))
         # Several built scans and no combined model yet: PointYoink assumes they're sides of one object and
         # pushes Combine - but they might be separate objects. Offer the choice instead of assuming, and
@@ -5191,8 +5202,8 @@ class App(LiveMixin, ctk.CTk):
         if len(built)>=2 and "combined" not in nodes and not keep_sep:
             return ("Combine these scans into one model?",
                     "You have %d scans. If they're sides of one object, line them up into a single model. If they're separate objects, keep them apart and prepare or export each on its own." % len(built),
-                    "⧉  Combine scans…", lambda: self._align_dialog(name), 2,
-                    ("Keep separate - different objects", lambda: self._keep_separate(name)))
+                    "Combine scans…", lambda: self._align_dialog(name), 2,
+                    ("Keep separate - different objects", lambda: self._keep_separate(name), None), "combine")
         if keep_sep and "combined" not in nodes and len(built)>=2:
             # SELECTION-FIRST: Prepare/Export the scan you're actually looking at, not just the first
             # unprepared one - else viewing Scan 2 could Prepare/Export Scan 1. Only walk to the next
@@ -5201,13 +5212,13 @@ class App(LiveMixin, ctk.CTk):
             target=sel if (sel is not None and sel in built) else (unprepared[0] if unprepared else built[0])
         else:
             target="combined" if "combined" in nodes else (built[0] if built else None)
-        if not target: return ("Nothing to prepare yet", "Share this project over WiFi as Full project to get its raw data, or plug the scanner in.", None, None, 0, None)
-        undo=("⧉  Combine them after all", lambda: self._unkeep_separate(name)) if (keep_sep and len(built)>=2 and "combined" not in nodes) else None
+        if not target: return ("Nothing to prepare yet", "Share this project over WiFi as Full project to get its raw data, or plug the scanner in.", None, None, 0, None, None)
+        undo=("Combine them after all", lambda: self._unkeep_separate(name), "combine") if (keep_sep and len(built)>=2 and "combined" not in nodes) else None
         vs=self._proc_versions(name, target); lab=self._scan_label(name, target)
         if not any(k=="clean" for k,_,_ in vs):
             return ("Prepare the %s model" % lab.lower() if target=="combined" else "Prepare %s" % lab, "Remove floating pieces, smooth, fill holes. You see before and after and keep or discard.",
-                    "✦  Prepare…", lambda: self._prepare_dialog(name, target), 3, undo)
-        return ("Export", "%s is prepared. Save it as STL for a slicer, or OBJ, GLB, PLY." % lab, "⬆  Export…", lambda: self._export_dialog(name, target), 4, undo)
+                    "Prepare…", lambda: self._prepare_dialog(name, target), 3, undo, "prepare")
+        return ("Export", "%s is prepared. Save it as STL for a slicer, or OBJ, GLB, PLY." % lab, "Export…", lambda: self._export_dialog(name, target), 4, undo, "export")
     def _unique_archive(self, vdir, stem):
         """A new file name under .versions/ that cannot collide with anything already there, even two
         saves in the same second: created exclusively, so the caller can write to it straight away."""
@@ -5465,7 +5476,7 @@ class App(LiveMixin, ctk.CTk):
             ns.pack_forget()
     def _next_refresh_body(self, ns, name, nodes, local):
         if self.page!="projects" or not name: ns.pack_forget(); return
-        title, detail, btxt, cmd, step, alt = self._proc_next(name, nodes, local)
+        title, detail, btxt, cmd, step, alt, ico = self._proc_next(name, nodes, local)
         ns.pack(fill="x", pady=(2,4)); ns.grid_columnconfigure(1, weight=1)   # compact: give the 3D preview more room
         ctk.CTkLabel(ns, text="N E X T", text_color=MUT, font=ctk.CTkFont(size=9, weight="bold")).grid(row=0,column=0, padx=(14,10), pady=(9,0), sticky="w")   # a quiet section label, not a button
         hb=ctk.CTkButton(ns, text="How this works  (?)", width=152, height=24, corner_radius=12, fg_color="transparent", border_width=1, border_color=STROKE, hover_color="#15304d", text_color=AC, font=ctk.CTkFont(size=11), command=self._howto_dialog)
@@ -5486,17 +5497,17 @@ class App(LiveMixin, ctk.CTk):
             except Exception: pass
         self._next_cfg_id=ns.bind("<Configure>", lambda e: (tl.winfo_exists() and relayout(e)), add="+")
         for i,nm in enumerate(self.STEPS):
-            col=(OK if i<step else (AC if i==step else DIM)); mark=("✓ " if i<step else ("▶ " if i==step else ""))
-            ctk.CTkLabel(trail, text=mark+nm, text_color=col, font=ctk.CTkFont(size=11, weight=("bold" if i==step else "normal"))).pack(side="left")
+            col=(OK if i<step else (AC if i==step else DIM)); mark=(_icon("check", "default", 12, color=OK) if i<step else (_icon("play", "accent", 12) if i==step else None))
+            ctk.CTkLabel(trail, text=nm, image=mark, compound="left", padx=(3 if mark else 0), text_color=col, font=ctk.CTkFont(size=11, weight=("bold" if i==step else "normal"))).pack(side="left")
             if i<len(self.STEPS)-1: ctk.CTkLabel(trail, text="  →  ", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left")
         if btxt:
             bwrap=ctk.CTkFrame(ns, fg_color="transparent")
-            ctk.CTkButton(bwrap, text=btxt, width=210, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).pack()
+            ctk.CTkButton(bwrap, text=btxt, image=(_icon(ico, "on-accent", 16) if ico else None), compound="left", width=210, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).pack()
             if alt:   # a secondary "No base - skip" / suggestion opt-out sits under the main action
-                ctk.CTkButton(bwrap, text=alt[0], width=220, height=26, corner_radius=13, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=alt[1]).pack(pady=(6,0))
+                ctk.CTkButton(bwrap, text=alt[0], image=(_icon(alt[2], "muted", 14) if alt[2] else None), compound="left", width=220, height=26, corner_radius=13, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=alt[1]).pack(pady=(6,0))
             nb[0]=bwrap; nb[0].grid(row=0,column=2, rowspan=3, padx=16, pady=10, sticky="e")
     def _proc_next_strip(self, name, nodes, local):
-        title, detail, btxt, cmd, step, alt = self._proc_next(name, nodes, local)
+        title, detail, btxt, cmd, step, alt, ico = self._proc_next(name, nodes, local)
         strip=ctk.CTkFrame(self.proc_cards, fg_color="#0f1a2b", corner_radius=14, border_width=1, border_color="#1f3a5f"); strip.grid(row=0, column=0, sticky="ew", padx=6, pady=(4,10))
         strip.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(strip, text="NEXT", text_color=AC, font=ctk.CTkFont(size=11, weight="bold")).grid(row=0,column=0, padx=(16,10), pady=(12,0), sticky="w")
@@ -5504,13 +5515,13 @@ class App(LiveMixin, ctk.CTk):
         ctk.CTkLabel(strip, text=detail, text_color=MUT, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=640).grid(row=1,column=1, sticky="w", pady=(0,4))
         trail=ctk.CTkFrame(strip, fg_color="transparent"); trail.grid(row=2,column=1, sticky="w", pady=(0,12))
         for i,nm in enumerate(self.STEPS):
-            col=(OK if i<step else (AC if i==step else DIM)); mark=("✓ " if i<step else ("▶ " if i==step else ""))
-            ctk.CTkLabel(trail, text=mark+nm, text_color=col, font=ctk.CTkFont(size=11, weight=("bold" if i==step else "normal"))).pack(side="left")
+            col=(OK if i<step else (AC if i==step else DIM)); mark=(_icon("check", "default", 12, color=OK) if i<step else (_icon("play", "accent", 12) if i==step else None))
+            ctk.CTkLabel(trail, text=nm, image=mark, compound="left", padx=(3 if mark else 0), text_color=col, font=ctk.CTkFont(size=11, weight=("bold" if i==step else "normal"))).pack(side="left")
             if i<len(self.STEPS)-1: ctk.CTkLabel(trail, text="  →  ", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left")
         if btxt:
             bw=ctk.CTkFrame(strip, fg_color="transparent"); bw.grid(row=0,column=2, rowspan=3, padx=16, pady=12)
-            ctk.CTkButton(bw, text=btxt, width=190, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).pack()
-            if alt: ctk.CTkButton(bw, text=alt[0], width=190, height=24, corner_radius=12, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=alt[1]).pack(pady=(6,0))
+            ctk.CTkButton(bw, text=btxt, image=(_icon(ico, "on-accent", 16) if ico else None), compound="left", width=190, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).pack()
+            if alt: ctk.CTkButton(bw, text=alt[0], image=(_icon(alt[2], "muted", 14) if alt[2] else None), compound="left", width=190, height=24, corner_radius=12, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=alt[1]).pack(pady=(6,0))
     def _schedule_panel_refresh(self, delay=80):
         job=getattr(self, "_panel_job", None)
         if job:
@@ -5582,7 +5593,7 @@ class App(LiveMixin, ctk.CTk):
             tr=ctk.CTkFrame(hdr, fg_color="transparent"); tr.pack(fill="x", padx=12, pady=(10,2))
             ctk.CTkLabel(tr, text=self._scan_label(name, node), text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w").pack(side="left")
             if node!="combined":
-                rb=ctk.CTkButton(tr, text="✎", width=26, height=24, corner_radius=6, fg_color="transparent", hover_color=CARD, text_color=MUT, font=ctk.CTkFont(size=13), command=lambda n=name,nd=node: self._rename_scan(n, nd)); rb.pack(side="right")
+                rb=ctk.CTkButton(tr, text="", image=_icon("edit", "muted", 14), width=26, height=24, corner_radius=6, fg_color="transparent", hover_color=CARD, text_color=MUT, font=ctk.CTkFont(size=13), command=lambda n=name,nd=node: self._rename_scan(n, nd)); rb.pack(side="right")
                 self._tip(rb, "Name this scan: front, back, left side…")
             order=[n for n in nodes if n!="combined"]; pos=("scan %d of %d" % (order.index(node)+1, len(order))) if node in order else ""
             sub=("built from the scans you lined up" if node=="combined" else ((pos+" · " if pos else "")+"id "+node))   # show the real scanner id for reference, not the confusing raw/built wording
@@ -5602,7 +5613,7 @@ class App(LiveMixin, ctk.CTk):
                 hasp=node in self._base_planes(name)
                 pl=self._base_planes(name).get(node) or {}
                 if hasp:   # the user has already run our Remove base on this scan: that's the strongest signal
-                    btxt=("Marked: no base to cut ✓" if pl.get("skip") else "Base removed ✓ - reapplied when combining"); bcol=OK; btip=None
+                    btxt=("Marked: no base to cut" if pl.get("skip") else "Base removed - reapplied when combining"); bcol=OK; btip=None
                 else:      # ask the geometry whether the table is still on (the scanner may have cut it already)
                     cpath=cur[2] if cur else None
                     e=self._base_verdict(cpath) if cpath else None
@@ -5650,7 +5661,7 @@ class App(LiveMixin, ctk.CTk):
                             b=ctk.CTkButton(chip, text=label+_sz(path), height=24, corner_radius=9, fg_color="transparent", hover_color=STROKE, anchor="w",
                                             text_color=TX, font=ctk.CTkFont(size=11), command=lambda n=name,nd=node,k=key: self._pick_version(n, nd, k)); b.pack(side="left", fill="x", expand=True, padx=(6,0))
                             self._tip(b, "Make this the model this scan uses. Nothing is changed or deleted.\n"+os.path.basename(path))
-                            x=ctk.CTkButton(chip, text="✕", width=24, height=24, corner_radius=9, fg_color="transparent", hover_color="#3a2530", text_color=MUT, font=ctk.CTkFont(size=11),
+                            x=ctk.CTkButton(chip, text="", image=_icon("close", "muted", 12), width=24, height=24, corner_radius=9, fg_color="transparent", hover_color="#3a2530", text_color=MUT, font=ctk.CTkFont(size=11),
                                             command=lambda n=name,nd=node,k=key,pth=path: self._proc_delete_version(n, nd, k, pth)); x.pack(side="right", padx=(0,5))
                             self._tip(x, "Delete this version (asks first; it goes to the trash)")
             else: ctk.CTkLabel(pp, text="No 3D model yet", text_color=WARN, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=6, pady=(6,0))
@@ -5717,7 +5728,7 @@ class App(LiveMixin, ctk.CTk):
         if os.path.exists(os.path.join(d, "fuse.ply")) or os.path.exists(os.path.join(local, "%s_%s_cloud.ply" % (os.path.basename(local), node))): return "fused"
         if self._has_raw_frames(local, node): return "raw"
         return None
-    STAGE_WORDS={"meshed": ("One-tap edited ✓", OK), "fused": ("fused, not meshed", WARN), "raw": ("raw only, not edited", WARN), None: ("", MUT)}
+    STAGE_WORDS={"meshed": ("One-tap edited", OK), "fused": ("fused, not meshed", WARN), "raw": ("raw only, not edited", WARN), None: ("", MUT)}
     def _device_scan_names(self, name, root=None):
         """Names given to scans on the scanner: the project's .revo lists each scan with a name (equal to its id unless
         it was renamed on the device). {id: name} for the renamed ones."""
@@ -5966,7 +5977,7 @@ class App(LiveMixin, ctk.CTk):
         runb=ctk.CTkButton(btns, text="Preview changes", width=150, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=run); runb.pack(side="left", padx=6)
         ctk.CTkButton(btns, text="Close", width=90, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=close).pack(side="left", padx=6)
         if self._prep_history(name, node):
-            ctk.CTkButton(btns, text="⤺ Past versions…", width=150, height=34, corner_radius=17, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX,
+            ctk.CTkButton(btns, text="Past versions…", image=_icon("history", "default", 16), compound="left", width=150, height=34, corner_radius=17, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX,
                           command=lambda: self._prep_history_dialog(name, node)).pack(side="left", padx=6)
         keepb=ctk.CTkButton(btns, text="Save prepared version", width=190, height=34, corner_radius=17, fg_color=OK, hover_color="#35b57c", text_color="#04121f", command=keep)
         discb=ctk.CTkButton(btns, text="Discard", width=100, height=34, corner_radius=17, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=discard)
@@ -6150,7 +6161,7 @@ class App(LiveMixin, ctk.CTk):
         def refresh_chips():
             done=[n for n in nodes if n in rec and isinstance(rec[n], dict) and rec[n].get("base")==st["base"]]
             chips.configure(text=("Lined up so far: "+", ".join(lab(n) for n in done)) if done else "Nothing lined up yet")
-            able(comb, bool(done), OK); comb.configure(text="⧉  Build one model from %d scan%s" % (len(done)+1, "" if not done else "s"))
+            able(comb, bool(done), OK); comb.configure(text="Build one model from %d scan%s" % (len(done)+1, "" if not done else "s"))
         def load_views():
             st["pairs"]=[]; st["pending"]=None; st["result"]=None
             for v in views:
@@ -6350,7 +6361,7 @@ class App(LiveMixin, ctk.CTk):
         alignb=ctk.CTkButton(btns, text="Line up from points", width=160, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", state="disabled", command=lambda: run_align(False)); alignb.pack(side="left", padx=4)
         autob=ctk.CTkButton(btns, text="Auto", width=80, height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: run_align(True)); autob.pack(side="left", padx=4)
         self._tip(autob, "Finds the fit by itself. Works when the two scans share a lot of surface; otherwise use points.")
-        comb=ctk.CTkButton(btns, text="⧉  Build one model", width=230, height=32, corner_radius=16, fg_color=OK, hover_color="#35b57c", text_color="#04121f", state="disabled", command=combine); comb.pack(side="right", padx=6)
+        comb=ctk.CTkButton(btns, text="Build one model", image=_icon("combine", "on-accent", 16), compound="left", width=230, height=32, corner_radius=16, fg_color=OK, hover_color="#35b57c", text_color="#04121f", state="disabled", command=combine); comb.pack(side="right", padx=6)
         self._tip(comb, "Fuses the raw frames of the base scan and every lined-up scan into one model, in the base scan's position. Needs the raw data of each scan on this PC.")
         keepb=ctk.CTkButton(btns, text="Keep this alignment", width=160, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=keep)
         bar=ctk.CTkProgressBar(card, height=6, corner_radius=3, progress_color=AC, fg_color="#0d0f14")
@@ -6558,7 +6569,7 @@ class App(LiveMixin, ctk.CTk):
         self.wifi_hint=ctk.CTkLabel(card, text="Both must be on the same network. If the scanner isn't found within 30 seconds, allow port 9706 (UDP and TCP) in your firewall.",
                                     text_color=MUT, font=ctk.CTkFont(size=10), wraplength=420, justify="center"); self.wifi_hint.pack(pady=(10,0))
         br=ctk.CTkFrame(card, fg_color="transparent"); br.pack(side="bottom", pady=(0,16))
-        self.wifi_newcode=ctk.CTkButton(br, text="↻ New code", width=110, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self._wifi_new_code)
+        self.wifi_newcode=ctk.CTkButton(br, text="New code", image=_icon("refresh", "default", 14), compound="left", width=110, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self._wifi_new_code)
         self.wifi_newcode.pack(side="left", padx=6)
         bgb=ctk.CTkButton(br, text="Run in background", width=140, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self._wifi_background)
         bgb.pack(side="left", padx=6); self._tip(bgb, "Keep receiving and hide this window - progress stays in the status bar; click WiFi to show it again.")
@@ -6708,7 +6719,7 @@ class App(LiveMixin, ctk.CTk):
         rx=self._wifi
         if not rx: self._wifi_close_dialog(); return
         self._wifi_bg=True; self._wifi_close_dialog()
-        self.wifi_btn.configure(text="📶  Receiving…" if rx.t0 else "📶  Waiting…", fg_color="#12303f")
+        self.wifi_btn.configure(text="  Receiving…" if rx.t0 else "  Waiting…", fg_color="#12303f")
         self.set_banner(("WiFi still receiving in the background - click WiFi to show it." if rx.t0
                          else "WiFi share still open in the background - click WiFi to show the code."), AC)
     def _wifi_reopen(self):
@@ -6723,7 +6734,7 @@ class App(LiveMixin, ctk.CTk):
         self._wifi_bg=False
         if not rx: self._wifi_close_dialog(); return
         self._wifi=None; self._wifi_close_dialog()
-        self.wifi_btn.configure(text="📶  WiFi", fg_color="transparent")
+        self.wifi_btn.configure(text="  WiFi", fg_color="transparent")
         got=rx.bytes
         def _stop():
             rx.stop()
@@ -6750,7 +6761,7 @@ class App(LiveMixin, ctk.CTk):
                 self.wifi_state.configure(text="Wrong code entered on the scanner - try again (%d attempts left)." % (5-rx.bad), text_color=WARN)
         elif kind=="connected":
             self.hold_banner("WiFi: receiving…", AC)
-            if self._wifi_bg: self.wifi_btn.configure(text="📶  Receiving…", fg_color="#12303f")
+            if self._wifi_bg: self.wifi_btn.configure(text="  Receiving…", fg_color="#12303f")
             if ui:
                 self.wifi_state.configure(text="Code accepted  ·  receiving", text_color=OK)
                 try:
@@ -6780,7 +6791,7 @@ class App(LiveMixin, ctk.CTk):
                                 self.imgs["wifi_thumb"]=cimg(pv[0], 84); self.wifi_thumb.configure(image=self.imgs["wifi_thumb"]); self._wifi_thumb_ok=True
                     except Exception: pass
         elif kind=="done":
-            self._wifi=None; self._wifi_bg=False; threading.Thread(target=rx.stop, daemon=True).start(); self._wifi_close_dialog(); self.wifi_btn.configure(text="📶  WiFi", fg_color="transparent")
+            self._wifi=None; self._wifi_bg=False; threading.Thread(target=rx.stop, daemon=True).start(); self._wifi_close_dialog(); self.wifi_btn.configure(text="  WiFi", fg_color="transparent")
             projects=info["projects"]
             if not projects:
                 threading.Thread(target=shutil.rmtree, args=(rx.stage,), kwargs={"ignore_errors": True}, daemon=True).start()
@@ -7145,7 +7156,7 @@ class App(LiveMixin, ctk.CTk):
         bar=ctk.CTkFrame(top, fg_color="transparent"); bar.pack(fill="x", pady=(0,8))
         cap=ctk.CTkLabel(bar, text=nm, text_color=TX, font=ctk.CTkFont(size=12, weight="bold")); cap.pack(side="left", padx=(14,10))
         meta=ctk.CTkLabel(bar, text="reading metadata…", text_color=MUT, font=ctk.CTkFont(size=11)); meta.pack(side="left")
-        ctk.CTkButton(bar, text="▶ Play", width=90, height=28, corner_radius=8, fg_color=CARD2, hover_color=STROKE,
+        ctk.CTkButton(bar, text="Play", image=_icon("play", "default", 14), compound="left", width=90, height=28, corner_radius=8, fg_color=CARD2, hover_color=STROKE,
                       text_color=TX, command=lambda: self._play_recording(path, nm)).pack(side="right", padx=(0,14))
         def load():
             import datetime
@@ -7158,7 +7169,7 @@ class App(LiveMixin, ctk.CTk):
                         r=min(W/im.width, H/im.height); im=im.resize((max(1,int(im.width*r)), max(1,int(im.height*r))))
                         self.imgs["vpop"]=ctk.CTkImage(light_image=im, dark_image=im, size=im.size); img_lbl.configure(image=self.imgs["vpop"], text="")
                     except Exception as e: img_lbl.configure(image=None, text="(no preview)"); log_error("vpop-show", e)
-                else: img_lbl.configure(image=None, text="No preview frame - press ▶ Play to open it")
+                else: img_lbl.configure(image=None, text="No preview frame - press Play to open it")
                 parts=[]
                 if w and h: parts.append("%d × %d" % (w, h))
                 if dur: parts.append("%d:%02d" % (int(dur)//60, int(dur)%60))
@@ -7273,10 +7284,10 @@ class App(LiveMixin, ctk.CTk):
         capdir=os.path.join(self.dest.get() or DEFAULT_DEST, "captures")   # a capture is "on PC" once it's been pulled here
         def badge(cell, nm):
             onpc=os.path.exists(os.path.join(capdir, nm))
-            ctk.CTkLabel(cell, text=("✓ on PC" if onpc else "on device"), text_color=(OK if onpc else MUT),
+            ctk.CTkLabel(cell, text=("on PC" if onpc else "on device"), image=(_icon("check", "default", 12, color=OK) if onpc else None), compound="left", padx=(3 if onpc else 0), text_color=(OK if onpc else MUT),
                          fg_color=("#173a2a" if onpc else CHIP), corner_radius=6, font=ctk.CTkFont(size=9), height=16).pack(pady=(0,8), ipadx=5)
-        def addx(cell, nm):   # a ✕ in the corner, matching the version-chip delete: removes the PC copies to trash
-            x=ctk.CTkButton(cell, text="✕", width=22, height=22, corner_radius=6, fg_color="#0a0c10", hover_color="#3a2530",
+        def addx(cell, nm):   # an x in the corner, matching the version-chip delete: removes the PC copies to trash
+            x=ctk.CTkButton(cell, text="", image=_icon("close", "muted", 12), width=22, height=22, corner_radius=6, fg_color="#0a0c10", hover_color="#3a2530",
                             text_color=MUT, font=ctk.CTkFont(size=11), command=lambda n=nm: self._del_capture(n))
             x.place(relx=1.0, rely=0.0, x=-4, y=4, anchor="ne"); self._tip(x, "Remove this capture's copy from this PC (to trash). The scanner's original is not touched.")
         if images:
@@ -7294,7 +7305,7 @@ class App(LiveMixin, ctk.CTk):
             for idx,(nm,path,sz) in enumerate(recs):
                 r,c=divmod(idx,4)
                 cell=ctk.CTkFrame(self.shots, fg_color=CARD2, corner_radius=10); cell.grid(row=base+r,column=c, padx=6, pady=6, sticky="nsew")
-                ico=ctk.CTkLabel(cell, text="▶", text_color=AC, font=ctk.CTkFont(size=38)); ico.pack(padx=6, pady=(16,2))
+                ico=ctk.CTkLabel(cell, text="", image=_icon("play", "accent", 40), text_color=AC, font=ctk.CTkFont(size=38)); ico.pack(padx=6, pady=(16,2))
                 ctk.CTkLabel(cell, text=nm[:20], text_color=TX, font=ctk.CTkFont(size=9)).pack()
                 ctk.CTkLabel(cell, text="video · "+human(sz)+" · click to play", text_color=MUT, font=ctk.CTkFont(size=9)).pack(pady=(0,4))
                 badge(cell, nm); addx(cell, nm)
