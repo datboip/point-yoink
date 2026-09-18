@@ -1,6 +1,6 @@
 # Third-party notices
 
-PointYoink is MIT licensed (see LICENSE). It stands on the following open-source work.
+PointYoink is MIT licensed (see LICENSE). It stands on the following open-source work. Third-party components retain their respective licenses.
 
 ## Bundled in the Debian package
 
@@ -19,7 +19,7 @@ The `.deb` ships these Python packages inside `/usr/lib/point-yoink/vendor/` so 
 
 ## Used at runtime, installed from your distribution
 
-Not bundled; pulled in as package dependencies (and `ffmpeg`, optional, for capture thumbnails and lengths): Python 3, Tk (`python3-tk`), Pillow (`python3-pil`, `python3-pil.imagetk`), NumPy, Matplotlib, NetworkX, `jmtpfs` / `libmtp` (MTP access to the scanner), `rsync`, `xdg-utils`, FUSE. Optional: Open3D (`pip install open3d`) for building and combining models on the PC.
+Not bundled; pulled in as package dependencies (and `ffmpeg`, optional, for capture thumbnails and lengths): Python 3, Tk (`python3-tk`), Pillow (`python3-pil`, `python3-pil.imagetk`), NumPy, Matplotlib, NetworkX, `jmtpfs` / `libmtp` (MTP access to the scanner), `rsync`, `xdg-utils`, FUSE. Optional: Open3D for building and combining models on the PC (see the README for how to install it).
 
 ## Fonts
 
