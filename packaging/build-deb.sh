@@ -57,7 +57,7 @@ cat > "$PKG/usr/share/applications/point-yoink.desktop" <<EOF
 Type=Application
 Name=PointYoink
 GenericName=3D Scan Grabber
-Comment=Pull 3D scans off a Revopoint MIRACO over USB
+Comment=Pull 3D scans off a Revopoint MIRACO over USB or WiFi
 Exec=point-yoink
 Icon=point-yoink
 Terminal=false
@@ -79,9 +79,9 @@ Replaces: pointyoink
 Section: graphics
 Priority: optional
 Homepage: https://github.com/datboip/point-yoink
-Description: Pull 3D scans off a Revopoint MIRACO over USB
+Description: Pull 3D scans off a Revopoint MIRACO over USB or WiFi
  PointYoink copies finished scans off a Revopoint MIRACO / MIRACO Pro
- scanner on Linux over USB, with no Revo Scan, Windows, or cloud needed.
+ scanner on Linux over USB or WiFi, with no Revo Scan, Windows, or cloud needed.
  It shows your projects with previews and exports standard PLY, STL, OBJ, GLB.
 EOF
 

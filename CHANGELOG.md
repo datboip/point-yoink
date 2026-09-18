@@ -1,7 +1,7 @@
 # Changelog
 
-All notable changes to PointYoink. Versions before 1.0.0 are pre-release
-builds; 1.0.0 is the first public release.
+All notable changes to PointYoink. 0.7.0 was the first tagged release; the
+0.9.x line was development builds on the way to 1.0.0.
 
 ## 1.0.0 (unreleased, rc2 on the dev branch)
 
@@ -16,8 +16,6 @@ builds; 1.0.0 is the first public release.
 - Tilting the cut plane no longer flips its side or moves it off the pivot near the sign boundary.
 - Package: PyOpenGL's Windows DLL folder is no longer installed; its license text ships under /usr/share/doc/point-yoink/licenses. README states the actual memory limits per job.
 - The last glyph labels (search, Pull all, Browse, updated, Restore, info) use icons or plain text.
-
-## 1.0.0 (unreleased, rc1 on the dev branch)
 
 - Every button, menu item and step marker now uses the icon set; the last unicode glyph labels are gone, so the UI no longer depends on which symbols the system font happens to have.
 The first public release, being finished on the dev branch.
