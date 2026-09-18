@@ -7431,7 +7431,10 @@ class App(LiveMixin, ctk.CTk):
     def on_export_zip(self):
         if self.pulling: return
         sel=[n for n,v in self.pull_sel.items() if v.get()]
-        if not sel:
+        if self.page=="projects":                 # on the Projects page the ZIP is the project you have open
+            sel=[self.selected] if self.selected else []
+            if not sel: self.set_banner("Pick a project to zip.", WARN); return
+        elif not sel:
             self.set_banner("Tick the project(s) you want to zip.", WARN); return
         dest=self.dest.get() or DEFAULT_DEST
         try: sizes=self._estimate_sizes(sel, dest)
