@@ -28,6 +28,7 @@ I did try the workaround everyone points to, running Revo Scan through Wine. It 
 <p align="center">
   <img src="docs/img/v1/remove-base-demo.gif" alt="Removing the table from a scan: pick Floor grid or Auto-detect, or click a few spots on the table and the cut plane snaps to them" width="920">
 </p>
+<p align="center"><em>Remove base: the scan comes in with the turntable under it. Here the table is marked by clicking a few spots on it, the cut plane snaps to them (red is what goes), the height and tilt are nudged with the sliders, then Apply. Floor grid and Auto-detect do the same without clicking.</em></p>
 
 - **Import** over USB (the scanner's File Transfer mode) or WiFi (Share to PC, with a 4-digit code the app shows you). Finished models only takes seconds; Full project also brings the raw frames.
 - **Build** a model from raw frames on your own PC, using the scanner's registration. Seconds on an NVIDIA card, a few minutes on a CPU. On the scans I have checked it lands within about half a millimetre of the scanner's own One-tap Edit result.
