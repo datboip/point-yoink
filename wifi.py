@@ -94,7 +94,7 @@ class Receiver:
         self._sem = threading.BoundedSemaphore(MAX_HANDLERS)
         self.on_event = on_event or (lambda k, i: None); self.name = name or socket.gethostname()
         self.httpd = None; self.udp = None; self._on = False
-        self.files = {}; self.parts = {}; self.bytes = 0; self.total = 0; self.t0 = None; self.seen = set(); self._lock = threading.Lock()
+        self.files = {}; self.done = set(); self.parts = {}; self.bytes = 0; self.total = 0; self.t0 = None; self.seen = set(); self._lock = threading.Lock()   # done = files assembled and renamed to their real name
         self.peer = None; self.bad = 0; self.locked = False
         self._hist = []                    # (time, bytes) for the instantaneous rate
     def _emit(self, kind, **info):
@@ -172,6 +172,8 @@ class Receiver:
         part = out + ".part"                                 # assembled here; takes its real name only once every part is in,
         with self._lock:                                     # so a transfer cut off half way never leaves a whole-looking file
             if not self._on: return
+            if rel in self.done:                             # the scanner re-sent a part of a file already assembled: nothing to add
+                return
             fresh = rel not in self.files                    # first part of this file in this transfer
             with open(part, "wb" if (fresh or not os.path.exists(part)) else "r+b") as f:
                 f.seek((idx - 1) * PART); f.write(body)
@@ -179,8 +181,8 @@ class Receiver:
             self.parts[rel] = int(h.get("partnum") or self.parts.get(rel) or 1)   # total parts the scanner will send for this file
             want = self.parts[rel]
             if self.files[rel] == set(range(1, want + 1)):
-                try: os.replace(part, out)
-                except Exception as e: sys.stderr.write("rename %s: %s\n" % (rel, e))
+                try: os.replace(part, out); self.done.add(rel)
+                except Exception as e: sys.stderr.write("rename %s: %s\n" % (rel, e))   # not done: a later part (or resend) retries the rename
             self.total = int(h.get("totalsize") or self.total or 0)
             now = time.time(); avg = self.bytes / max(0.1, now - (self.t0 or now))
             self._hist.append((now, self.bytes)); self._hist = [x for x in self._hist if now - x[0] <= 1.0]
