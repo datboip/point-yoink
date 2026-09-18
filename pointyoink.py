@@ -6133,7 +6133,9 @@ class App(LiveMixin, ctk.CTk):
     def _align_dialog(self, name):
         if not name: return
         nodes=[n for n in self._proc_nodes(name) if n!="combined" and self._proc_current(name, n)]
-        if len(nodes)<2: self._alert("Combine scans", "This project needs at least two scans with a 3D model.\nBuild them first (Build model on each scan)."); return
+        if len(nodes)<2:
+            self.set_banner("Combine scans needs at least two scans with a 3D model.", WARN)
+            return
         t=self._top("Combine scans · %s" % self.disp(name), 1180, 1000, key="align")
         if t is None: return
         rec=self.records.setdefault(name,{}).setdefault("align",{})
