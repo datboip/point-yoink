@@ -37,5 +37,5 @@ brag-output*/
 # demo videos: the GIFs are committed, the MP4s are not
 docs/img/**/*.mp4
 
-# aider (local LLM helper) state
+# local editor state
 .aider*
