@@ -12,7 +12,7 @@
 
 **Pull your Revopoint MIRACO scans onto Linux, clean them up, and export them for editing or printing.**
 
-Revo Scan, the software that goes with Revopoint scanners, runs on Windows, macOS, iOS and Android. There is no Linux version. PointYoink is a small desktop app that fills that gap: plug the MIRACO in (or use WiFi), pull the scans off, then build, cut the base off, combine scans, clean up and export to STL, OBJ, GLB or PLY. Nothing goes online. The scanner's files are only copied, never changed.
+Revo Scan, the software that goes with Revopoint scanners, runs on Windows, macOS, iOS and Android. There is no Linux version. PointYoink is a small desktop app that fills that gap: plug the MIRACO in (or use WiFi), pull the scans off, then build, cut the base off, combine scans, clean up and export to STL, OBJ, GLB or PLY. Your scans stay on your computer. The scanner's files are only copied, never changed.
 
 <p align="center">
   <img src="docs/img/v1/02-projects-preview.png" alt="PointYoink with a project open: the scan in 3D, the next step ready to go" width="920">
@@ -28,6 +28,10 @@ First the Revopoint Range. It needs a computer to do anything, and the computer 
 
 I did try the workaround everyone points to, running Revo Scan through Wine. It launches, sometimes, and mostly can't see the scanner. So I built the thing I wanted instead. That's PointYoink.
 
+## Works with
+
+MIRACO Pro (tested, this is the scanner it was built on) · MIRACO and MIRACO Plus (same standalone design, should work, reports welcome). Tethered Revopoint scanners (POP, INSPIRE, RANGE, MINI, MetroX) keep their scans on the host PC, so there is nothing for PointYoink to pull; they are not supported.
+
 ## Install
 
 ### Debian / Ubuntu
@@ -40,6 +44,14 @@ sudo apt install ./point-yoink_*_amd64.deb
 
 PointYoink then shows up in your application menu, or run `point-yoink`.
 
+Building and combining on the PC need Open3D (about 400 MB, uses the GPU when there is one). The `.deb` runs on the system Python, so install it with:
+
+```bash
+pip3 install --user --break-system-packages open3d
+```
+
+The app tells you the same thing the first time you press Build without it. `ffmpeg` (`sudo apt install ffmpeg`) is optional, for thumbnails and lengths of the scanner's screen recordings.
+
 ### From source
 
 ```bash
@@ -51,11 +63,7 @@ python3 -m venv --system-site-packages venv
 ./venv/bin/python pointyoink.py
 ```
 
-Optional: `./venv/bin/pip install open3d` (about 400 MB; uses the GPU when there is one) for building and combining on the PC, and `ffmpeg` for thumbnails and lengths of the scanner's screen recordings.
-
-## Works with
-
-MIRACO Pro (tested, this is the scanner it was built on) · MIRACO and MIRACO Plus (same standalone design, should work, reports welcome). Tethered Revopoint scanners (POP, INSPIRE, RANGE, MINI, MetroX) keep their scans on the host PC, so there is nothing for PointYoink to pull; they are not supported.
+Optional: `./venv/bin/pip install open3d` for building and combining on the PC, and `ffmpeg` for the scanner's screen recordings.
 
 ## What it does
 
@@ -73,7 +81,7 @@ Plug in and tap **File Transfer** on the scanner, or click **WiFi** and enter th
 
 ### Build
 
-<img align="left" width="420" src="docs/img/v1/03-files.png" alt="The Files tab of a project">
+<img align="left" width="420" src="docs/img/v1/d5-compare.png" alt="Compare versions: the scanner's model and the one built here, side by side in linked views">
 
 Turns a scan's raw frames into a 3D model on your own PC, using the registration the scanner already did. Seconds on an NVIDIA card, a few minutes on a CPU. On the scans I have checked it lands within about half a millimetre of the scanner's own One-tap Edit result.
 
