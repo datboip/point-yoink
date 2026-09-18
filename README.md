@@ -47,6 +47,7 @@ PointYoink then shows up in your application menu, or run `point-yoink`.
 Building and combining on the PC need Open3D (about 400 MB, uses the GPU when there is one). The `.deb` runs on the system Python, so install it with:
 
 ```bash
+sudo apt install python3-pip
 pip3 install --user --break-system-packages open3d
 ```
 
