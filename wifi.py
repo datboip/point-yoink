@@ -152,7 +152,7 @@ class Receiver:
         with self._lock:
             for rel, got in self.files.items():
                 want = self.parts.get(rel, 1)
-                if len(got) != want or got != set(range(1, want + 1)):
+                if rel not in self.done or got != set(range(1, want + 1)):   # never finalized counts as incomplete too
                     bad.append(rel)
         return sorted(bad)
     def _closed(self):
