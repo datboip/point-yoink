@@ -5,8 +5,9 @@
 # (so it never reads as "pointy oink"); the module file and ~/.config dir stay
 # "pointyoink" internally so existing settings/records are not orphaned.
 set -e
-VER="${1:-$(grep -oP 'VERSION = "\K[0-9.]+' "$(dirname "$0")/../pointyoink.py")}"
-ROOT="$HOME/pointyoink"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# app version as written in pointyoink.py; a pre-release suffix becomes Debian's "~" so 1.0.0~rc1 sorts BEFORE 1.0.0
+VER="${1:-$(grep -oP 'VERSION = "\K[0-9A-Za-z.-]+' "$ROOT/pointyoink.py" | sed 's/-/~/')}"
 BUILD="$ROOT/packaging/build"
 NAME="point-yoink"
 LIB="usr/lib/point-yoink"

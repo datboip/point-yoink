@@ -2169,6 +2169,7 @@ class App(LiveMixin, ctk.CTk):
                 w = min(w, max(420, pw - 60)); h = min(h, max(320, ph - 85))
             else:                                   # not mapped yet: fall back to the screen centre
                 px = py = 0; pw, ph = self.winfo_screenwidth(), self.winfo_screenheight()
+                w = min(w, max(420, pw - 60)); h = min(h, max(320, ph - 130))
             sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
             TITLE = 36                             # the WM puts the popup's own title bar ABOVE the +y we ask for: pull up to centre the whole frame
             x = min(max(0, px + (pw - w)//2), max(0, sw - w))
@@ -4683,7 +4684,7 @@ class App(LiveMixin, ctk.CTk):
             if k<3: _blank_cut(); dirhint.configure(text="%d of 3 spots" % k); return
             # best-fit plane through every spot (least squares): more spots average out a wobbly click
             P=np.array(st["picks"]); c=P.mean(0); _,sv,vt=np.linalg.svd(P-c); n=vt[2]
-            if k==3 and sv[1]<1e-6: dirhint.configure(text="those spots are in a line, click another"); view.draw(); return
+            if k==3 and sv[1]<1e-6: _blank_cut(); dirhint.configure(text="those spots are in a line, click another"); return
             n=n/np.linalg.norm(n)
             if float(np.dot(n, -st["V"].mean(0)))<0: n=-n                     # toward the camera = up
             level=float(c.dot(n)); spread=float(np.abs((P-c).dot(n)).max())
@@ -4770,8 +4771,10 @@ class App(LiveMixin, ctk.CTk):
                 if os.path.exists(out):
                     vdir=os.path.join(local, ".versions"); os.makedirs(vdir, exist_ok=True)
                     bk=os.path.join(vdir, "%s_clean_%s.ply" % (node, time.strftime("%Y%m%d-%H%M%S"))); shutil.copy2(out, bk)
-                    self.records.setdefault(name,{}).setdefault("base_cut_backup",{})[node]=bk
-            except Exception as e: log_error("cut-backup", e)
+                    self.records.setdefault(name,{}).setdefault("base_cut_backup",{})[node]=bk; self._persist()
+            except Exception as e:                 # no backup, no cut: never overwrite the only copy
+                log_error("cut-backup", e); st["busy"]=False; self._btn_idle(applyb)
+                status.configure(text="Couldn't back up the current prepared model, so the cut was not run (see Help > Log).", text_color=WARN); return
             n=st["n"]; spec="%.6f,%.6f,%.6f,%.4f,%s" % (n[0], n[1], n[2], st["cut"], "1" if st["keep_above"] else "0")
             def work():
                 ok=False; plane=None
@@ -5189,12 +5192,14 @@ class App(LiveMixin, ctk.CTk):
         """Put a scan back the way it was before Remove base: the cut copy is trashed (or the prepared copy it
         replaced is restored), the remembered plane is forgotten, and the scan shows the scanner's model again."""
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name); out=os.path.join(local, "%s_%s_clean.ply" % (name, node))
-        rec=self.records.setdefault(name,{}); bk=(rec.get("base_cut_backup",{}) or {}).pop(node, None); restored=False
+        rec=self.records.setdefault(name,{}); bk=(rec.get("base_cut_backup",{}) or {}).get(node); restored=False
         try:
             if bk and os.path.exists(bk): shutil.move(bk, out); os.utime(out, None); restored=True
-            elif os.path.exists(out): self._trash(out)
-        except Exception as e:
+            elif os.path.exists(out):
+                if not self._trash(out): raise OSError("could not move %s to the trash" % out)
+        except Exception as e:                     # nothing changed on disk, so change nothing in the records either
             log_error("undo-base-cut", e); self.set_banner("Couldn't undo the cut (see Help > Log).", WARN); return
+        (rec.get("base_cut_backup",{}) or {}).pop(node, None)
         (rec.get("base_plane",{}) or {}).pop(node, None)
         if restored: rec.setdefault("current",{})[node]="clean"
         else: (rec.get("current",{}) or {}).pop(node, None)          # back to the default: the scanner's model
