@@ -80,11 +80,12 @@ def _icon(name, state="default", size=18, color=None):
     _icon_cache[key]=ci; return ci
 def _is_tmp(path):
     """True only for the exact temp shapes this app writes (<stem>.tmp.<pid>.ext, <stem>.tmp-<pid>-<id>.ext,
-    <stem>.part-<random>.ext from mkstemp, <stem>.part-<pid> from imports, <stem>.pts.ply rebuild input), anchored
+    <stem>.part~<random>.ext from mkstemp, <stem>.part-<pid> from imports, <stem>.pts.ply rebuild input, the
+    editor's <stem>.tmp.ply), anchored
     at the end of the name so a user's own file with "part" or "tmp" in it is never hidden. One rule for every
     place that lists or ships models, so a half-written file never shows up as a scan or lands in a ZIP."""
     return bool(_TMP_RE.search(os.path.basename(path)))
-_TMP_RE=re.compile(r"\.(tmp\.\d+\.[A-Za-z0-9]+|tmp-\d+-[0-9a-f]+\.[A-Za-z0-9]+|part-[A-Za-z0-9_]{8}\.[A-Za-z0-9]+|part-\d+|pts\.ply)$")
+_TMP_RE=re.compile(r"\.(tmp\.\d+\.[A-Za-z0-9]+|tmp-\d+-[0-9a-f]+\.[A-Za-z0-9]+|part~[a-z0-9_]{8}\.[A-Za-z0-9]+|part-\d+|pts\.ply|tmp\.ply)$")
 def _icon_blank(size=16):
     """A transparent square the size of an icon, so rows without one still line up with rows that have one."""
     key=("", "blank", size, None)
@@ -6094,7 +6095,7 @@ class App(LiveMixin, ctk.CTk):
                     os.makedirs(ddir, exist_ok=True)
                     # an exclusive temp per job, with the extension kept (the converter picks the format from it):
                     # two exports of the same name started back to back must never share a half-written file
-                    _fd,tmp=tempfile.mkstemp(prefix=os.path.basename(_root)+".part-", suffix=_ext, dir=ddir); os.close(_fd)
+                    _fd,tmp=tempfile.mkstemp(prefix=os.path.basename(_root)+".part~", suffix=_ext, dir=ddir); os.close(_fd)
                     if fmt=="ply": shutil.copyfile(src, tmp)
                     elif not self._convert_subprocess(src, tmp):   # capped child: a huge model can't take the app down
                         raise RuntimeError("could not convert to %s - see Help > Log" % fmt.upper())
@@ -7035,7 +7036,11 @@ class App(LiveMixin, ctk.CTk):
             if os.path.isdir(old):
                 if back and not os.path.exists(back):
                     try: shutil.move(old, back)
-                    except Exception as e2: log_error("swap-restore-back", e2)
+                    except Exception as e2:
+                        # could not hand the incoming data back: keep it where it is, never delete it
+                        log_error("swap-restore-back", e2); log_line("incoming data left at %s (could not move it back to %s)" % (old, back))
+                        if aside: log_line("previous version kept at %s" % aside)
+                        return
                 if os.path.isdir(old): shutil.rmtree(old, ignore_errors=True)
             if not aside: return
             try: os.rename(aside, old)
@@ -7063,11 +7068,14 @@ class App(LiveMixin, ctk.CTk):
                     out=os.path.join(dest, name); src=os.path.join(stage, name)
                     if os.path.isdir(out) and not replace:   # keep-and-add: swap in the scanner's version of each ticked scan, keep everything else
                         for nd in glob.glob(os.path.join(src, "data", "*")):
+                            if self.cancel: break
                             tgt=os.path.join(out, "data", os.path.basename(nd)); os.makedirs(os.path.dirname(tgt), exist_ok=True)
                             self._swap_dir(tgt, lambda nd=nd, tgt=tgt: shutil.move(nd, tgt), back=nd)
                         for f in os.listdir(src):
+                            if self.cancel: break
                             fp=os.path.join(src, f)
                             if os.path.isfile(fp): self._copy_chunked(fp, os.path.join(out, f), lambda b: None)
+                        if self.cancel: break                              # staging keeps whatever was not moved in
                         shutil.rmtree(src, ignore_errors=True)
                     else:                                    # new, or Replace: the old project stays until the new one is fully in place
                         self._swap_dir(out, lambda: shutil.move(src, out), back=src)
