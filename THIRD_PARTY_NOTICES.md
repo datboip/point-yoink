@@ -31,4 +31,4 @@ The in-app guide (How this works) shows screenshots of the MIRACO's own on-devic
 
 ## Icons
 
-The line icons in `assets/icons/` are PointYoink's own set (see `assets/icons/manifest.json`).
+The line icons in `assets/icons/` were made for this project (grid, stroke and colours in `assets/icons/manifest.json`). No third-party icon set is used.
