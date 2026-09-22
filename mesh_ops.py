@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """Pure mesh topology helpers for editor selections."""
-from collections import defaultdict, deque
-
 import numpy as np
 
 
@@ -30,181 +28,151 @@ def vertex_mask_from_faces(face_count, faces, face_mask, vertex_count):
     return out
 
 
+class FaceGraph:
+    """Face-to-face adjacency of a triangle mesh as flat numpy arrays: `pairs` (k, 2) lists every pair of
+    faces that share an edge, once per edge (a non-manifold edge with n owners gives all n*(n-1)/2 pairs).
+    Built once per mesh in vectorised numpy (a million faces in well under a second) and cached by the
+    caller, instead of a dict of edges rebuilt in Python on every click."""
+    __slots__ = ("n", "pairs", "_key")
+    def __init__(self, faces):
+        faces = _faces_array(faces); self.n = len(faces)
+        if self.n == 0:
+            self.pairs = np.zeros((0, 2), dtype=np.int64); return
+        e = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])   # 3 edges per face
+        e.sort(axis=1)
+        owner = np.tile(np.arange(self.n, dtype=np.int64), 3)
+        key = e[:, 0] * (faces.max() + 1) + e[:, 1]
+        order = np.argsort(key, kind="stable"); key = key[order]; owner = owner[order]
+        same = key[1:] == key[:-1]                       # consecutive rows with the same edge
+        run_start = np.concatenate([[True], ~same]); starts = np.flatnonzero(run_start)
+        lengths = np.diff(np.append(starts, len(key)))
+        pairs = [np.stack([owner[:-1][same], owner[1:][same]], axis=1)]   # every edge with 2+ owners: consecutive pairs
+        for L in np.unique(lengths[lengths > 2]):       # a non-manifold edge (3+ owners): add the non-consecutive pairs too
+            i, j = np.triu_indices(int(L), 2)            # offsets at least 2 apart; the consecutive ones are already in
+            for st in starts[lengths == L]:
+                o = owner[st:st + int(L)]; pairs.append(np.stack([o[i], o[j]], axis=1))
+        pairs = np.concatenate(pairs); pairs = pairs[pairs[:, 0] != pairs[:, 1]]
+        self.pairs = np.unique(np.sort(pairs, axis=1), axis=0)
+    def neighbours_of(self, mask):
+        """Faces sharing an edge with any face in `mask` (bool per face), as a bool mask."""
+        a, b = self.pairs[:, 0], self.pairs[:, 1]
+        out = np.zeros(self.n, dtype=bool)
+        out[b[mask[a]]] = True; out[a[mask[b]]] = True
+        return out
+    def interior(self, mask):
+        """Faces in `mask` whose every edge is shared with another face in `mask` (bool per face)."""
+        # count, per face, the edges it shares with a selected face; a face with 3 such edges is interior
+        a, b = self.pairs[:, 0], self.pairs[:, 1]
+        both = mask[a] & mask[b]
+        cnt = np.bincount(np.concatenate([a[both], b[both]]), minlength=self.n)
+        return mask & (cnt >= 3)
+    def components(self):
+        """Connected-component label per face (union-find over the pair list, vectorised)."""
+        parent = np.arange(self.n, dtype=np.int64)
+        a, b = self.pairs[:, 0].copy(), self.pairs[:, 1].copy()
+        while True:
+            ra = _find(parent, a); rb = _find(parent, b)
+            lo = np.minimum(ra, rb); hi = np.maximum(ra, rb)
+            diff = lo != hi
+            if not diff.any(): break
+            parent[hi[diff]] = lo[diff]
+            # compress
+            while True:
+                gp = parent[parent]
+                if np.array_equal(gp, parent): break
+                parent = gp
+        return _find(parent, np.arange(self.n))
+
+
+def _find(parent, idx):
+    r = parent[idx]
+    while True:
+        rr = parent[r]
+        if np.array_equal(rr, r): return r
+        r = rr
+
+
 def face_adjacency(faces):
-    faces = _faces_array(faces)
-    edges = _edge_owners(faces)
-    adj = [set() for _ in range(len(faces))]
-    for owners in edges.values():
-        if len(owners) < 2:
-            continue
-        for i in owners:
-            adj[i].update(j for j in owners if j != i)
+    """Back-compatible: tuple of neighbours per face. Prefer FaceGraph for anything bigger than a test mesh."""
+    g = FaceGraph(faces); adj = [[] for _ in range(g.n)]
+    for a, b in g.pairs.tolist(): adj[a].append(b); adj[b].append(a)
     return [tuple(sorted(n)) for n in adj]
 
 
-def _edge_owners(faces):
-    edges = defaultdict(list)
-    for i, tri in enumerate(faces):
-        a, b, c = [int(v) for v in tri]
-        for u, v in ((a, b), (b, c), (c, a)):
-            if u > v:
-                u, v = v, u
-            edges[(u, v)].append(i)
-    return edges
+def _graph(faces, graph):
+    return graph if graph is not None else FaceGraph(faces)
 
 
-def grow_selection(faces, vertex_selection, rings=1):
+def grow_selection(faces, vertex_selection, rings=1, graph=None):
     faces = _faces_array(faces)
     selected = selected_faces_from_vertices(faces, vertex_selection, require_all=True)
     if not selected.any():
         selected = selected_faces_from_vertices(faces, vertex_selection, require_all=False)
-    adj = face_adjacency(faces)
-    grown = selected.copy()
-    frontier = set(np.flatnonzero(selected))
-    for _ in range(max(1, int(rings))):
-        nxt = set()
-        for i in frontier:
-            nxt.update(adj[i])
-        nxt.difference_update(np.flatnonzero(grown))
-        if not nxt:
-            break
-        grown[list(nxt)] = True
-        frontier = nxt
+    grown = grow_face_selection(faces, selected, rings, graph)
     return vertex_mask_from_faces(len(faces), faces, grown, len(vertex_selection))
 
 
-def grow_face_selection(faces, face_selection, rings=1):
+def grow_face_selection(faces, face_selection, rings=1, graph=None):
     faces = _faces_array(faces)
     grown = np.asarray(face_selection, dtype=bool).copy()
     if len(grown) != len(faces) or not grown.any():
         return np.zeros(len(faces), dtype=bool)
-    adj = face_adjacency(faces)
-    frontier = set(np.flatnonzero(grown))
+    g = _graph(faces, graph)
     for _ in range(max(1, int(rings))):
-        nxt = set()
-        for i in frontier:
-            nxt.update(adj[i])
-        nxt.difference_update(np.flatnonzero(grown))
-        if not nxt:
-            break
-        grown[list(nxt)] = True
-        frontier = nxt
+        nxt = g.neighbours_of(grown) & ~grown
+        if not nxt.any(): break
+        grown |= nxt
     return np.ascontiguousarray(grown)
 
 
-def shrink_selection(faces, vertex_selection, rings=1):
+def shrink_selection(faces, vertex_selection, rings=1, graph=None):
     faces = _faces_array(faces)
     selected = selected_faces_from_vertices(faces, vertex_selection, require_all=True)
     if not selected.any():
         return np.zeros(len(vertex_selection), dtype=bool)
-    edge_owners = _edge_owners(faces)
+    g = _graph(faces, graph)
     current_faces = selected.copy()
     current_vertices = np.asarray(vertex_selection, dtype=bool).copy()
     for _ in range(max(1, int(rings))):
-        boundary_vertices = set()
-        for i in np.flatnonzero(current_faces):
-            tri = [int(v) for v in faces[i]]
-            edges = ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0]))
-            boundary = False
-            for u, v in edges:
-                if u > v:
-                    u, v = v, u
-                owners = edge_owners[(u, v)]
-                if not any(j != i and current_faces[j] for j in owners):
-                    boundary = True
-                    break
-            if boundary:
-                boundary_vertices.update(int(v) for v in faces[i])
-        if not boundary_vertices:
-            break
-        current_vertices[list(boundary_vertices)] = False
+        boundary = current_faces & ~g.interior(current_faces)
+        if not boundary.any(): break
+        current_vertices[np.unique(faces[boundary])] = False
         current_faces = selected_faces_from_vertices(faces, current_vertices, require_all=True)
-        if not current_faces.any():
-            break
+        if not current_faces.any(): break
     return np.ascontiguousarray(current_vertices)
 
 
-def shrink_face_selection(faces, face_selection, rings=1):
+def shrink_face_selection(faces, face_selection, rings=1, graph=None):
     faces = _faces_array(faces)
     current = np.asarray(face_selection, dtype=bool).copy()
     if len(current) != len(faces) or not current.any():
         return np.zeros(len(faces), dtype=bool)
-    edge_owners = _edge_owners(faces)
+    g = _graph(faces, graph)
     for _ in range(max(1, int(rings))):
-        remove = np.zeros(len(faces), dtype=bool)
-        for i in np.flatnonzero(current):
-            tri = [int(v) for v in faces[i]]
-            for u, v in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
-                if u > v:
-                    u, v = v, u
-                owners = edge_owners[(u, v)]
-                if not any(j != i and current[j] for j in owners):
-                    remove[i] = True
-                    break
-        if not remove.any():
-            break
-        next_current = current & ~remove
-        if not next_current.any():
-            break
-        current = next_current
+        nxt = g.interior(current)
+        if nxt.sum() == current.sum() or not nxt.any(): break
+        current = nxt
     return np.ascontiguousarray(current)
 
 
-def connected_selection(faces, vertex_selection):
+def connected_selection(faces, vertex_selection, graph=None):
     faces = _faces_array(faces)
     seeds = selected_faces_from_vertices(faces, vertex_selection, require_all=True)
     if not seeds.any():
         seeds = selected_faces_from_vertices(faces, vertex_selection, require_all=False)
     if not seeds.any():
         return np.zeros(len(vertex_selection), dtype=bool)
-    adj = face_adjacency(faces)
-    out = np.zeros(len(faces), dtype=bool)
-    seen = np.zeros(len(faces), dtype=bool)
-    seed_set = set(np.flatnonzero(seeds))
-    for seed in list(seed_set):
-        if seen[seed]:
-            continue
-        component = []
-        q = deque([int(seed)])
-        seen[seed] = True
-        touches_seed = False
-        while q:
-            i = q.popleft()
-            component.append(i)
-            if i in seed_set:
-                touches_seed = True
-            for j in adj[i]:
-                if not seen[j]:
-                    seen[j] = True
-                    q.append(j)
-        if touches_seed:
-            out[component] = True
+    out = connected_face_selection(faces, seeds, graph)
     return vertex_mask_from_faces(len(faces), faces, out, len(vertex_selection))
 
 
-def connected_face_selection(faces, face_selection):
+def connected_face_selection(faces, face_selection, graph=None):
     faces = _faces_array(faces)
     seeds = np.asarray(face_selection, dtype=bool)
     if len(seeds) != len(faces) or not seeds.any():
         return np.zeros(len(faces), dtype=bool)
-    adj = face_adjacency(faces)
-    out = np.zeros(len(faces), dtype=bool)
-    seen = np.zeros(len(faces), dtype=bool)
-    for seed in np.flatnonzero(seeds):
-        if seen[seed]:
-            continue
-        component = []
-        q = deque([int(seed)])
-        seen[seed] = True
-        while q:
-            i = q.popleft()
-            component.append(i)
-            for j in adj[i]:
-                if not seen[j]:
-                    seen[j] = True
-                    q.append(j)
-        out[component] = True
-    return np.ascontiguousarray(out)
+    labels = _graph(faces, graph).components()
+    return np.ascontiguousarray(np.isin(labels, np.unique(labels[seeds])))
 
 
 def points_in_polygon(points, polygon):

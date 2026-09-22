@@ -543,10 +543,18 @@ class GLView(OpenGLFrame):
         if self.edit_target == "mesh" and self._mesh_face_sel is not None:
             self._mesh_face_sel = ~self._mesh_face_sel; self._mesh_recolor(); self._display(); return
         if self._pts_sel is not None: self._pts_sel = ~self._pts_sel; self._pts_recolor(); self._display()
+    def _face_graph(self):
+        """The mesh's face adjacency, built once per faces array (about a second for a million faces) and reused
+        by every Grow / Shrink / Connected / Magic click until the faces change."""
+        f = self._medit_faces
+        g = getattr(self, "_fgraph", None)
+        if g is None or g[0] is not f:
+            g = (f, mesh_ops.FaceGraph(f)); self._fgraph = g
+        return g[1]
     def mesh_grow_selection(self):
         if self.edit_target != "mesh" or self._medit_faces is None or self._mesh_face_sel is None: return False
         import mesh_ops
-        changed = mesh_ops.grow_face_selection(self._medit_faces, self._mesh_face_sel)
+        changed = mesh_ops.grow_face_selection(self._medit_faces, self._mesh_face_sel, graph=self._face_graph())
         if np.array_equal(changed, self._mesh_face_sel): return False
         self._mesh_face_sel = changed
         self._mesh_recolor(); self._display()
@@ -554,7 +562,7 @@ class GLView(OpenGLFrame):
     def mesh_shrink_selection(self):
         if self.edit_target != "mesh" or self._medit_faces is None or self._mesh_face_sel is None: return False
         import mesh_ops
-        changed = mesh_ops.shrink_face_selection(self._medit_faces, self._mesh_face_sel)
+        changed = mesh_ops.shrink_face_selection(self._medit_faces, self._mesh_face_sel, graph=self._face_graph())
         if np.array_equal(changed, self._mesh_face_sel):
             changed = self._shrink_closed_face_selection()
             if changed is None or np.array_equal(changed, self._mesh_face_sel): return False
@@ -582,7 +590,7 @@ class GLView(OpenGLFrame):
     def mesh_connected_selection(self):
         if self.edit_target != "mesh" or self._medit_faces is None or self._mesh_face_sel is None: return False
         import mesh_ops
-        changed = mesh_ops.connected_face_selection(self._medit_faces, self._mesh_face_sel)
+        changed = mesh_ops.connected_face_selection(self._medit_faces, self._mesh_face_sel, graph=self._face_graph())
         if np.array_equal(changed, self._mesh_face_sel): return False
         self._mesh_face_sel = changed
         self._mesh_recolor(); self._display()
@@ -753,15 +761,14 @@ class GLView(OpenGLFrame):
             angle = min(80.0, max(20.0, 25.0 + float(getattr(self, "magic_k", 3.0)) * 8.0))
             allowed = good & (normals @ seed_n >= np.cos(np.deg2rad(angle)))
             if self.visible_only: allowed &= visible
-            adj = mesh_ops.face_adjacency(faces)
-            out = np.zeros(len(faces), dtype=bool)
+            # flood fill over the allowed faces only: the seed's component in the graph restricted to `allowed`,
+            # grown one hop at a time in numpy instead of a Python stack walk over a million faces
             if not allowed[int(seed)]: allowed[int(seed)] = True
-            stack = [int(seed)]; out[int(seed)] = True
-            while stack:
-                i = stack.pop()
-                for j in adj[i]:
-                    if not out[j] and allowed[j]:
-                        out[j] = True; stack.append(int(j))
+            g = self._face_graph(); out = np.zeros(len(faces), dtype=bool); out[int(seed)] = True
+            while True:
+                nxt = g.neighbours_of(out) & allowed & ~out
+                if not nxt.any(): break
+                out |= nxt
             return np.ascontiguousarray(out)
         except Exception:
             out = np.zeros(len(self._medit_faces), dtype=bool); out[int(seed)] = True; return out
