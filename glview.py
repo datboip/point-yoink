@@ -181,6 +181,7 @@ class GLView(OpenGLFrame):
         if isinstance(res, Exception) or self.failed:
             (on_ready and on_ready(False)); return
         v, n, f, wire = res; self.edit_session = None
+        if not self._keep_view: self._swap_orig = None            # a real load replaces everything, including a preview swap
         self.markers = []; self.plane = None; self._ncol = 0; self._split_req = None; self.clear_layers(draw=False)
         if not self._keep_view: self.reset(draw=False)     # keep the camera when just toggling representation
         self._keep_view = False
@@ -195,7 +196,7 @@ class GLView(OpenGLFrame):
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[0]); GL.glBufferData(GL.GL_ARRAY_BUFFER, v.nbytes, v, GL.GL_STATIC_DRAW)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[1]); GL.glBufferData(GL.GL_ARRAY_BUFFER, n.nbytes, n, GL.GL_STATIC_DRAW)
             GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[2]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, f.nbytes, f, GL.GL_STATIC_DRAW)
-            self._n = int(f.size); self._nw = 0; self._zmax = float(v[:, 2].max()); self._src = (v, f); self._wire_gen = None
+            self._n = int(f.size); self._nw = 0; self._zmax = float(v[:, 2].max()); self._src = (v, f); self._wire_gen = None; self._nrm_last = n
             self._pts_n = 0                                              # leaving points mode: don't draw stale points over the mesh
             self.edit_target = "points"; self._medit_faces = None; self._sel_face_n = 0   # a freshly loaded mesh is view-only until begin_mesh_edit()
             self._depth_valid = False                                   # new geometry: the visible-only depth cache is stale
@@ -210,6 +211,30 @@ class GLView(OpenGLFrame):
         except Exception as e:
             self.failed = True; self._err = e
             (on_ready and on_ready(False))
+    def swap_geometry(self, v, f, n=None):
+        """Show another mesh (view-space vertices, faces, optional normals) in place of the loaded one, keeping the
+        camera: a preview of an edit before it is applied. The original arrays are kept so restore_geometry()
+        can put them back without reloading from disk."""
+        if getattr(self, "_src", None) is None: return False
+        if getattr(self, "_swap_orig", None) is None: self._swap_orig = (self._src[0], self._nrm_cache(), self._src[1])
+        v = np.ascontiguousarray(v, dtype=np.float32); f = np.ascontiguousarray(f, dtype=np.uint32).reshape(-1, 3)
+        if n is None:
+            import trimesh
+            n = np.asarray(trimesh.Trimesh(v, f, process=False).vertex_normals, dtype=np.float32)
+        self._keep_view = True; self._split_req = None; self.plane = None
+        self._loaded(self._gen, (v, np.ascontiguousarray(n, dtype=np.float32), f, None), None)
+        self._keep_view = False; return True
+    def restore_geometry(self):
+        """Undo swap_geometry(): the loaded mesh comes back, camera untouched."""
+        o = getattr(self, "_swap_orig", None)
+        if o is None: return False
+        self._swap_orig = None; v, n, f = o
+        self._keep_view = True; self._split_req = None
+        self._loaded(self._gen, (v, n, f, None), None)
+        self._keep_view = False; return True
+    def _nrm_cache(self):
+        """The normals of the loaded mesh, kept from the last upload so a swap can restore them."""
+        return getattr(self, "_nrm_last", None)
     # ---- point cloud (Fused points) ----  additive: mesh state (_n) is zeroed so the mesh branch is skipped
     def load_points(self, path, on_ready=None, max_points=400000, tf=None):
         """Load a fused point cloud and show it as points. tf (from the scan's mesh) lines the points up

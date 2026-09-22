@@ -4873,8 +4873,10 @@ class App(LiveMixin, ctk.CTk):
                                 command=lambda: (close(), self._undo_base_cut(name, node))); undob.pack(fill="x", padx=14, pady=(0,4))
             self._tip(undob, "Undo the base cut on this scan: the cut copy goes to the trash (a prepared copy it replaced comes back), the remembered plane is forgotten, and the scan shows the scanner's model again.")
         foot=ctk.CTkFrame(pal, fg_color="transparent"); foot.grid(row=2,column=0, sticky="ew", padx=14, pady=(6,14)); foot.grid_columnconfigure(0, weight=1)
-        cancelb=ctk.CTkButton(foot, text="Cancel", width=96, height=34, corner_radius=17, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX); cancelb.grid(row=0,column=0, sticky="w")
-        applyb=ctk.CTkButton(foot, text="Apply cut", image=_icon("cut-base", "on-accent", 16), compound="left", width=140, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=12, weight="bold")); applyb.grid(row=0,column=1, sticky="e")
+        cancelb=ctk.CTkButton(foot, text="Cancel", width=74, height=34, corner_radius=17, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX); cancelb.grid(row=0,column=0, sticky="w")
+        previewb=ctk.CTkButton(foot, text="Preview", image=_icon("visible-only", "default", 16), compound="left", width=96, height=34, corner_radius=17, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=12)); previewb.grid(row=0,column=1, sticky="e", padx=(0,6))
+        self._tip(previewb, "Show the model as it will be after the cut, so you can turn it and check before applying. Back returns to editing.")
+        applyb=ctk.CTkButton(foot, text="Apply cut", image=_icon("cut-base", "on-accent", 16), compound="left", width=124, height=34, corner_radius=17, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=12, weight="bold")); applyb.grid(row=0,column=2, sticky="e")
         st={"n":None, "H":None, "Hmin":0.0, "Hmax":1.0, "cut":0.0, "keep_above":True, "V":None, "job":None, "busy":False, "picks":[], "n_auto":None, "n_grid":None}
         KEEP=np.array([0.74,0.76,0.80], np.float32); GONE=np.array([1.0,0.36,0.42], np.float32)
         def close():
@@ -4882,7 +4884,7 @@ class App(LiveMixin, ctk.CTk):
         t.protocol("WM_DELETE_WINDOW", close); cancelb.configure(command=close)
         def paint():
             st["job"]=None
-            if st["H"] is None: return
+            if st["H"] is None or st.get("preview"): return
             keep=(st["H"]>st["cut"]) if st["keep_above"] else (st["H"]<st["cut"])
             f=np.asarray(view._src[1]); view.set_split(keep[f].all(axis=1), tuple(KEEP), tuple(GONE))   # two plain materials: nothing for the card to lose
             if getattr(view, "_err", None): log_line("cut view: %s" % view._err); view._err=None
@@ -5060,6 +5062,56 @@ class App(LiveMixin, ctk.CTk):
                 self.q.put(("call", done))
             threading.Thread(target=work, daemon=True).start()
         applyb.configure(command=apply)
+        def _palette_state(on):
+            """Grey the whole palette while a preview is showing: the cut cannot be changed from that view."""
+            def walk(w):
+                for c in w.winfo_children():
+                    if isinstance(c, (ctk.CTkButton, ctk.CTkSlider, ctk.CTkEntry, ctk.CTkRadioButton, ctk.CTkCheckBox)):
+                        try: c.configure(state=("normal" if on else "disabled"))
+                        except Exception: pass
+                    walk(c)
+            walk(body); walk(getattr(body, "_parent_canvas", body))   # CTkScrollableFrame keeps its children under an inner canvas
+            if on:                                      # re-apply the states the mode logic owns
+                try: clearb.configure(state=("normal" if view.on_pick is not None else "disabled"))
+                except Exception: pass
+        def preview():
+            if st["busy"]: return
+            if st.get("preview"):                       # Back: the editable view returns
+                st["preview"]=False; view.restore_geometry(); view.on_pick=st.pop("preview_pick", None)
+                previewb.configure(text="Preview", image=_icon("visible-only", "default", 16)); _palette_state(True); paint(); return
+            if st["H"] is None: return
+            st["busy"]=True; self._btn_busy(previewb, "Slicing…"); status.configure(text="Slicing the view copy at the plane…")
+            v_view, f = view._src; n=st["n"]; cut=float(st["cut"]); keep_above=st["keep_above"]
+            def work():
+                res=None
+                try:
+                    import trimesh, shade
+                    # same slice as the real cut (cutplane.py), on the view copy in view coordinates
+                    V=shade.view_to_world(np.asarray(v_view, float), view.tf); F=np.asarray(f)
+                    nn=np.asarray(n, float); norm=float(np.linalg.norm(nn)); origin=nn*(cut/(norm*norm)); d=nn/norm*(1 if keep_above else -1)
+                    dots=(V-origin).dot(d); cop=np.all(np.abs(dots[F])<=trimesh.constants.tol.merge, axis=1)
+                    cv, cf, _=trimesh.intersections.slice_faces_plane(V, F[~cop], d, origin)
+                    if cop.any():
+                        flat=trimesh.Trimesh(V.copy(), F[cop], process=False); flat.remove_unreferenced_vertices()
+                        m=trimesh.util.concatenate([trimesh.Trimesh(cv, cf, process=False), flat])
+                    else: m=trimesh.Trimesh(cv, cf, process=False)
+                    vv=shade.world_to_view(np.asarray(m.vertices, float), view.tf)
+                    nrm=np.asarray(trimesh.Trimesh(vv, m.faces, process=False).vertex_normals, np.float32)   # normals in VIEW space, like the loaded mesh's
+                    res=(np.asarray(vv, np.float32), np.asarray(m.faces, np.uint32), nrm)
+                except Exception as e: log_error("cut preview", e)
+                def done():
+                    st["busy"]=False
+                    if not t.winfo_exists(): return
+                    self._btn_idle(previewb)
+                    if res is None: status.configure(text="Could not build the preview (see Help > Log).", text_color=WARN); return
+                    vv, ff, nn2=res
+                    st["preview"]=True; st["preview_pick"]=view.on_pick; view.on_pick=None
+                    view.markers=[]; view.swap_geometry(vv, ff, nn2)
+                    previewb.configure(text="Back", image=_icon("back", "default", 16)); _palette_state(False)
+                    status.configure(text="This is the model after the cut: %s faces. Turn it to check, then Apply cut or Back." % format(len(ff), ","), text_color=TX)
+                self.q.put(("call", done))
+            threading.Thread(target=work, daemon=True).start()
+        previewb.configure(command=preview)
     def _base_worker(self, name, src, node=None, dest=None, token=None):
         path=src; dest=dest or DEFAULT_DEST; outdir=os.path.join(dest, name)
         def done(payload):

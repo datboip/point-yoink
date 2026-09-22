@@ -5,6 +5,9 @@ All notable changes to PointYoink. 0.7.0 was the first tagged release; the
 
 ## 1.1.0 (unreleased, on the codex-next branch)
 
+- Remove base has a Preview: the model as it will be after the cut, in the same view, with Back to keep editing.
+- Editor topology tools (Grow, Shrink, Connected piece, Magic) no longer freeze on large scans; the face graph is built once per mesh.
+- Combine controls that change the current pair are disabled while a job runs.
 - Editing now uses full-resolution native geometry with revision-based dirty state, bounded undo and redo, validated transactional saves, and support for combined models.
 - Mesh editing adds topology selection actions to grow, shrink or select a connected piece from the current selection.
 - Full-project imports now recognise scanner meshes saved as `fuse_mesh_rgb.ply` or `fuse_mesh_tex.ply`, so scanner-built models no longer appear raw-only.
