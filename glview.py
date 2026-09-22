@@ -10,6 +10,7 @@ import numpy as np
 from pyopengltk import OpenGLFrame
 from OpenGL import GL, GLU, GLX
 import shade
+import viewnav
 
 MAX_FACES = 3_000_000                 # bound VRAM and load time; above this we decimate
 
@@ -70,14 +71,16 @@ class GLView(OpenGLFrame):
         self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 1.10, [0.0, 0.0]
         self.rot = self._default_rot()         # free rotation: a 4x4 the drag turns about the screen axes, no limits
         self._drag = None; self._gen = 0; self._pending = None; self._n = 0; self._vbo = None
+        self._nav_hover = None
         self._nw = 0; self._src = None; self._wire_gen = None    # set again by _upload; must exist before the first upload (Wireframe clicked early)
         self._pvbo = None; self._pts_n = 0; self._pending_pts = None   # point-cloud view (Fused points): separate, additive path; never touches the mesh draw
         self._pcvbo = None; self._pts_v = None; self._pts_sel = None; self._pts_undo = []   # point editing: colour vbo, view-space points, selection mask, undo stack
+        self.edit_session = None                                  # authoritative native-coordinate edit document
         self.on_points_change = None                                   # callback(kept_count) after an edit, for the editor UI
         self.on_brush_size = None                                      # callback(px) when scroll resizes the brush, so the palette slider tracks it
         self._depth_failed = False                                    # set when visible-only wanted depth but the read failed (app warns)
         self.edit_target = "points"    # "points" (clean cloud -> rebuild) or "mesh" (delete faces on the built model, no rebuild)
-        self._medit_faces = None; self._medit_undo = []; self._selfbo = None; self._sel_face_n = 0   # mesh face editing: faces, undo, selected-face overlay buffer
+        self._medit_faces = None; self._mesh_face_sel = None; self._medit_undo = []; self._selfbo = None; self._sel_face_n = 0   # mesh face editing: faces, face selection, undo, overlay buffer
         self.visible_only = False      # True selects only visible surfaces; False selects through
         self._magic_degraded = False   # set True if Magic had to fall back to a plain ball (no scipy)
         self._depth_buf = None; self._depth_valid = False   # cached GL depth buffer for visible-only; invalidated on camera/geometry change
@@ -100,7 +103,7 @@ class GLView(OpenGLFrame):
         self._split = None                     # optional (ibo_a, n_a, colour_a, ibo_b, n_b, colour_b): the mesh drawn as two parts
         self._split_req = None                 # (mask, colour_keep, colour_gone) to (re)apply after an upload
         self.plane = None                      # optional translucent quad: (centre_view_xyz, normal_view_xyz, half_size)
-        self.bind("<ButtonPress-1>", self._press); self.bind("<B1-Motion>", self._rotate)
+        self.bind("<ButtonPress-1>", self._press); self.bind("<B1-Motion>", self._rotate); self.bind("<Motion>", self._motion)
         self.bind("<ButtonPress-3>", self._press); self.bind("<B3-Motion>", self._pan)
         self.bind("<ButtonPress-2>", self._press); self.bind("<B2-Motion>", self._pan)
         self.bind("<ButtonRelease-1>", self._release); self.bind("<ButtonRelease-3>", self._release); self.bind("<ButtonRelease-2>", self._release)
@@ -177,7 +180,7 @@ class GLView(OpenGLFrame):
         if gen != self._gen or not self._alive(): return       # a newer load, or the window holding this view was closed
         if isinstance(res, Exception) or self.failed:
             (on_ready and on_ready(False)); return
-        v, n, f, wire = res
+        v, n, f, wire = res; self.edit_session = None
         self.markers = []; self.plane = None; self._ncol = 0; self._split_req = None; self.clear_layers(draw=False)
         if not self._keep_view: self.reset(draw=False)     # keep the camera when just toggling representation
         self._keep_view = False
@@ -224,11 +227,57 @@ class GLView(OpenGLFrame):
             try: self.after(0, lambda: self._points_loaded(gen, res, on_ready))
             except Exception: pass
         threading.Thread(target=work, daemon=True).start()
+    def load_edit_document(self, path, project, node, source_key, kind, on_ready=None,
+                           max_faces=5_000_000, max_points=6_000_000, tf=None):
+        """Load full native geometry into an EditSession, then derive float32 renderer copies."""
+        self._gen += 1; gen = self._gen; self._n = 0
+        def work():
+            try:
+                import trimesh
+                from edit_session import EditSession
+                doc=EditSession.from_file(project, node, path, source_key, kind=kind,
+                                          max_faces=max_faces, max_points=max_points)
+                t=tf or shade._compute_tf(doc.vertices)
+                vv=np.ascontiguousarray(shade.world_to_view(doc.vertices, t), dtype=np.float32)
+                if kind=="mesh":
+                    ff=np.ascontiguousarray(doc.faces, dtype=np.uint32)
+                    nn=np.asarray(trimesh.Trimesh(vv, ff, process=False).vertex_normals, dtype=np.float32)
+                    res=(doc, t, vv, nn, ff)
+                else:
+                    res=(doc, t, vv, None, None)
+            except Exception as e:
+                res=e
+            try: self.after(0, lambda: self._edit_document_loaded(gen, res, on_ready))
+            except Exception: pass
+        threading.Thread(target=work, daemon=True).start()
+    def _edit_document_loaded(self, gen, res, on_ready):
+        if gen != self._gen or not self._alive(): return
+        if isinstance(res, Exception) or self.failed:
+            if on_ready: on_ready(False, res if isinstance(res, Exception) else self._err)
+            return
+        doc, tf, v, n, f=res; self.tf=tf
+        self.markers=[]; self.plane=None; self._ncol=0; self._split_req=None; self.clear_layers(draw=False)
+        if not self._keep_view: self.reset(draw=False)
+        self._keep_view=False
+        def uploaded(ok):
+            if ok:
+                self.edit_session=doc
+                if doc.kind=="mesh": self.begin_mesh_edit(doc)
+                else:
+                    self.edit_target="points"; self._pts_sel=doc.selection.copy(); self._pts_undo=[]
+                    self._pts_recolor(); self._display()
+            if on_ready: on_ready(bool(ok), None if ok else self._err)
+        if doc.kind=="mesh":
+            if self.ready: self._upload(v, n, f, None, uploaded)
+            else: self._pending=(v, n, f, None, uploaded)
+        else:
+            if self.ready: self._upload_points(v, uploaded)
+            else: self._pending_pts=(v, uploaded)
     def _points_loaded(self, gen, res, on_ready):
         if gen != self._gen or not self._alive(): return
         if isinstance(res, Exception) or self.failed:
             (on_ready and on_ready(False)); return
-        self.markers = []; self.plane = None; self._ncol = 0; self._split_req = None
+        self.edit_session = None; self.markers = []; self.plane = None; self._ncol = 0; self._split_req = None
         self.clear_layers(draw=False)
         if not self._keep_view: self.reset(draw=False)     # keep the camera when just toggling Mesh<->Points
         self._keep_view = False
@@ -240,7 +289,7 @@ class GLView(OpenGLFrame):
             self.tkMakeCurrent()
             # entering points mode: drop any mesh-edit state so selection/delete/save use the CLOUD, not
             # stale faces, and so _pts_recolor() below takes the point path not _mesh_recolor().
-            self.edit_target = "points"; self._medit_faces = None; self._medit_undo = []; self._sel_face_n = 0; self._depth_valid = False
+            self.edit_target = "points"; self._medit_faces = None; self._mesh_face_sel = None; self._medit_undo = []; self._sel_face_n = 0; self._depth_valid = False
             for _b in ("_pvbo", "_pcvbo"):
                 if getattr(self, _b, None) is not None:
                     try: GL.glDeleteBuffers(1, [int(getattr(self, _b))])
@@ -263,13 +312,20 @@ class GLView(OpenGLFrame):
             (on_ready and on_ready(False))
     # ---- point editing (select / delete / undo) ----
     def _mesh_recolor(self):
-        """Mesh editing: rebuild the red overlay of faces that will be deleted (all 3 verts selected)."""
+        """Mesh editing: rebuild the red overlay from the face selection mask."""
         if self._pts_v is None or self._medit_faces is None: return
-        try:
-            if self._pts_sel is not None and self._pts_sel.any():
-                sf = self._medit_faces[self._pts_sel[self._medit_faces].all(axis=1)]
+        if self._mesh_face_sel is None or len(self._mesh_face_sel) != len(self._medit_faces):
+            if self._pts_sel is not None and len(self._pts_sel):
+                self._mesh_face_sel = self._pts_sel[self._medit_faces].all(axis=1)
             else:
-                sf = np.zeros((0, 3), dtype=np.uint32)
+                self._mesh_face_sel = np.zeros(len(self._medit_faces), dtype=bool)
+        self._pts_sel = np.zeros(len(self._pts_v), dtype=bool)
+        if len(self._medit_faces) and self._mesh_face_sel.any():
+            self._pts_sel[np.unique(self._medit_faces[self._mesh_face_sel])] = True
+        if self.edit_session is not None and len(self.edit_session.selection)==len(self._pts_sel):
+            self.edit_session.set_selection(self._pts_sel)
+        try:
+            sf = self._medit_faces[self._mesh_face_sel] if self._mesh_face_sel.any() else np.zeros((0, 3), dtype=np.uint32)
             sf = np.ascontiguousarray(sf, dtype=np.uint32)
             self.tkMakeCurrent()
             if self._selfbo is None: self._selfbo = GL.glGenBuffers(1)
@@ -281,15 +337,23 @@ class GLView(OpenGLFrame):
         if callable(self.on_points_change):
             try: self.on_points_change(int(len(self._medit_faces)))
             except Exception: pass
-    def begin_mesh_edit(self):
+    def begin_mesh_edit(self, session=None):
         """Turn the currently-loaded mesh (its displayed verts/faces) into an editable target: selection tools
         act on its vertices, Delete drops the faces you cover. WYSIWYG - you edit exactly what's on screen."""
-        if not self._src: return False
-        v, f = self._src
+        if session is not None:
+            v=shade.world_to_view(session.vertices, self.tf).astype(np.float32); f=session.faces
+        else:
+            if not self._src: return False
+            v, f = self._src
         self._pts_v = np.ascontiguousarray(v, dtype=np.float32)     # view-space verts: the selection tools project these
-        self._pts_sel = np.zeros(len(self._pts_v), dtype=bool)
+        self._pts_sel = session.selection.copy() if session is not None else np.zeros(len(self._pts_v), dtype=bool)
         self._medit_faces = np.ascontiguousarray(f, dtype=np.uint32).reshape(-1, 3)
+        if session is not None and self._pts_sel is not None and len(self._pts_sel):
+            self._mesh_face_sel = self._pts_sel[self._medit_faces].all(axis=1)
+        else:
+            self._mesh_face_sel = np.zeros(len(self._medit_faces), dtype=bool)
         self._medit_undo = []; self._pts_n = 0                      # _pts_n=0 so GL_POINTS isn't drawn; the mesh draws
+        if session is not None: self.edit_session=session
         self.edit_target = "mesh"
         self._mesh_recolor()
         return True
@@ -307,6 +371,8 @@ class GLView(OpenGLFrame):
         """Per-point colour VBO from _pts_sel: blue normally, red where selected."""
         if self.edit_target == "mesh": self._mesh_recolor(); return
         if self._pts_v is None or self._pcvbo is None: return
+        if self.edit_session is not None and len(self.edit_session.selection)==len(self._pts_sel):
+            self.edit_session.set_selection(self._pts_sel)
         col = np.empty((len(self._pts_v), 3), dtype=np.float32); col[:] = (0.36, 0.66, 1.0)
         if self._pts_sel is not None and self._pts_sel.any(): col[self._pts_sel] = (1.0, 0.28, 0.30)
         try:
@@ -317,15 +383,14 @@ class GLView(OpenGLFrame):
         if callable(self.on_points_change):
             try: self.on_points_change(len(self._pts_v))    # live point/selection count for the editor
             except Exception: pass
-    def _project_all(self):
-        """Screen (x,y) in Tk top-left coords for every point, an in-front mask, and window depth [0,1].
-        Vectorised, with a one-point gluProject check so it is right whatever matrix layout PyOpenGL hands
-        back. Returns (scr Nx2, front N bool, winz N)."""
-        if self._pts_v is None or not len(self._pts_v) or getattr(self, "_mv_m", None) is None: return None
+    def _project_points(self, pts):
+        """Screen (x,y) in Tk top-left coords for points, an in-front mask, and window depth [0,1]."""
+        if pts is None or not len(pts) or getattr(self, "_mv_m", None) is None: return None
         try:
+            pts = np.asarray(pts, dtype=np.float64)
             mv = np.asarray(self._mv_m, dtype=np.float64); pj = np.asarray(self._pj_m, dtype=np.float64)
             _, _, vw, vh = self._vp
-            P = np.column_stack([self._pts_v.astype(np.float64), np.ones(len(self._pts_v))])
+            P = np.column_stack([pts, np.ones(len(pts))])
             def run(m, p):
                 clip = (P @ m) @ p; w = clip[:, 3].copy(); w[np.abs(w) < 1e-12] = 1e-12
                 ndc = clip[:, :3] / w[:, None]
@@ -335,13 +400,16 @@ class GLView(OpenGLFrame):
             scr, front, winz = run(mv, pj)
             # calibrate against gluProject on the first point; if the vectorised result is off, transpose
             try:
-                p0 = self._pts_v[0]; gx, gy, _ = GLU.gluProject(float(p0[0]), float(p0[1]), float(p0[2]), self._mv_m, self._pj_m, self._vp)
+                p0 = pts[0]; gx, gy, _ = GLU.gluProject(float(p0[0]), float(p0[1]), float(p0[2]), self._mv_m, self._pj_m, self._vp)
                 if abs(scr[0, 0] - gx) + abs(scr[0, 1] - (vh - gy)) > 4.0:
                     scr, front, winz = run(mv.T, pj.T)
             except Exception: pass
             return scr, front, winz
         except Exception:
             return None
+    def _project_all(self):
+        """Screen (x,y) in Tk top-left coords for every editable point or vertex."""
+        return self._project_points(self._pts_v)
     def _capture_depth(self):
         """Read the window depth buffer once after the base geometry is drawn (before selection overlays),
         for visible-only selection. Row 0 is the bottom of the screen (GL convention)."""
@@ -385,14 +453,82 @@ class GLView(OpenGLFrame):
             cond = ((yi > y) != (yj > y)) & (x < (xj - xi) * (y - yi) / ((yj - yi) + 1e-12) + xi)
             inside ^= cond; j = i
         return inside
+    @staticmethod
+    def _pt_in_tri2(p, tri):
+        a, b, c = tri
+        v0 = c - a; v1 = b - a; v2 = p - a
+        den = v0[0] * v1[1] - v1[0] * v0[1]
+        if abs(float(den)) < 1e-9: return False
+        u = (v2[0] * v1[1] - v1[0] * v2[1]) / den
+        v = (v0[0] * v2[1] - v2[0] * v0[1]) / den
+        return u >= -1e-5 and v >= -1e-5 and (u + v) <= 1.0 + 1e-5
+    def _mesh_sampled_surface_hit(self, polygon=None, circle=None, max_samples=220):
+        pr = self._mesh_project_faces()
+        if pr is None: return None
+        (cscr, cfront, cwinz), (vscr, _vfront, vwinz) = pr
+        faces = self._medit_faces
+        tri_scr = vscr[faces]
+        tri_z = vwinz[faces].mean(axis=1)
+        if polygon is not None:
+            poly = np.asarray(polygon, dtype=float)
+            mn = poly.min(axis=0); mx = poly.max(axis=0)
+            area_w = max(1.0, float(mx[0] - mn[0])); area_h = max(1.0, float(mx[1] - mn[1]))
+            nx = max(3, min(18, int(area_w / 12) + 1)); ny = max(3, min(18, int(area_h / 12) + 1))
+            xs = np.linspace(mn[0], mx[0], nx); ys = np.linspace(mn[1], mx[1], ny)
+            samples = np.array([(x, y) for y in ys for x in xs], dtype=float)
+            samples = samples[self._in_poly(samples, poly)]
+            if len(samples) > max_samples:
+                samples = samples[np.linspace(0, len(samples) - 1, max_samples).astype(int)]
+        else:
+            x, y, r = circle
+            nx = ny = 11
+            xs = np.linspace(x - r, x + r, nx); ys = np.linspace(y - r, y + r, ny)
+            samples = np.array([(sx, sy) for sy in ys for sx in xs if (sx - x) ** 2 + (sy - y) ** 2 <= r ** 2], dtype=float)
+            samples = np.vstack([samples, np.array([[x, y]], dtype=float)]) if len(samples) else np.array([[x, y]], dtype=float)
+        out = np.zeros(len(faces), dtype=bool)
+        if not len(samples): return out
+        tb_min = tri_scr.min(axis=1); tb_max = tri_scr.max(axis=1)
+        for sp in samples:
+            cand = np.where((tb_min[:, 0] <= sp[0]) & (tb_max[:, 0] >= sp[0]) & (tb_min[:, 1] <= sp[1]) & (tb_max[:, 1] >= sp[1]) & cfront)[0]
+            if not len(cand): continue
+            hit = [int(i) for i in cand if self._pt_in_tri2(sp, tri_scr[int(i)])]
+            if not hit: continue
+            out[min(hit, key=lambda i: tri_z[i])] = True
+        if out.any(): return np.ascontiguousarray(out)
+        return None
+    def _mesh_apply_face_hit(self, face_hit, mode):
+        if self._mesh_face_sel is None or len(self._mesh_face_sel) != len(self._medit_faces):
+            self._mesh_face_sel = np.zeros(len(self._medit_faces), dtype=bool)
+        face_hit = np.asarray(face_hit, dtype=bool)
+        if mode == "add": self._mesh_face_sel |= face_hit
+        elif mode == "subtract": self._mesh_face_sel &= ~face_hit
+        else: self._mesh_face_sel = np.ascontiguousarray(face_hit, dtype=bool)
+        self._mesh_recolor(); self._display()
+        return int(self._sel_face_n // 3)
+    def _mesh_project_faces(self):
+        if self._pts_v is None or self._medit_faces is None or not len(self._medit_faces): return None
+        centres = self._pts_v[self._medit_faces].mean(axis=1)
+        cpr = self._project_points(centres)
+        vpr = self._project_points(self._pts_v)
+        if cpr is None or vpr is None: return None
+        return cpr, vpr
     def select_region(self, polygon, mode="replace", front_only=True):
         """Select points whose screen projection is inside polygon (list of (x,y) Tk coords). mode:
         replace / add / subtract. front_only drops points facing away/behind (w<=0)."""
         if self._pts_v is None or self._pts_sel is None: return 0
+        poly = np.asarray(polygon, dtype=float)
+        if self.edit_target == "mesh" and self._medit_faces is not None:
+            pr = self._mesh_project_faces()
+            if pr is None: return 0
+            (cscr, cfront, cwinz), _vpr = pr
+            import mesh_ops
+            vis = self._visible_mask(cscr, cfront, cwinz) if front_only else None
+            face_hit = mesh_ops.face_center_selection(cscr, poly, vis)
+            return self._mesh_apply_face_hit(face_hit, mode)
         pr = self._project_all()
         if pr is None: return 0
         scr, front, winz = pr
-        hit = self._in_poly(scr, np.asarray(polygon, dtype=float))
+        hit = self._in_poly(scr, poly)
         if front_only: hit &= self._visible_mask(scr, front, winz)   # visible-only drops points hidden behind the object
         if mode == "add": self._pts_sel |= hit
         elif mode == "subtract": self._pts_sel &= ~hit
@@ -400,12 +536,65 @@ class GLView(OpenGLFrame):
         self._pts_recolor(); self._display()
         return int(self._pts_sel.sum())
     def clear_selection(self):
+        if self.edit_target == "mesh" and self._mesh_face_sel is not None:
+            self._mesh_face_sel[:] = False; self._mesh_recolor(); self._display(); return
         if self._pts_sel is not None: self._pts_sel[:] = False; self._pts_recolor(); self._display()
     def invert_selection(self):
+        if self.edit_target == "mesh" and self._mesh_face_sel is not None:
+            self._mesh_face_sel = ~self._mesh_face_sel; self._mesh_recolor(); self._display(); return
         if self._pts_sel is not None: self._pts_sel = ~self._pts_sel; self._pts_recolor(); self._display()
+    def mesh_grow_selection(self):
+        if self.edit_target != "mesh" or self._medit_faces is None or self._mesh_face_sel is None: return False
+        import mesh_ops
+        changed = mesh_ops.grow_face_selection(self._medit_faces, self._mesh_face_sel)
+        if np.array_equal(changed, self._mesh_face_sel): return False
+        self._mesh_face_sel = changed
+        self._mesh_recolor(); self._display()
+        return True
+    def mesh_shrink_selection(self):
+        if self.edit_target != "mesh" or self._medit_faces is None or self._mesh_face_sel is None: return False
+        import mesh_ops
+        changed = mesh_ops.shrink_face_selection(self._medit_faces, self._mesh_face_sel)
+        if np.array_equal(changed, self._mesh_face_sel):
+            changed = self._shrink_closed_face_selection()
+            if changed is None or np.array_equal(changed, self._mesh_face_sel): return False
+        self._mesh_face_sel = changed
+        self._mesh_recolor(); self._display()
+        return True
+    def _shrink_closed_face_selection(self):
+        if self._mesh_face_sel is None or not self._mesh_face_sel.any(): return None
+        pr = self._mesh_project_faces()
+        if pr is None: return None
+        (cscr, cfront, cwinz), _vpr = pr
+        mask = self._mesh_face_sel.copy()
+        candidates = np.flatnonzero(mask & self._visible_mask(cscr, cfront, cwinz))
+        if not len(candidates): candidates = np.flatnonzero(mask)
+        if len(candidates) <= 1: return mask & False
+        pts = cscr[candidates]
+        centre = pts.mean(axis=0)
+        dist = np.linalg.norm(pts - centre, axis=1)
+        cut = float(np.quantile(dist, 0.72))
+        remove = candidates[dist >= cut]
+        if len(remove) == 0: remove = candidates[[int(np.argmax(dist))]]
+        out = mask.copy(); out[remove] = False
+        if not out.any(): out = mask.copy(); out[remove[:max(1, len(remove) - 1)]] = False
+        return np.ascontiguousarray(out)
+    def mesh_connected_selection(self):
+        if self.edit_target != "mesh" or self._medit_faces is None or self._mesh_face_sel is None: return False
+        import mesh_ops
+        changed = mesh_ops.connected_face_selection(self._medit_faces, self._mesh_face_sel)
+        if np.array_equal(changed, self._mesh_face_sel): return False
+        self._mesh_face_sel = changed
+        self._mesh_recolor(); self._display()
+        return True
     def delete_selected(self):
         """Remove selected points (points mode) or the covered faces (mesh mode). Pushes undo first."""
         if self._pts_sel is None or not self._pts_sel.any(): return
+        if self.edit_session is not None:
+            if self.edit_target == "mesh": self._mesh_recolor()
+            changed=self.edit_session.delete_selected(self._pts_sel)
+            if changed: self._sync_edit_session()
+            return changed
         if self.edit_target == "mesh":
             if self._medit_faces is None: return
             self._medit_undo.append(self._medit_faces.copy())
@@ -430,22 +619,45 @@ class GLView(OpenGLFrame):
             self._depth_valid = False                               # geometry changed: visible-only depth is stale
             if self._pts_sel is None or len(self._pts_sel) != len(self._pts_v):
                 self._pts_sel = np.zeros(len(self._pts_v), dtype=bool)
+            if self._mesh_face_sel is None or len(self._mesh_face_sel) != len(self._medit_faces):
+                self._mesh_face_sel = np.zeros(len(self._medit_faces), dtype=bool)
             self._mesh_recolor(); self._display()
         except Exception as e:
             self._err = e
     def undo_points(self):
+        if self.edit_session is not None:
+            changed=self.edit_session.undo()
+            if changed: self._sync_edit_session()
+            return changed
         if self.edit_target == "mesh":
             if not self._medit_undo: return
             self._medit_faces = self._medit_undo.pop(); self._pts_sel[:] = False; self._reupload_mesh_faces(); return
         if not self._pts_undo: return
-        self._pts_v = self._pts_undo.pop(); self._reupload_points()
-    def _reupload_points(self):
+        self._pts_v = self._pts_undo.pop(); self._reupload_points(); return True
+    def redo_points(self):
+        if self.edit_session is None: return False
+        changed=self.edit_session.redo()
+        if changed: self._sync_edit_session()
+        return changed
+    def _sync_edit_session(self):
+        doc=self.edit_session
+        if doc is None: return
+        if doc.kind=="mesh":
+            self._medit_faces=np.ascontiguousarray(doc.faces, dtype=np.uint32)
+            self._pts_sel=doc.selection.copy()
+            self._mesh_face_sel = self._pts_sel[self._medit_faces].all(axis=1) if len(self._medit_faces) else np.zeros(0, dtype=bool)
+            self._reupload_mesh_faces()
+        else:
+            self._pts_v=np.ascontiguousarray(shade.world_to_view(doc.vertices, self.tf), dtype=np.float32)
+            self._pts_sel=doc.selection.copy(); self._reupload_points(keep_selection=True)
+    def _reupload_points(self, keep_selection=False):
         """Re-push _pts_v after an edit and refresh selection/colours."""
         try:
             self.tkMakeCurrent()
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._pvbo); GL.glBufferData(GL.GL_ARRAY_BUFFER, self._pts_v.nbytes, self._pts_v, GL.GL_STATIC_DRAW)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
-            self._pts_n = int(len(self._pts_v)); self._pts_sel = np.zeros(self._pts_n, dtype=bool)
+            self._pts_n = int(len(self._pts_v))
+            if not keep_selection: self._pts_sel = np.zeros(self._pts_n, dtype=bool)
             self._depth_valid = False                               # geometry changed: visible-only depth is stale
             self._pts_recolor(); self._display()
             if callable(self.on_points_change): self.on_points_change(self._pts_n)
@@ -460,7 +672,7 @@ class GLView(OpenGLFrame):
         """tool: None (orbit) / 'lasso' / 'rect' / 'brush' / 'magic'. mode: replace/add/subtract."""
         self.edit_tool = tool; self.edit_mode = mode; self._sel_path = None
         # the pointer changes so you can tell which tool is live (arrow = orbit, a select cursor per tool)
-        try: self.configure(cursor={"lasso":"pencil", "rect":"crosshair", "brush":"dotbox", "magic":"plus"}.get(tool, ""))
+        try: self.configure(cursor={"lasso":"pencil", "rect":"crosshair", "brush":"", "magic":"plus"}.get(tool, ""))
         except Exception: pass
         self.draw()
     def _over_content(self, x, y):
@@ -474,8 +686,17 @@ class GLView(OpenGLFrame):
         m = 45.0                        # margin so you can lasso just outside the silhouette
         return (s[:, 0].min() - m) <= x <= (s[:, 0].max() + m) and (s[:, 1].min() - m) <= y <= (s[:, 1].max() + m)
     def _brush_at(self, x, y, mode):
-        """Paint-select points within brush_px pixels of (x, y)."""
+        """Paint-select points or mesh faces within brush_px pixels of (x, y)."""
         if self._pts_v is None or self._pts_sel is None: return
+        if self.edit_target == "mesh" and self._medit_faces is not None:
+            pr = self._mesh_project_faces()
+            if pr is None: return
+            (cscr, cfront, cwinz), _vpr = pr
+            import mesh_ops
+            vis = self._visible_mask(cscr, cfront, cwinz)
+            hit = mesh_ops.face_radius_selection(cscr, x, y, self.brush_px, vis)
+            self._mesh_apply_face_hit(hit, "subtract" if mode == "subtract" else "add")
+            return
         pr = self._project_all()
         if pr is None: return
         scr, front, winz = pr
@@ -485,8 +706,25 @@ class GLView(OpenGLFrame):
         else: self._pts_sel |= hit
         self._pts_recolor(); self._display()
     def _magic_at(self, x, y, mode):
-        """Region-grow from the point clicked: everything connected within magic_thresh (view units)."""
+        """Region-grow from the clicked point or mesh face."""
         if self._pts_v is None or self._pts_sel is None: return
+        if self.edit_target == "mesh" and self._medit_faces is not None:
+            pr = self._mesh_project_faces()
+            if pr is None: return
+            (cscr, cfront, cwinz), (vscr, _vfront, _vwinz) = pr
+            d2 = (cscr[:, 0] - x) ** 2 + (cscr[:, 1] - y) ** 2
+            visible = self._visible_mask(cscr, cfront, cwinz)
+            cand = np.where(visible & (d2 <= (self.brush_px * 2.0) ** 2))[0]
+            if not len(cand):
+                vert_d2 = (vscr[:, 0] - x) ** 2 + (vscr[:, 1] - y) ** 2
+                face_d2 = vert_d2[self._medit_faces].min(axis=1)
+                cand = np.where(visible & (face_d2 <= (self.brush_px * 2.0) ** 2))[0]
+                d2 = face_d2
+            if not len(cand): return
+            seed = int(cand[np.argmin(d2[cand])])
+            face_hit = self._mesh_magic_region(seed, visible)
+            self._mesh_apply_face_hit(face_hit, "subtract" if mode == "subtract" else "add")
+            return
         pr = self._project_all()
         if pr is None: return
         scr, front, winz = pr
@@ -501,6 +739,32 @@ class GLView(OpenGLFrame):
         if mode == "subtract": self._pts_sel[grown] = False
         else: self._pts_sel[grown] = True
         self._pts_recolor(); self._display()
+    def _mesh_magic_region(self, seed, visible):
+        try:
+            import mesh_ops
+            faces = np.asarray(self._medit_faces, dtype=np.int64)
+            pts = np.asarray(self._pts_v, dtype=np.float64)
+            tri = pts[faces]
+            normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+            lens = np.linalg.norm(normals, axis=1)
+            good = lens > 1e-12
+            normals[good] /= lens[good, None]
+            seed_n = normals[int(seed)]
+            angle = min(80.0, max(20.0, 25.0 + float(getattr(self, "magic_k", 3.0)) * 8.0))
+            allowed = good & (normals @ seed_n >= np.cos(np.deg2rad(angle)))
+            if self.visible_only: allowed &= visible
+            adj = mesh_ops.face_adjacency(faces)
+            out = np.zeros(len(faces), dtype=bool)
+            if not allowed[int(seed)]: allowed[int(seed)] = True
+            stack = [int(seed)]; out[int(seed)] = True
+            while stack:
+                i = stack.pop()
+                for j in adj[i]:
+                    if not out[j] and allowed[j]:
+                        out[j] = True; stack.append(int(j))
+            return np.ascontiguousarray(out)
+        except Exception:
+            out = np.zeros(len(self._medit_faces), dtype=bool); out[int(seed)] = True; return out
     def _region_grow(self, seed):
         """Connected points near the growing set, from a seed. The step size ADAPTS to the cloud's own point
         spacing (not a fixed constant), so Magic behaves the same on dense and sparse scans. KDTree BFS, capped."""
@@ -651,15 +915,7 @@ class GLView(OpenGLFrame):
             GL.glEnd(); GL.glPointSize(12.0); GL.glBegin(GL.GL_POINTS)          # the colour
             for xyz, col in self.markers: GL.glColor3f(*col); GL.glVertex3f(*xyz)
             GL.glEnd(); GL.glPointSize(1.0); GL.glEnable(GL.GL_DEPTH_TEST)
-        # axis gizmo, bottom-left, rotating with the view: X red, Y green, Z blue
-        GL.glDisable(GL.GL_LIGHTING); GL.glDisable(GL.GL_DEPTH_TEST)
-        g = int(min(w, h) * 0.22); GL.glViewport(10, 10, g, g)
-        GL.glMatrixMode(GL.GL_PROJECTION); GL.glLoadIdentity(); GL.glOrtho(-1.3, 1.3, -1.3, 1.3, -2, 2)
-        GL.glMatrixMode(GL.GL_MODELVIEW); GL.glLoadIdentity(); self._mult_rot()
-        GL.glLineWidth(2.0); GL.glBegin(GL.GL_LINES)
-        for col, ax in (((1.0, 0.36, 0.42), (1, 0, 0)), ((0.24, 0.81, 0.56), (0, 1, 0)), ((0.35, 0.69, 1.0), (0, 0, 1))):
-            GL.glColor3f(*col); GL.glVertex3f(0, 0, 0); GL.glVertex3f(*ax)
-        GL.glEnd(); GL.glLineWidth(1.0); GL.glEnable(GL.GL_DEPTH_TEST)
+        self._draw_view_nav(w, h)
         # selection stroke overlay (lasso / rect outline / brush ring), 2D screen space, top-left origin
         if self.edit_tool and self._sel_path:
             GL.glViewport(0, 0, w, h)
@@ -693,10 +949,53 @@ class GLView(OpenGLFrame):
     def reset(self, draw=True):
         self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 1.10, [0.0, 0.0]; self.rot = self._default_rot()
         if draw: self.draw()
+    def _animate_view_to(self, azim, elev, steps=8, ms=18):
+        try:
+            target_az, target_el = float(azim), float(elev)
+            start_az, start_el = float(self.azim), float(self.elev)
+            start_pan = list(self.pan)
+            # shortest azimuth path
+            da = ((target_az - start_az + 180.0) % 360.0) - 180.0
+            if self._view_anim:
+                try: self.after_cancel(self._view_anim)
+                except Exception: pass
+                self._view_anim = None
+            def step(i=1):
+                t = min(1.0, i / float(steps)); k = 1.0 - (1.0 - t) * (1.0 - t)
+                self.azim = start_az + da * k; self.elev = start_el + (target_el - start_el) * k
+                self.pan = [start_pan[0] * (1.0 - k), start_pan[1] * (1.0 - k)]
+                self.rot = self._default_rot(); self.draw()
+                if i < steps and self._alive(): self._view_anim = self.after(ms, lambda: step(i + 1))
+                else: self._view_anim = None
+            step()
+        except Exception:
+            self.azim = float(azim); self.elev = float(elev); self.pan = [0.0, 0.0]; self.rot = self._default_rot(); self.draw()
     def set_view(self, azim, elev, draw=True):
-        """Snap to a standard view (Top/Front/Right/…) - azimuth about up, elevation above the floor."""
-        self.azim = float(azim); self.elev = float(elev); self.pan = [0.0, 0.0]; self.rot = self._default_rot()
-        if draw: self.draw()
+        """Move to a standard view (Top/Front/Right/…) - azimuth about up, elevation above the floor."""
+        if draw: self._animate_view_to(azim, elev)
+        else:
+            self.azim = float(azim); self.elev = float(elev); self.pan = [0.0, 0.0]; self.rot = self._default_rot()
+
+    def _draw_view_nav(self, w, h):
+        try:
+            # Draw the entire navigation cube as a small raster overlay. This keeps labels clipped
+            # inside their faces and avoids ugly GL stroke text when the cube rotates.
+            from PIL import Image
+            img = viewnav.draw_overlay_image(w, h, self.rot[:3, :3], getattr(self, "_nav_hover", None))
+            data = img.transpose(Image.FLIP_TOP_BOTTOM).tobytes("raw", "RGBA")
+            GL.glViewport(0, 0, w, h)
+            GL.glMatrixMode(GL.GL_PROJECTION); GL.glLoadIdentity(); GL.glOrtho(0, w, 0, h, -1, 1)
+            GL.glMatrixMode(GL.GL_MODELVIEW); GL.glLoadIdentity()
+            GL.glDisable(GL.GL_LIGHTING); GL.glDisable(GL.GL_DEPTH_TEST)
+            GL.glEnable(GL.GL_BLEND); GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+            GL.glRasterPos2f(0, 0)
+            GL.glDrawPixels(w, h, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, data)
+            GL.glDisable(GL.GL_BLEND); GL.glEnable(GL.GL_DEPTH_TEST)
+        except Exception:
+            pass
+    def _nav_hit(self, x, y):
+        try: return viewnav.hit(self.rot[:3, :3], max(1, self.winfo_width()), max(1, self.winfo_height()), x, y)
+        except Exception: return None
     def snapshot(self, path, size=None):
         """PNG of the current view read back from the GPU."""
         try:
@@ -796,6 +1095,14 @@ class GLView(OpenGLFrame):
         if draw: self.draw()
     # ---- mouse ----
     def _press(self, e):
+        self._nav_press = None
+        if getattr(e, "num", 1) == 1:
+            nav = self._nav_hit(e.x, e.y)
+            if nav is not None:
+                if nav.get("kind") == "home": self.reset(); self._drag = None; self._press_at = None; return
+                if nav.get("view") is not None:
+                    self._nav_press = (nav, e.x, e.y)
+                    self._drag = (e.x, e.y); self._press_at = None; return
         _editable = self._pts_n or (self.edit_target == "mesh" and self._medit_faces is not None)
         if self.edit_tool and _editable and e.num == 1:  # LEFT button in edit mode (points or mesh faces)
             if not self._over_content(e.x, e.y):           # started out in the empty margin: orbit, don't select
@@ -805,9 +1112,10 @@ class GLView(OpenGLFrame):
             # a Replace stroke clears the old selection once at its start, then adds for the rest of the drag; lasso and box replace on their own
             if self.edit_tool in ("brush", "magic") and self._sel_mode_now == "replace":
                 if self._pts_sel is not None: self._pts_sel[:] = False
+                if self._mesh_face_sel is not None: self._mesh_face_sel[:] = False
                 self._sel_mode_now = "add"
             if self.edit_tool == "magic":
-                self._magic_at(e.x, e.y, self._sel_mode_now); self._sel_path = None; return
+                self._magic_at(e.x, e.y, self._sel_mode_now); self._sel_path = None; self.draw(); return
             self._sel_path = [(e.x, e.y)]
             if self.edit_tool == "brush": self._brush_at(e.x, e.y, self._sel_mode_now)
             self.draw(); return
@@ -825,13 +1133,28 @@ class GLView(OpenGLFrame):
             else:
                 self.draw()                                # brush already applied live
             return
+        navp = getattr(self, "_nav_press", None)
+        self._nav_press = None
         self._drag = None
+        if navp is not None and e.num == 1:
+            nav = viewnav.finish_click(navp, e.x, e.y)
+            if nav is not None:
+                self.set_view(*nav["view"])
+            self._press_at = None; return
         if self.on_pick and self._press_at and abs(e.x - self._press_at[0]) <= 8 and abs(e.y - self._press_at[1]) <= 8 and e.num == 1:   # a click, not a drag
             r = self.pick(e.x, e.y)
             if r is not None:
                 try: self.on_pick(*r)
                 except Exception: pass
         self._press_at = None
+    def _motion(self, e):
+        nav = self._nav_hit(e.x, e.y)
+        hv = nav.get("key") if nav and nav.get("kind") == "face" else None
+        if hv != getattr(self, "_nav_hover", None):
+            self._nav_hover = hv; self.draw()
+        if self.edit_tool == "brush" and self._drag is None:
+            self._sel_path = [(e.x, e.y)]
+            self.draw()
     def _rotate(self, e):
         if self.edit_tool and self._edit_orbit and self._drag:            # left-drag from the empty margin: orbit
             dx, dy = e.x - self._drag[0], e.y - self._drag[1]; self._drag = (e.x, e.y)
@@ -841,6 +1164,9 @@ class GLView(OpenGLFrame):
             if self.edit_tool == "brush": self._brush_at(e.x, e.y, getattr(self, "_sel_mode_now", "add"))
             self.draw(); return
         if not self._drag: return
+        if getattr(self, "_nav_press", None) is not None:
+            if not viewnav.drag_exceeded(self._nav_press, e.x, e.y): return
+            self._nav_press = None
         if self._press_at and abs(e.x - self._press_at[0]) <= 8 and abs(e.y - self._press_at[1]) <= 8: return   # still within a click
         dx, dy = e.x - self._drag[0], e.y - self._drag[1]; self._drag = (e.x, e.y)
         # Free rotation about the screen's own axes: EVERY angle is reachable and nothing ever locks.
@@ -864,4 +1190,4 @@ class GLView(OpenGLFrame):
             if self._sel_path is None: self._sel_path = [(e.x, e.y)]   # show the ring where the cursor is
             else: self._sel_path[-1] = (e.x, e.y)
             self.draw(); return
-        self.zoom = max(0.2, min(8.0, self.zoom * (1.12 if d > 0 else 1 / 1.12))); self.draw()
+        self.zoom = max(0.05, min(40.0, self.zoom * (1.12 if d > 0 else 1 / 1.12))); self.draw()

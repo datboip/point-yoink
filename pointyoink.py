@@ -47,7 +47,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "1.0.1"
+APP = "PointYoink"; VERSION = "1.1.0-pre"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -85,7 +85,7 @@ def _is_tmp(path):
     at the end of the name so a user's own file with "part" or "tmp" in it is never hidden. One rule for every
     place that lists or ships models, so a half-written file never shows up as a scan or lands in a ZIP."""
     return bool(_TMP_RE.search(os.path.basename(path)))
-_TMP_RE=re.compile(r"\.(tmp\.\d+\.[A-Za-z0-9]+|tmp-\d+-[0-9a-f]+\.[A-Za-z0-9]+|part~[a-z0-9_]{8}\.[A-Za-z0-9]+|part-\d+|pts\.ply|tmp\.ply)$")
+_TMP_RE=re.compile(r"\.(tmp\.\d+\.[A-Za-z0-9]+|tmp-\d+-[0-9a-f]+\.[A-Za-z0-9]+|tmp-[a-z0-9_]{8}\.[A-Za-z0-9]+|part~[a-z0-9_]{8}\.[A-Za-z0-9]+|part-\d+|pts\.ply|tmp\.ply)$")
 def _firewall_blocks_port(port):
     """(name, command) when a host firewall is on and the rule for `port` cannot be confirmed, else None.
     ufw's rule list needs root, but /etc/ufw/ufw.conf (enabled or not) is readable; firewalld answers its
@@ -441,7 +441,8 @@ def save_cfg(c):
         tmp=CFG+".tmp"
         with open(tmp, "w") as f: json.dump(c, f, indent=2)
         os.replace(tmp, CFG)          # atomic - a crash or power loss mid-write can never leave a truncated config
-    except Exception as e: log_line("save_cfg: %s" % e)
+        return True
+    except Exception as e: log_line("save_cfg: %s" % e); return False
 
 # ---------------- device / mount ----------------
 NO_DEVICE = os.environ.get("POINTYOINK_NO_DEVICE") == "1"   # test instances must never touch the scanner: two apps on one MTP mount freeze both
@@ -629,6 +630,23 @@ def list_recordings():
     return out
 
 SKIP_LOCAL = {"range", "wifi", "device-screenshots"}
+SCANNER_MESH_FILES = ("fuse_mesh.ply", "fuse_mesh_rgb.ply", "fuse_mesh_tex.ply")
+def _scanner_mesh_in(folder):
+    for fn in SCANNER_MESH_FILES:
+        p=os.path.join(folder, fn)
+        try:
+            if os.path.exists(p) and os.path.getsize(p)>1024:
+                return p
+        except Exception:
+            pass
+    return None
+def _scanner_mesh_glob(project_dir):
+    out=[]
+    for nd in glob.glob(os.path.join(project_dir, "data", "*")):
+        if os.path.isdir(nd):
+            p=_scanner_mesh_in(nd)
+            if p: out.append(p)
+    return out
 def list_local_projects(dest):
     """Projects already on this PC (USB or WiFi imports), so the list works with no scanner attached."""
     out=[]
@@ -639,15 +657,15 @@ def list_local_projects(dest):
         if name.startswith(".") or name in SKIP_LOCAL or name.endswith("_glb") or not os.path.isdir(pdir): continue
         def node_of(path):   # <name>_<node>[_pcfused|_clean].ply -> node
             n=os.path.basename(path)[len(name)+1:-4]
-            for suf in ("_pcfused","_clean"):
+            for suf in ("_pcfused","_clean","_edited"):
                 if n.endswith(suf): n=n[:-len(suf)]
             return n
         flat=[x for x in glob.glob(os.path.join(pdir, name+"_*.ply")) if not x.endswith("_cloud.ply") and not _is_tmp(x)]
-        nested=glob.glob(os.path.join(pdir, "data", "*", "fuse_mesh.ply"))
+        nested=_scanner_mesh_glob(pdir)
         clouds=glob.glob(os.path.join(pdir, name+"_*_cloud.ply")) or glob.glob(os.path.join(pdir, "data", "*", "fuse.ply"))
         mesh_nodes=set(node_of(x) for x in flat) | set(os.path.basename(os.path.dirname(x)) for x in nested)
-        # meshes the SCANNER made (One-tap Edit / Mesh there): the plain <name>_<node>.ply or data/<node>/fuse_mesh.ply, not our _pcfused/_clean builds
-        dev_meshed=set(node_of(x) for x in flat if not (x.endswith("_pcfused.ply") or x.endswith("_clean.ply"))) | set(os.path.basename(os.path.dirname(x)) for x in nested)
+        # meshes the SCANNER made (One-tap Edit / Mesh there): the plain <name>_<node>.ply or data/<node>/fuse_mesh*.ply, not our _pcfused/_clean builds
+        dev_meshed=set(node_of(x) for x in flat if not (x.endswith("_pcfused.ply") or x.endswith("_clean.ply") or x.endswith("_edited.ply"))) | set(os.path.basename(os.path.dirname(x)) for x in nested)
         # count the same scans the film strip tiles (gather_gallery): a raw scan with only a scanner
         # preview (name_<node>.png) is still a scan you can select and build, so the header "N scans" must
         # include it, or the count disagrees with the tiles ("1 scan" over 5 tiles).
@@ -656,7 +674,7 @@ def list_local_projects(dest):
         if not (flat or nested or clouds or os.path.exists(os.path.join(pdir, name+".revo"))): continue
         nodes.discard("combined")
         info={"name":name, "local":True, "meshes":len(mesh_nodes - {"combined"}), "clouds":len(clouds), "nodes":len(nodes) or None, "date":None, "thumb":None, "edit_time":None,
-              "combined": os.path.exists(os.path.join(pdir, name+"_combined_pcfused.ply")), "prepared": bool(glob.glob(os.path.join(pdir, name+"_*_clean.ply"))),
+              "combined": any(os.path.exists(os.path.join(pdir, name+s)) for s in ("_combined_edited.ply","_combined_clean.ply","_combined_pcfused.ply")), "prepared": bool(glob.glob(os.path.join(pdir, name+"_*_clean.ply"))),
               "dev_meshed": len(dev_meshed - {"combined"})}
         try:
             d=json.load(open(os.path.join(pdir, name+".revo"))); et=d.get("edit_time")
@@ -712,8 +730,8 @@ def gather_gallery(name, local=None, render_combined=True):
 
 def _combined_tile(name, local, paths, render=True):
     """The model built from all lined-up scans gets its own tile, but only render it when mesh previews are enabled."""
-    comb=os.path.join(local, name+"_combined_pcfused.ply")
-    if not os.path.exists(comb): return
+    comb=next((os.path.join(local, name+s) for s in ("_combined_edited.ply","_combined_clean.ply","_combined_pcfused.ply") if os.path.exists(os.path.join(local, name+s))), None)
+    if not comb: return
     tp=os.path.join(THUMBS, "%s__combined__card.png" % name)
     stale=(not os.path.exists(tp) or os.path.getmtime(tp)<os.path.getmtime(comb))
     if stale:
@@ -1076,6 +1094,23 @@ def _render_mesh_png(path, out, mode="solid", size=(900,600)):
     v,f=shade.load_oriented(path, 40000 if mode=="solid" else 30000)
     shade.render(v, f, size=size, wire=(mode=="wire")).save(out)
 
+def _preview_code_mtime():
+    """Invalidate cached preview PNGs when the static renderer or view gizmo changes."""
+    mt=0.0
+    for fn in ("shade.py", "viewnav.py"):
+        try: mt=max(mt, os.path.getmtime(os.path.join(HERE, fn)))
+        except Exception: pass
+    return mt
+
+def _preview_png_fresh(path, mesh=None, min_size=1024):
+    try:
+        if not (os.path.exists(path) and os.path.getsize(path)>min_size): return False
+        cutoff=_preview_code_mtime()
+        if mesh and os.path.exists(mesh): cutoff=max(cutoff, os.path.getmtime(mesh))
+        return os.path.getmtime(path) >= cutoff
+    except Exception:
+        return False
+
 WORDMARK="Ubuntu"   # clean lowercase 'i' (the default bold font renders it like 'I')
 
 def _has_imagetk():
@@ -1233,12 +1268,19 @@ class App(LiveMixin, ctk.CTk):
         # window size: default, but never bigger than the screen (keeps it usable on small/scaled displays)
         try:
             sw=self.winfo_screenwidth(); sh=self.winfo_screenheight()
-            dw=min(1440, int(sw*0.92)); dh=min(1070, int(sh*0.90))   # give the 3D preview room on normal desktop displays while staying inside small screens
+            dw=min(1600, int(sw*0.96)); dh=min(1070, int(sh*0.90))   # wide enough for the project tools without cramped wrapping
         except Exception:
-            dw,dh=1090,1070
+            dw,dh=1600,1070
         self.title(("%s  %s" % (APP, VERSION)) if RELEASE else ("%s  %s (%s)" % (APP, VERSION, BUILD)))
-        self.geometry(self.cfg.get("geometry", "%dx%d"%(dw,dh)))
-        self.minsize(min(1024,dw), min(600,dh))
+        mw,mh=min(1500,dw), min(820,dh)
+        geom=self.cfg.get("geometry") or "%dx%d"%(dw,dh)
+        m=re.match(r"^(\d+)x(\d+)((?:[+-]\d+){2})?$", str(geom))
+        if m:
+            geom="%dx%d%s" % (max(int(m.group(1)), mw), max(int(m.group(2)), mh), m.group(3) or "")
+        else:
+            geom="%dx%d"%(dw,dh)
+        self.geometry(geom)
+        self.minsize(mw, mh)
         self.configure(fg_color=BG)
         try:
             if os.path.exists(ICON):
@@ -1595,10 +1637,10 @@ class App(LiveMixin, ctk.CTk):
                 if mesh and not mesh.startswith(PROJECTS):
                     verkey=(self._proc_current(name, node) or (None,))[0]
                     out=os.path.join(THUMBS, "%s__%s__%s__shaded.png" % (name, node, verkey or "v"))
-                    if not (os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh) and os.path.getsize(out)>1024):
+                    if not (_preview_png_fresh(out, mesh)):
                         self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, out, "--size", "900x600"], timeout=120, env=env)   # the still preview PNG (40k)
                     film=os.path.join(THUMBS, "%s__%s__%s__film.png" % (name, node, verkey or "v"))   # the little strip thumbnail - warm it too, or the scan strip flashes blue -> grey on open
-                    if not (os.path.exists(film) and os.path.getmtime(film)>=os.path.getmtime(mesh) and os.path.getsize(film)>1024):
+                    if not (_preview_png_fresh(film, mesh)):
                         self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, film, "--size", "300x220"], timeout=120, env=env)
                     # warm the EXACT entry the interactive viewer reads (detail faces + normals), independent of the PNG,
                     # so the first 3D open is a pure cache read - not another parse+simplify+normals pass
@@ -1869,8 +1911,8 @@ class App(LiveMixin, ctk.CTk):
         self.big_loader_lbl=ctk.CTkLabel(self.big_loader, text="", text_color=TX, font=ctk.CTkFont(size=12)); self.big_loader_lbl.pack(padx=22, pady=(0,16))
         self._spin_job=None; self._spin_ang=0
         self.renders_lbl=ctk.CTkLabel(bigwrap, text="", text_color=MUT, font=ctk.CTkFont(size=11), fg_color="#0a0c10", corner_radius=6)
-        # standard-view nav (Fusion-style): snap the 3D view to Home / Top / Front / Back / Left / Right,
-        # so the model is never lost off-screen; drag still gives free rotation to any angle.
+        # Old top standard-view nav. It stays constructed for compatibility, but _show_3d_controls
+        # keeps it hidden because navigation now lives inside the 3D view overlay.
         self.view_nav=ctk.CTkFrame(bigwrap, fg_color="#0d1017", corner_radius=6, border_width=1, border_color=STROKE)
         _navbtns=(("Fit",None,None,"Fit the model in view: home angle, zoom and pan reset"), ("Top",0,90,"Top-down"),
                   ("Front",0,0,"Front"), ("Back",180,0,"Back"), ("Left",-90,0,"Left side"), ("Right",90,0,"Right side"))
@@ -1897,14 +1939,58 @@ class App(LiveMixin, ctk.CTk):
 
         # Right: Import options (always visible, scrolls)
         tk.Frame(pm, bg=STROKE, width=1, bd=0, highlightthickness=0).grid(row=0,column=3, sticky="ns")
-        self.side=ctk.CTkFrame(pm, fg_color="transparent", width=278); self.side.grid(row=0,column=4, sticky="nsew")
+        self.side=ctk.CTkFrame(pm, fg_color="transparent", width=330); self.side.grid(row=0,column=4, sticky="nsew")
         self.side.grid_propagate(False); self.side.grid_columnconfigure(0, weight=1); self.side.grid_rowconfigure(0, weight=1)
         self.opts=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.opts.grid(row=0,column=0, sticky="nsew", padx=(6,12)); self._autohide(self.opts)
         self.opts.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.opts, "vertical"), add="+")
         self.projpanel=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.projpanel.grid(row=0,column=0, sticky="nsew", padx=(6,12)); self.projpanel.grid_remove(); self._autohide(self.projpanel)
         self.projpanel.bind("<Configure>", lambda e: self._fit_scrollbar_later(self.projpanel, "vertical"), add="+")
-        self.editpanel=ctk.CTkScrollableFrame(self.side, fg_color="transparent"); self.editpanel.grid(row=0,column=0, sticky="nsew", padx=(6,12)); self.editpanel.grid_remove(); self._autohide(self.editpanel)
+        self.editwrap=ctk.CTkFrame(self.side, fg_color="transparent"); self.editwrap.grid(row=0,column=0, sticky="nsew", padx=(14,0)); self.editwrap.grid_remove()
+        self.editwrap.grid_columnconfigure(0, weight=1); self.editwrap.grid_rowconfigure(0, weight=1)
+        self.edit_canvas=tk.Canvas(self.editwrap, bg=BG, bd=0, highlightthickness=0)
+        self.edit_canvas.grid(row=0,column=0, sticky="nsew")
+        self.edit_scroll=ctk.CTkScrollbar(self.editwrap, orientation="vertical", width=12, command=self.edit_canvas.yview)
+        self.edit_scroll.grid(row=0,column=1, sticky="ns", padx=(4,0))
+        def _edit_scroll_set(first, last):
+            try: self.edit_scroll.set(first, last)
+            except Exception: pass
+            try:
+                full=float(first)<=0.0001 and float(last)>=0.9999
+                self.edit_scroll.configure(state=("disabled" if full else "normal"), button_color=(BG if full else SCROLL), button_hover_color=(BG if full else SCROLL))
+                if full: self.edit_canvas.yview_moveto(0)
+            except Exception: pass
+        self.edit_canvas.configure(yscrollcommand=_edit_scroll_set)
+        self.editpanel=ctk.CTkFrame(self.edit_canvas, fg_color="transparent")
+        self._edit_inset=10
+        self._edit_canvas_item=self.edit_canvas.create_window((self._edit_inset,0), window=self.editpanel, anchor="nw")
+        def _edit_scroll_fit(_=None):
+            try:
+                bbox=self.edit_canvas.bbox("all")
+                self.edit_canvas.configure(scrollregion=bbox)
+                self.edit_canvas.itemconfigure(self._edit_canvas_item, width=max(1, self.edit_canvas.winfo_width() - self._edit_inset))
+                first,last=self.edit_canvas.yview()
+                _edit_scroll_set(first, last)
+            except Exception: pass
+        self._edit_scroll_fit=_edit_scroll_fit
+        self.editpanel.bind("<Configure>", _edit_scroll_fit, add="+")
+        self.edit_canvas.bind("<Configure>", _edit_scroll_fit, add="+")
+        def _edit_wheel(e):
+            try:
+                if self.edit_canvas.yview() == (0.0, 1.0): return "break"
+                step=(-1 if getattr(e, "num", None)==4 else (1 if getattr(e, "num", None)==5 else int(-e.delta/120)))
+                self.edit_canvas.yview_scroll(step, "units")
+                return "break"
+            except Exception: pass
+        self.edit_canvas.bind("<MouseWheel>", _edit_wheel, add="+"); self.edit_canvas.bind("<Button-4>", _edit_wheel, add="+"); self.edit_canvas.bind("<Button-5>", _edit_wheel, add="+")
         self._build_edit_palette(self.editpanel)   # the point/mesh editor tools live here (shown in place of the project panel while editing)
+        def _bind_edit_wheel(w):
+            try:
+                for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                    w.bind(seq, _edit_wheel, add="+")
+                for child in w.winfo_children():
+                    _bind_edit_wheel(child)
+            except Exception: pass
+        _bind_edit_wheel(self.editpanel)
         self.rail_btns={}; self.rail_bars={}
 
         # Process mode: the selected project's scans, each with its versions and the tools
@@ -2405,7 +2491,7 @@ class App(LiveMixin, ctk.CTk):
             "Originals are never changed: every step saves a new version, and you pick which one counts.",
         ], accent=OK)
         card("What you get", [
-            "<project>_<scan>.ply  or  data/<scan>/fuse_mesh.ply   -   the scanner's finished model.",
+            "<project>_<scan>.ply  or  data/<scan>/fuse_mesh*.ply   -   the scanner's finished model.",
             "<project>_<scan>_pcfused.ply   -   a model built on this PC.       <project>_<scan>_clean.ply   -   the prepared or base-cut version.",
             "<project>_combined_pcfused.ply   -   one model from all the scans you lined up.",
             "All standard .ply for Blender, MeshLab or CloudCompare; STL, OBJ and GLB from Export.",
@@ -2572,7 +2658,7 @@ class App(LiveMixin, ctk.CTk):
                         scanner_ip=(self.live_ip.get().strip() if getattr(self, "live_ip", None) is not None else self.cfg.get("scanner_ip","")),
                         cleanup=self.cleanup.get(), side=self.cfg.get("side","project"),
                         gl_view=self.cfg.get("gl_view","auto"), fuse_device=self.cfg.get("fuse_device","auto"),
-                        records=self.records); save_cfg(self.cfg)
+                        records=self.records); return save_cfg(self.cfg)
 
     # per-project records (rename + imported memory), keyed by ORIGINAL id
     def disp(self, name):
@@ -2894,7 +2980,7 @@ class App(LiveMixin, ctk.CTk):
             if cands:
                 def fresh(path, node):
                     mesh=self._mesh_for_node(name, node)
-                    try: return not mesh or os.path.getmtime(path)>=os.path.getmtime(mesh)
+                    try: return not mesh or _preview_png_fresh(path, mesh)
                     except Exception: return True
                 # 1) exactly what the hero preview renders: largest mesh's node at its current version
                 hero=self._find_mesh(name); node=self._node_of(name, hero) if hero else None
@@ -3049,9 +3135,11 @@ class App(LiveMixin, ctk.CTk):
         self._fill_header(p, name, counts)
         self.proj_empty.grid_remove(); self.projbar.grid(); self.film.grid()
         self.update_summary()   # bottom status shows the open project on the Projects page
-        if p.get("local"): self._warm_project(name)   # warm THIS project's scan previews first, so clicking between its scans is instant
+        # Do not kick a whole-project preview warmer on every selection. Rapid project switching
+        # can stack render workers and make the app look frozen; the visible scan preview still
+        # renders through _maybe_schedule_shaded below.
         self.renders_lbl.configure(text=""); self.renders_lbl.place(relx=1.0, rely=0.0, x=-12, y=10, anchor="ne")
-        self.view_nav.place(relx=0.0, rely=0.0, x=8, y=8, anchor="nw"); self.view_nav.lift()
+        self.view_nav.place_forget()
         if p.get("meshes") or p.get("nodes"): self.tools.grid()   # Process on PC works on unfused scans too
         else: self.tools.grid_remove()
         if getattr(self, "page", "import")=="projects": self._schedule_panel_refresh(20)
@@ -3117,7 +3205,7 @@ class App(LiveMixin, ctk.CTk):
             p=os.path.join(THUMBS, "%s__%s__%s__film.png" % (name, node, verkey or "v"))
             if not (os.path.exists(p) and os.path.getsize(p)>1024): return None
             mesh=self._mesh_for_node(name, node)
-            if mesh and os.path.getmtime(p) < os.path.getmtime(mesh): return None   # mesh edited since (local OR device): stale
+            if mesh and not _preview_png_fresh(p, mesh): return None   # mesh edited since (local OR device): stale
             return p
         except Exception:
             return None
@@ -3137,7 +3225,7 @@ class App(LiveMixin, ctk.CTk):
                         src=cached
                 # freshness is judged against the mesh itself (the source of truth), not the local copy whose
                 # mtime is just copy-time, so the reader (which checks the mesh) and this writer agree.
-                if os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh) and os.path.getsize(out)>1024:
+                if _preview_png_fresh(out, mesh):
                     self.q.put(("film_thumb", name, node, out)); continue
                 env=dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
                 r=self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), src, out, "--size", "300x220"], timeout=300, env=env)
@@ -3196,7 +3284,7 @@ class App(LiveMixin, ctk.CTk):
             verkey=(self._proc_current(name, node) or (None,))[0]
             key="%s__%s__%s"%(name, node, verkey or "v")
             out=os.path.join(THUMBS, key+("__shaded.png" if self.shade_mode=="solid" else "__wire.png"))
-            if os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh) and os.path.getsize(out)>1024:
+            if _preview_png_fresh(out, mesh):
                 return out
         except Exception: pass
         return None
@@ -3269,8 +3357,9 @@ class App(LiveMixin, ctk.CTk):
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
         cands=[os.path.join(local, "%s_%s_cloud.ply" % (name, node)),
                os.path.join(local, "data", node, "fuse.ply"),
-               os.path.join(local, "data", node, "fuse_cloud.ply"),
-               os.path.join(local, "data", node, "fuse_mesh.ply")]   # last resort: a mesh's vertices work as points
+               os.path.join(local, "data", node, "fuse_cloud.ply")]   # last resort below: a mesh's vertices work as points
+        mesh=_scanner_mesh_in(os.path.join(local, "data", node))
+        if mesh: cands.append(mesh)
         for c in cands:
             try:
                 if os.path.exists(c) and os.path.getsize(c)>1024: return c
@@ -3279,11 +3368,10 @@ class App(LiveMixin, ctk.CTk):
     def _mesh_for_node(self, name, node):
         cur=self._proc_current(name, node)          # the version picked on the Process page (or the best available)
         if cur: return cur[2]
-        c=os.path.join(PROJECTS, name, "data", node, "fuse_mesh.ply")
-        return c if os.path.exists(c) else None
+        return _scanner_mesh_in(os.path.join(PROJECTS, name, "data", node))
     def _node_of(self, name, path):
         base=os.path.basename(path)
-        if base=="fuse_mesh.ply": return os.path.basename(os.path.dirname(path))
+        if base in SCANNER_MESH_FILES: return os.path.basename(os.path.dirname(path))
         if base.startswith(name+"_") and base.endswith(".ply"):
             n=base[len(name)+1:-4]
             for suf in ("_pcfused","_clean","_cloud","_edited"):   # strip version/kind suffix so we return the real node id (matches node_of / _proc_nodes), not "<node>_pcfused"
@@ -3343,14 +3431,19 @@ class App(LiveMixin, ctk.CTk):
         Points (clean + rebuild), per the Edit: switch."""
         if getattr(self, "_edit_saving", False): return   # a save is in flight: don't reload the editor under it
         name=self.selected; node=getattr(self, "_film_sel", None)
-        if not (name and node) or node=="combined":
+        if not (name and node):
             self.set_banner("Open a scan first - Edit works on that scan's model or points.", MUT)
+            try: self.tabs.set("3D Preview")
+            except Exception: pass
+            return
+        if not hasattr(self.mv, "load_edit_document"):
+            self.set_banner("Editing needs the graphics 3D view. Change 3D view from Software in Settings, then reopen the model.", WARN)
             try: self.tabs.set("3D Preview")
             except Exception: pass
             return
         tgt=self.edit_target_sw.get() if hasattr(self, "edit_target_sw") else "Mesh"
         if tgt=="Points" and not self._cloud_for_node(name, node):
-            self.set_banner("This scan has no point cloud - editing the model instead.", MUT)
+            self.set_banner(("Combined models can be edited as a mesh, but have no separate point cloud." if node=="combined" else "This scan has no point cloud - editing the model instead."), MUT)
             try: self.edit_target_sw.set("Mesh")
             except Exception: pass
             tgt="Mesh"
@@ -3372,8 +3465,8 @@ class App(LiveMixin, ctk.CTk):
         # reset selection settings ONCE per edit session (not on every palette show)
         try:
             if getattr(self,"sel_mode_sw",None): self.sel_mode_sw.set("Replace")
-            if getattr(self,"depth_sw",None): self.depth_sw.set("Through object")
-            self.vis_only.set(False); self.mv.set_visible_only(False); self.mv.edit_mode="replace"
+            if getattr(self,"depth_sw",None): self.depth_sw.set("Visible only")
+            self.vis_only.set(True); self.mv.set_visible_only(True); self.mv.edit_mode="replace"
             self.mv.on_brush_size=self._on_brush_size                  # scroll-resize the brush -> palette slider tracks it
             self._vis_warned=False; self.mv._depth_failed=False
         except Exception: pass
@@ -3392,40 +3485,36 @@ class App(LiveMixin, ctk.CTk):
         src=mesh if not mesh.startswith(PROJECTS) else os.path.join(THUMBS, "view", key+"_fuse_mesh.ply")
         if not (src and os.path.exists(src)): src=mesh
         self._edit_ctx=(name, node, mesh); self._edit_dirty=False; self._edit_saving=False; self._edit_orig_n=0; self._edit_cur_n=0
-        for _w in (getattr(self,"edit_keep",None), getattr(self,"edit_discard",None)):
-            try: _w.configure(state="disabled")
-            except Exception: pass
+        try: getattr(self,"edit_keep",None).configure(state="disabled")
+        except Exception: pass
+        try: getattr(self,"edit_discard",None).configure(state="normal")
+        except Exception: pass
         self._map_mv_under_still()
         try: self.mv._keep_view=True
         except Exception: pass
         self._mv_key=None; self._mv_loading=True; self._preview_busy("Loading the model to edit")
         faces=5_000_000   # edit at full detail (don't decimate the model just because you're trimming it)
-        def ready(ok):
+        def ready(ok, err=None):
             self._mv_loading=False; self._preview_idle()
             if not ok:
-                self.big_hint.configure(text="Couldn't load the model to edit (see Help > Log)."); return
+                msg=str(err or "see Help > Log")
+                self.big_hint.configure(text="Couldn't load the model to edit."); self.set_banner(msg, WARN); return
             try: self.big.grid_remove(); self.mv.grid(); self.mv.lift()
             except Exception: pass
             for _w in (self.view_nav, self.renders_lbl, self.big_hint):
                 try: _w.lift()
                 except Exception: pass
-            started=False
-            try: started=self.mv.begin_mesh_edit()
-            except Exception as e: log_error("begin-mesh-edit", e)
-            if not started:
-                self.big_hint.configure(text="Couldn't open this model for editing (see Help > Log)."); return
             try:
-                self._edit_orig_n=int(len(self.mv._medit_faces)); self._edit_cur_n=self._edit_orig_n
-                full=_ply_element_count(src, "face")   # warn if the model was too big and got decimated for editing
-                if full and self._edit_orig_n and self._edit_orig_n < full-1000:
-                    self.set_banner("Editing a reduced model: %s of %s faces (the saved model uses this resolution)." % (_kfmt(self._edit_orig_n), _kfmt(full)), WARN)
+                self._edit_session=self.mv.edit_session
+                self._edit_orig_n=int(self._edit_session.count); self._edit_cur_n=self._edit_orig_n
                 self.mv.on_points_change=self._edit_points_changed
                 self.mv.set_edit_tool(None); self._set_edit_tool(None, _init=True)
                 self._show_edit_palette()
                 self.renders_lbl.configure(text="Editing the model")
-                self.big_hint.configure(text="Select the junk and Delete to cut it off · “Save as new model” saves it · Discard reverts")
+                self.big_hint.configure(text="Select the junk and Delete to cut it off · “Save as new model” saves it · Reset edits reloads the original")
+                self._edit_points_changed(self._edit_session.count)
             except Exception as e: log_error("mesh-edit-bar", e)
-        try: self.mv.load(src, ready, max_faces=faces)
+        try: self.mv.load_edit_document(src, name, node, verkey, "mesh", ready, max_faces=faces)
         except Exception as e:
             log_error("mesh-edit-load", e); self._mv_loading=False; self._preview_idle()
     def _edit_target_changed(self, v):
@@ -3529,15 +3618,16 @@ class App(LiveMixin, ctk.CTk):
         self._map_mv_under_still()                             # the GL view must be mapped to upload
         tf=getattr(self.mv, "tf", None)                        # align the points to the mesh if it's loaded
         self._edit_ctx=(name, node, cloud); self._edit_dirty=False; self._edit_saving=False; self._edit_orig_n=0
-        for _w in (getattr(self,"edit_keep",None), getattr(self,"edit_discard",None)):   # fresh editor: nothing to save yet
-            try: _w.configure(state="disabled")
-            except Exception: pass
+        try: getattr(self,"edit_keep",None).configure(state="disabled")
+        except Exception: pass
+        try: getattr(self,"edit_discard",None).configure(state="normal")
+        except Exception: pass
         self._mv_key=None                                      # reload the mesh when switching back from points
         try: self.mv._keep_view=True                           # show the points at the mesh's current camera, not the default
         except Exception: pass
-        real_cloud=not str(cloud).endswith("fuse_mesh.ply")   # the last-resort fallback is a MESH's vertices, not a real fused cloud - label it honestly
+        real_cloud=os.path.basename(str(cloud)) not in SCANNER_MESH_FILES   # the last-resort fallback is a MESH's vertices, not a real fused cloud - label it honestly
         self._mv_loading=True; self._preview_busy("Loading the fused points" if real_cloud else "Loading the model's points")
-        def ready(ok):
+        def ready(ok, err=None):
             self._mv_loading=False; self._preview_idle()
             if ok:
                 try: self.big.grid_remove(); self.mv.grid(); self.mv.lift()
@@ -3551,10 +3641,8 @@ class App(LiveMixin, ctk.CTk):
                     self.big_hint.configure(text=("Select and Delete to clean · then “Save as new model” to save it (holes stay open) · Discard to revert" if real_cloud
                                                   else "No separate point cloud for this scan - these are the model's own vertices · Select and Delete, then Save as new model"))
                     try:
-                        self._edit_orig_n=int(self.mv._pts_n or 0); self._edit_cur_n=self._edit_orig_n   # baseline: edits are dirty once we drop below this
-                        full=_ply_element_count(cloud, "vertex")   # if the cloud was capped, say so - the save uses this reduced set
-                        if full and self._edit_orig_n and self._edit_orig_n < full-1000:
-                            self.set_banner("Editing a reduced set: %s of %s points (the saved model uses this resolution)." % (_kfmt(self._edit_orig_n), _kfmt(full)), WARN)
+                        self._edit_session=self.mv.edit_session
+                        self._edit_orig_n=int(self._edit_session.count); self._edit_cur_n=self._edit_orig_n
                         self.mv.on_points_change=self._edit_points_changed; self.mv.set_edit_tool(None)
                         self._set_edit_tool(None, _init=True)
                         self._show_edit_palette()
@@ -3567,22 +3655,22 @@ class App(LiveMixin, ctk.CTk):
                     self.big_hint.configure(text=("The raw captured points (open the Edit tab to clean them) · drag to rotate" if real_cloud
                                                   else "The model's own vertices (no separate cloud for this scan) · drag to rotate"))
             else:
-                self.big_hint.configure(text="Couldn't load the fused points (see Help > Log).")
+                self.big_hint.configure(text="Couldn't load the fused points."); self.set_banner(str(err or "see Help > Log"), WARN)
         # Load the FULL cloud for editing (not the 400k preview cap), so Delete + Keep act on every point and
         # the saved model is exact. Fused MIRACO clouds are a few hundred k points; 6M is effectively no cap.
-        try: self.mv.load_points(cloud, ready, tf=tf, max_points=6_000_000)
+        try: self.mv.load_edit_document(cloud, name, node, "cloud", "points", ready, tf=tf, max_points=6_000_000)
         except Exception as e:
             log_error("load-points", e); self._mv_loading=False; self._preview_idle()
     def _build_edit_palette(self, p):
         """The point/mesh editor's tools, laid out as a roomy vertical palette on the right (shown in place
         of the project panel while editing). Replaces the old cramped bottom overlay bar."""
         ctk.CTkLabel(p, text="Editing this scan", font=ctk.CTkFont(size=14, weight="bold"), text_color=TX, anchor="w").pack(fill="x", padx=6, pady=(6,0))
-        ctk.CTkLabel(p, text="Trim the model, then Save. The original is always kept.", font=ctk.CTkFont(size=10), text_color=DIM, anchor="w", justify="left", wraplength=250).pack(fill="x", padx=6, pady=(0,8))
+        ctk.CTkLabel(p, text="Trim the model, then Save. The original is always kept.", font=ctk.CTkFont(size=10), text_color=DIM, anchor="w", justify="left", wraplength=210).pack(fill="x", padx=6, pady=(0,8))
         ctk.CTkLabel(p, text="WHAT TO EDIT", font=ctk.CTkFont(size=10, weight="bold"), text_color=MUT, anchor="w").pack(fill="x", padx=6, pady=(2,2))
         self.edit_target_sw=ctk.CTkSegmentedButton(p, values=["Mesh","Points"], command=self._edit_target_changed, height=30, corner_radius=8,
                                                    fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=12))
         self.edit_target_sw.pack(fill="x", padx=6); self.edit_target_sw.set("Mesh")
-        ctk.CTkLabel(p, text="Mesh: cut junk off the built model. Points: clean the raw capture, then rebuild.", font=ctk.CTkFont(size=10), text_color=DIM, anchor="w", justify="left", wraplength=250).pack(fill="x", padx=6, pady=(2,10))
+        ctk.CTkLabel(p, text="Mesh: cut junk off the built model. Points: clean the raw capture, then rebuild.", font=ctk.CTkFont(size=10), text_color=DIM, anchor="w", justify="left", wraplength=210).pack(fill="x", padx=6, pady=(2,10))
         ctk.CTkLabel(p, text="SELECT WITH", font=ctk.CTkFont(size=10, weight="bold"), text_color=MUT, anchor="w").pack(fill="x", padx=6, pady=(2,3))
         grid=ctk.CTkFrame(p, fg_color="transparent"); grid.pack(fill="x", padx=6)
         grid.grid_columnconfigure((0,1), weight=1, uniform="tool")
@@ -3592,7 +3680,7 @@ class App(LiveMixin, ctk.CTk):
                ("brush","brush","Brush","Paint over what to select · scroll to size the brush"),
                ("magic","magic","Magic","Click one spot to grab everything connected to it"))
         for i,(tool,iname,label,tip) in enumerate(tools):
-            b=ctk.CTkButton(grid, text="  "+label, image=_icon(iname,"default"), compound="left", anchor="w", height=46, corner_radius=10,
+            b=ctk.CTkButton(grid, text=label, image=_icon(iname,"default"), compound="left", anchor="center", height=46, corner_radius=10,
                             fg_color=CARD, hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=13), command=lambda t=tool: self._set_edit_tool(t))
             b.grid(row=i//2, column=i%2, sticky="ew", padx=2, pady=2); self._tip(b, tip); self._edit_tool_btns[tool]=b; self._edit_tool_icon[tool]=iname
         # settings for the active tool (brush size, magic reach, or a hint) - filled by _refresh_tool_settings
@@ -3603,17 +3691,25 @@ class App(LiveMixin, ctk.CTk):
                                                 fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=11))
         self.sel_mode_sw.pack(fill="x", padx=6); self.sel_mode_sw.set("Replace")
         ctk.CTkLabel(p, text="REACH", font=ctk.CTkFont(size=10, weight="bold"), text_color=MUT, anchor="w").pack(fill="x", padx=6, pady=(8,2))
-        self.vis_only=ctk.BooleanVar(value=False)
-        self.depth_sw=ctk.CTkSegmentedButton(p, values=["Through object","Visible only"], command=self._depth_mode_changed, height=28, corner_radius=8,
+        self.vis_only=ctk.BooleanVar(value=True)
+        self.depth_sw=ctk.CTkSegmentedButton(p, values=["Visible only","Through object"], command=self._depth_mode_changed, height=28, corner_radius=8,
                                              fg_color=CARD2, selected_color=SELB, selected_hover_color=SELB, unselected_color=CARD2, unselected_hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=11))
-        self.depth_sw.pack(fill="x", padx=6); self.depth_sw.set("Through object")
-        ctk.CTkLabel(p, text="Visible only skips whatever is hidden behind the object.", font=ctk.CTkFont(size=10), text_color=DIM, anchor="w", justify="left", wraplength=250).pack(fill="x", padx=6, pady=(2,8))
+        self.depth_sw.pack(fill="x", padx=6); self.depth_sw.set("Visible only")
+        ctk.CTkLabel(p, text="Visible only selects the front surface. Through object selects like X-Ray.", font=ctk.CTkFont(size=10), text_color=DIM, anchor="w", justify="left", wraplength=250).pack(fill="x", padx=6, pady=(2,8))
         self._hr(p, pady=(2,6))
         srow=ctk.CTkFrame(p, fg_color="transparent"); srow.pack(fill="x", padx=6)
         for label,iname,cmd,tip in (("Invert","invert-selection", lambda:self.mv.invert_selection(), "Select everything except what's selected"),
-                                    ("Clear","clear-selection", lambda:self.mv.clear_selection(), "Unselect everything")):
+                                    ("Deselect all","clear-selection", lambda:self.mv.clear_selection(), "Unselect everything")):
             bb=ctk.CTkButton(srow, text="  "+label, image=_icon(iname,"default"), compound="left", height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11), command=cmd)
             bb.pack(side="left", expand=True, fill="x", padx=2); self._tip(bb, tip)
+        mrow=ctk.CTkFrame(p, fg_color="transparent"); mrow.pack(fill="x", padx=6, pady=(4,0))
+        for label,iname,cmd,tip in (("Grow","select-through", self._edit_grow_selection, "Add one connected face ring to the mesh selection"),
+                                    ("Shrink","clear-selection", self._edit_shrink_selection, "Remove one boundary ring from the mesh selection")):
+            bb=ctk.CTkButton(mrow, text="  "+label, image=_icon(iname,"default"), compound="left", height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11), command=cmd)
+            bb.pack(side="left", expand=True, fill="x", padx=2); self._tip(bb, tip)
+        prow=ctk.CTkFrame(p, fg_color="transparent"); prow.pack(fill="x", padx=6, pady=(4,0))
+        bb=ctk.CTkButton(prow, text="  Connected piece", image=_icon("magic","default"), compound="left", height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=11), command=self._edit_connected_selection)
+        bb.pack(fill="x", padx=2); self._tip(bb, "Select the whole connected mesh piece touched by the current selection")
         self.edit_count=ctk.CTkLabel(p, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w"); self.edit_count.pack(fill="x", padx=6, pady=(4,2))
         drow=ctk.CTkFrame(p, fg_color="transparent"); drow.pack(fill="x", padx=6, pady=(2,0))
         self.edit_delete_btn=ctk.CTkButton(drow, text="  Delete selected", image=_icon("delete","danger"), compound="left", height=34, corner_radius=8, fg_color="#3a2530", hover_color="#4a2f3c", text_color="#ff9db0", font=ctk.CTkFont(size=12, weight="bold"), command=self._edit_delete, state="disabled")
@@ -3621,23 +3717,29 @@ class App(LiveMixin, ctk.CTk):
         _undo_ic=_icon("undo","default")   # icon-only, so fall back to a text label if the icon asset is missing (a control that renders blank is worse than a wide one)
         self.edit_undo_btn=ctk.CTkButton(drow, text=("" if _undo_ic else "Undo"), image=_undo_ic, width=(44 if _undo_ic else 70), height=34, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, command=self._edit_undo, state="disabled")
         self.edit_undo_btn.pack(side="left", padx=(2,0)); self._tip(self.edit_undo_btn, "Undo the last delete")
+        _redo_ic=_icon("redo","default")
+        self.edit_redo_btn=ctk.CTkButton(drow, text=("" if _redo_ic else "Redo"), image=_redo_ic, width=(44 if _redo_ic else 70), height=34, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, command=self._edit_redo, state="disabled")
+        self.edit_redo_btn.pack(side="left", padx=(4,0)); self._tip(self.edit_redo_btn, "Redo the last undone edit")
         self._hr(p, pady=(12,6))
         self.edit_keep=ctk.CTkButton(p, text="  Save as new model", image=_icon("save-version","muted"), compound="left", height=40, corner_radius=8, fg_color=CARD2, hover_color=AC_H, text_color=DIM, font=ctk.CTkFont(size=13, weight="bold"), command=self._edit_keep, state="disabled")
         self.edit_keep.pack(fill="x", padx=6, pady=(0,4)); self._tip(self.edit_keep, "Save your edits as a new model version. The original is kept.")
-        self.edit_discard=ctk.CTkButton(p, text="Discard edits", height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=self._edit_discard, state="disabled")
-        self.edit_discard.pack(fill="x", padx=6, pady=(0,2)); self._tip(self.edit_discard, "Throw the edits away and reload the original.")
+        self.edit_discard=ctk.CTkButton(p, text="Reset edits", height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=self._edit_discard, state="disabled")
+        self.edit_discard.pack(fill="x", padx=6, pady=(0,2)); self._tip(self.edit_discard, "Reload the original and clear the current selection.")
         ctk.CTkButton(p, text="  Done editing", image=_icon("back","muted"), compound="left", height=28, corner_radius=8, fg_color="transparent", border_width=0, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11),
                       command=lambda: self.tabs.set("3D Preview", True)).pack(fill="x", padx=6, pady=(6,12))
+        ctk.CTkFrame(p, height=56, fg_color="transparent").pack(fill="x")
     def _show_edit_palette(self):
         # just swaps the panel into view - the session reset lives in _enter_edit_mode so re-showing
         # the palette (e.g. after a load completes) never wipes what the user just set.
-        try: self.projpanel.grid_remove(); self.editpanel.grid(); self.editpanel.lift()
+        try:
+            self.projpanel.grid_remove(); self.editwrap.grid(); self.editwrap.lift()
+            self.after(60, lambda: getattr(self, "_edit_scroll_fit", lambda *_: None)())
         except Exception: pass
         try: self.update_summary()   # bottom bar -> "Editing <project>"
         except Exception: pass
     def _hide_edit_palette(self):
         try:
-            self.editpanel.grid_remove()
+            self.editwrap.grid_remove()
             if self.page=="projects": self.projpanel.grid()
         except Exception: pass
         try: self.update_summary()   # bottom bar -> just "<project>" (viewing, not editing)
@@ -3718,27 +3820,54 @@ class App(LiveMixin, ctk.CTk):
         }.get(tool, "Pick a tool on the right, then drag on the model"))
         except Exception: pass
     def _edit_delete(self):
+        if getattr(self, "_edit_saving", False): return
         try:
             self.mv.delete_selected()
             self._edit_sync_dirty()
-        except Exception as e: log_error("edit-delete", e)
+        except Exception as e:
+            from edit_session import HistoryLimitError
+            if isinstance(e, HistoryLimitError): self.set_banner(str(e)+" Nothing was deleted.", WARN)
+            else: log_error("edit-delete", e)
     def _edit_undo(self):
+        if getattr(self, "_edit_saving", False): return
         try:
             self.mv.undo_points()
             self._edit_sync_dirty()
         except Exception as e: log_error("edit-undo", e)
-    def _edit_sync_dirty(self):
-        """Dirty = fewer points/faces than we loaded. Drives Save/Discard. Works for both edit targets
-        (mesh mode has _pts_n=0, so we track the count via _edit_cur_n from on_points_change)."""
+    def _edit_redo(self):
+        if getattr(self, "_edit_saving", False): return
         try:
-            n=int(getattr(self, "_edit_cur_n", 0) or 0); orig=int(getattr(self, "_edit_orig_n", 0) or 0)
-            dirty=bool(orig and n<orig and not getattr(self, "_edit_saving", False))
+            self.mv.redo_points()
+            self._edit_sync_dirty()
+        except Exception as e: log_error("edit-redo", e)
+    def _edit_mesh_select_op(self, method, label):
+        if getattr(self, "_edit_saving", False): return
+        if getattr(self.mv, "edit_target", "points") != "mesh":
+            self.set_banner("%s works on mesh topology. Switch WHAT TO EDIT to Mesh first." % label, MUT)
+            return
+        try:
+            changed=bool(getattr(self.mv, method)())
+            if not changed: self.set_banner("%s did not change the current selection." % label, MUT)
+            faces=getattr(self.mv, "_medit_faces", None)
+            self._edit_points_changed(len(faces) if faces is not None else getattr(self, "_edit_cur_n", 0))
+        except Exception as e: log_error("edit-"+method, e)
+    def _edit_grow_selection(self):
+        self._edit_mesh_select_op("mesh_grow_selection", "Grow selection")
+    def _edit_shrink_selection(self):
+        self._edit_mesh_select_op("mesh_shrink_selection", "Shrink selection")
+    def _edit_connected_selection(self):
+        self._edit_mesh_select_op("mesh_connected_selection", "Connected piece")
+    def _edit_sync_dirty(self):
+        """Drive Save and Discard from the edit document's geometry savepoint."""
+        try:
+            doc=getattr(self, "_edit_session", None)
+            dirty=bool(doc and doc.dirty and not getattr(self, "_edit_saving", False))
             self._edit_dirty=dirty
             st="normal" if dirty else "disabled"
             try: self.edit_keep.configure(state=st, fg_color=(AC if dirty else CARD2), text_color=("#04121f" if dirty else DIM),
                                           image=_icon("save-version", "on-accent" if dirty else "muted"))   # muted when nothing to save
             except Exception: pass
-            try: self.edit_discard.configure(state=st)
+            try: self.edit_discard.configure(state="normal" if getattr(self, "_edit_ctx", None) else "disabled")
             except Exception: pass
         except Exception: pass
     def _edit_del_faces(self):
@@ -3751,13 +3880,15 @@ class App(LiveMixin, ctk.CTk):
             return int(sel.sum())
         except Exception: return 0
     def _edit_update_actions(self):
-        """Enable Delete only when the selection would actually remove something; Undo only when there's history."""
+        """Enable deletion and history controls for the current document state."""
         try:
             can_del=bool(getattr(self, "_edit_del_count", 0))
-            mesh=getattr(self.mv, "edit_target", "points")=="mesh"
-            can_undo=bool(self.mv._medit_undo if mesh else self.mv._pts_undo)
+            doc=getattr(self, "_edit_session", None)
+            can_undo=bool(doc.can_undo) if doc else False
+            can_redo=bool(doc.can_redo) if doc else False
             if getattr(self, "edit_delete_btn", None): self.edit_delete_btn.configure(state="normal" if can_del else "disabled")
             if getattr(self, "edit_undo_btn", None): self.edit_undo_btn.configure(state="normal" if can_undo else "disabled")
+            if getattr(self, "edit_redo_btn", None): self.edit_redo_btn.configure(state="normal" if can_redo else "disabled")
         except Exception: pass
     def _edit_points_changed(self, n):
         """Live count (fired by glview after a select or edit). n is points or faces per the edit target."""
@@ -3786,82 +3917,128 @@ class App(LiveMixin, ctk.CTk):
         if not getattr(self, "_edit_ctx", None): return
         self._edit_saving=False; self._edit_dirty=False
         self._enter_edit_mode()   # honours the Edit: switch, reloads clean (clears undo, resets dirty)
-        self.set_banner("Discarded the edits.", MUT)
+        self.set_banner("Reset the edits.", MUT)
     def _edit_keep(self):
-        """Save the edit as a new 'cleaned model' version. Mesh target: write the trimmed model as-is (no
-        rebuild). Points target: rebuild a mesh from the cleaned cloud (ball-pivot keeps openings)."""
+        """Snapshot, validate and atomically publish an edited model."""
         ctx=getattr(self, "_edit_ctx", None)
         if not ctx or getattr(self, "_edit_saving", False): return
         name,node,_=ctx
-        is_mesh=(getattr(self.mv, "edit_target", "points")=="mesh")
-        payload=None
-        if is_mesh:
-            try: payload=self.mv.mesh_world()
-            except Exception as e: log_error("edit-keep-mesh", e)
-            if payload is None or payload[1] is None or len(payload[1])<1:
-                self.set_banner("Nothing left to save.", WARN); return
-        else:
-            pts=None
-            try: pts=self.mv.points_world()
-            except Exception as e: log_error("edit-keep-points", e)
-            if pts is None or len(pts)<100:
-                self.set_banner("Not enough points left to build a model.", WARN); return
-            import numpy as np
-            payload=np.ascontiguousarray(pts, dtype=np.float64)
+        doc=getattr(self, "_edit_session", None)
+        if doc is None or not doc.dirty: return
+        snapshot=doc.snapshot(compact=True); is_mesh=(snapshot.kind=="mesh")
+        if is_mesh and (snapshot.faces is None or len(snapshot.faces)<1):
+            self.set_banner("Nothing left to save.", WARN); return
+        if not is_mesh and len(snapshot.vertices)<100:
+            self.set_banner("Not enough points left to build a model.", WARN); return
+        local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
+        out=os.path.join(local, "%s_%s_edited.ply" % (name, node))
+        targets=getattr(self, "_edit_write_targets", set())
+        if out in targets:
+            self.set_banner("That edited model is already being saved.", WARN); return
+        targets.add(out); self._edit_write_targets=targets
+        job={"id":self._next_job("edit-save"), "name":name, "node":node, "out":out,
+             "snapshot":snapshot, "document":doc, "temporary":None, "journal":out+".pending.json"}
+        self._edit_job=job; self._op_begin()
         self._edit_saving=True; self._edit_sync_dirty()
         try: self.edit_keep.configure(state="disabled", text="Saving…" if is_mesh else "Building…")
         except Exception: pass
         self._preview_busy("Saving the edited model" if is_mesh else "Rebuilding the model from your cleaned points")
-        local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
-        out=os.path.join(local, "%s_%s_edited.ply" % (name, node))
         def work():
             try:
-                if os.path.exists(out) and os.path.getsize(out)>1024:   # keep the previous edited model
-                    # if we can't back it up, ABORT rather than overwrite it - the old edited version must not be lost
-                    vdir=os.path.join(local, ".versions"); os.makedirs(vdir, exist_ok=True)
-                    shutil.copy2(out, self._unique_archive(vdir, node+"_edited"))
+                from edit_commit import validate_mesh, write_mesh_temp
                 if is_mesh:
-                    import trimesh
-                    verts,faces=payload
-                    m=trimesh.Trimesh(vertices=verts, faces=faces, process=False)
-                    tmp=out+".tmp.ply"; m.export(tmp); os.replace(tmp, out)
-                    ok=(os.path.exists(out) and os.path.getsize(out)>1024); err=None if ok else "empty result"
+                    tmp=write_mesh_temp(snapshot, out)
                 else:
-                    # rebuild in a memory-capped child: write the cleaned points, reconstruct there
-                    tmpc=out+".pts.ply"; _write_ply_points(tmpc, payload)
-                    env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "10")
-                    r=self._run_child([_sys.executable, os.path.join(HERE, "process.py"), tmpc, out, "--rebuild-points"], timeout=1800, env=env)
-                    try: os.remove(tmpc)
-                    except Exception: pass
-                    ok=(r.returncode==0 and os.path.exists(out) and os.path.getsize(out)>1024)
-                    err=None if ok else ((r.stderr or r.stdout or "rebuild failed")[-200:] if r else "rebuild failed")
+                    fd,tmpc=tempfile.mkstemp(prefix=os.path.basename(out)+".tmp-", suffix=".pts.ply", dir=local); os.close(fd)
+                    fd,tmp=tempfile.mkstemp(prefix=os.path.basename(out)+".tmp-", suffix=".ply", dir=local); os.close(fd); os.remove(tmp)
+                    try:
+                        _write_ply_points(tmpc, snapshot.vertices)
+                        env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "10")
+                        r=self._run_child([_sys.executable, os.path.join(HERE, "process.py"), tmpc, tmp, "--rebuild-points"], timeout=1800, env=env)
+                        if r.returncode!=0: raise RuntimeError((r.stderr or r.stdout or "rebuild failed")[-200:])
+                        validate_mesh(tmp)
+                    except Exception:
+                        try: os.remove(tmp)
+                        except Exception: pass
+                        raise
+                    finally:
+                        try: os.remove(tmpc)
+                        except Exception: pass
+                job["temporary"]=tmp
+                self.q.put(("call", lambda j=job: self._edit_commit_ready(j)))
             except Exception as e:
-                ok=False; err=str(e); log_error("edit-keep-save", e)
-            self.q.put(("call", lambda: self._edit_keep_done(name, node, out, ok, err)))
-        threading.Thread(target=work, daemon=True).start()
-    def _edit_keep_done(self, name, node, out, ok, err):
+                log_error("edit-keep-save", e)
+                self.q.put(("call", lambda j=job, err=str(e): self._edit_keep_done(j, False, err)))
+        self._start_thread(work, name="edit-save")
+    def _edit_commit_ready(self, job):
+        from edit_session import signature_matches
+        doc=job["document"]; snapshot=job["snapshot"]
+        if job is not getattr(self, "_edit_job", None) or doc.geometry_revision!=snapshot.geometry_revision:
+            try: os.remove(job["temporary"])
+            except Exception: pass
+            self._edit_keep_done(job, False, "the edit changed while the result was being prepared"); return
+        if not signature_matches(snapshot.source_path, snapshot.source_signature):
+            try: os.remove(job["temporary"])
+            except Exception: pass
+            self._edit_keep_done(job, False, "the source model changed on disk"); return
+        def commit():
+            archive=None
+            try:
+                from edit_commit import publish_temp
+                if os.path.exists(job["out"]):
+                    vdir=os.path.join(os.path.dirname(job["out"]), ".versions"); os.makedirs(vdir, exist_ok=True)
+                    archive=self._unique_archive(vdir, job["node"]+"_edited")
+                publish_temp(job["temporary"], job["out"], archive, job["journal"],
+                             {"schema":1, "job":job["id"], "project":job["name"], "node":job["node"], "version":"edited"})
+                self.q.put(("call", lambda j=job: self._edit_keep_done(j, True, None)))
+            except Exception as e:
+                if archive:
+                    try:
+                        if os.path.getsize(archive)==0: os.remove(archive)
+                    except Exception: pass
+                log_error("edit-commit", e)
+                self.q.put(("call", lambda j=job, err=str(e): self._edit_keep_done(j, False, err)))
+        self._start_thread(commit, name="edit-commit")
+    def _edit_keep_done(self, job, ok, err):
+        name=job["name"]; node=job["node"]; out=job["out"]
+        getattr(self, "_edit_write_targets", set()).discard(out)
+        if job is getattr(self, "_edit_job", None): self._edit_job=None
+        self._op_end()
         self._edit_saving=False; self._preview_idle()
         try: self.edit_keep.configure(text="Save as new model")
         except Exception: pass
         if not ok:
             self._edit_sync_dirty()
             self.set_banner("Couldn't save the edited model (%s). Your edits are still on screen." % (err or "see Help > Log"), WARN); return
+        self.records.setdefault(name,{}).setdefault("current",{})[node]="edited"
+        persisted=self._persist()
+        if persisted:
+            try:
+                from edit_commit import finish_journal
+                finish_journal(job["journal"])
+            except Exception as e: log_error("edit-journal-finish", e)
+        doc=job["document"]
+        if doc.geometry_revision==job["snapshot"].geometry_revision: doc.mark_saved(job["snapshot"].geometry_revision)
         self._mesh_stats={}; self.gallery_cache.pop(name, None); self.projects_sig=None
         # decide BEFORE touching the view. If the user moved on (even to another scan in the same
         # project), record the version WITHOUT calling _proc_set_current - that would switch the view back.
         moved = (self.selected!=name or getattr(self, "_film_sel", None)!=node)
         if moved:
-            self.records.setdefault(name,{}).setdefault("current",{})[node]="edited"; self._persist()
             self.after(0, lambda: self._proc_render(name))   # refresh that project's cards, but leave the current view alone
             self.set_banner("Saved a cleaned model of %s." % self._scan_label(name, node), OK); return
-        self.set_banner("Saved a cleaned model of %s. Showing it now." % self._scan_label(name, node), OK)
+        if persisted: self.set_banner("Saved a cleaned model of %s. Showing it now." % self._scan_label(name, node), OK)
+        else: self.set_banner("Saved the model, but its selected-version record could not be written. Recovery information was kept.", WARN)
         self._edit_dirty=False; self._in_edit_mode=False; self._editmode_chrome(False)
         try: self.mv.set_edit_tool(None); self._hide_edit_palette()   # leave edit mode; we're switching to the rebuilt Mesh
         except Exception: pass
         try:
             if self.tabs.get()=="Edit": self.tabs.set("3D Preview"); self._preview_tab.grid()   # land on the finished model
         except Exception: pass
-        self._proc_set_current(name, node, "edited")   # still here: switch the shown model to the rebuilt one
+        self._mv_key=None
+        try: self._request_shaded(name, node)
+        except Exception: pass
+        if self.page=="projects": self._schedule_panel_refresh(50)
+        self.after(0, lambda: self._proc_render(name))
     def _reset_view(self, _=None):
         """Reset the live 3D view to its default angle and zoom (same as double-clicking the model)."""
         try:
@@ -3929,8 +4106,9 @@ class App(LiveMixin, ctk.CTk):
         when a real 3D model is on screen. A raw scan shows the flat scanner point cloud, where those
         controls do nothing - hiding them is clearer than a separate 2D/3D tab."""
         try:
-            if on: self.view_nav.place(relx=0.0, rely=0.0, x=8, y=8, anchor="nw"); self.view_nav.lift()
-            else: self.view_nav.place_forget()
+            # View navigation now lives inside each 3D view as a small orientation cube plus a
+            # bottom-left home/fit button, so the old top Fit/Top/Front strip stays hidden.
+            self.view_nav.place_forget()
         except Exception: pass
         try:
             ctl=getattr(self, "_tab_ctl", None)
@@ -3977,7 +4155,7 @@ class App(LiveMixin, ctk.CTk):
         st=self._mesh_stats.get(key)
         if st: self._show_stats(st)
         try:
-            fresh=os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh) and os.path.getsize(out)>1024
+            fresh=_preview_png_fresh(out, mesh)
             if fresh:
                 Image.open(out).verify()          # a render killed half-way leaves a broken PNG behind: redo it
         except Exception:
@@ -4066,10 +4244,10 @@ class App(LiveMixin, ctk.CTk):
                 verkey=(self._proc_current(name, node) or (None,))[0]
                 while getattr(self, "_shade_running", False): time.sleep(0.3)   # yield to the user's own clicks
                 still=os.path.join(THUMBS, "%s__%s__%s__shaded.png" % (name, node, verkey or "v"))
-                if not (os.path.exists(still) and os.path.getmtime(still)>=os.path.getmtime(mesh) and os.path.getsize(still)>1024):
+                if not (_preview_png_fresh(still, mesh)):
                     self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, still, "--size", "900x600"], timeout=120, env=env)
                 film=os.path.join(THUMBS, "%s__%s__%s__film.png" % (name, node, verkey or "v"))
-                if not (os.path.exists(film) and os.path.getmtime(film)>=os.path.getmtime(mesh) and os.path.getsize(film)>1024):
+                if not (_preview_png_fresh(film, mesh)):
                     self._run_child([_sys.executable, os.path.join(HERE, "shade.py"), mesh, film, "--size", "300x220"], timeout=120, env=env)
                 nkey=_sh._mesh_key(mesh, faces, None); npz=os.path.join(_sh.MESH_CACHE, nkey+"_n.npz") if nkey else None
                 if not (npz and os.path.exists(npz)):
@@ -4082,7 +4260,11 @@ class App(LiveMixin, ctk.CTk):
     def _refresh_after_warm(self, name):
         if self.selected==name:
             self.gallery_cache.pop(name, None)   # force a re-render so the strip picks up the new grey thumbnails
-            try: self.select_project(name)
+            try:
+                local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
+                items=gather_gallery(name, local, render_combined=self._auto_mesh_preview())
+                self.gallery_cache[name]=items
+                self.render_gallery(name, items)
             except Exception as e: log_error("refresh-after-warm", e)
     def _start_prewarm(self):
         """Queue every local project's previews to warm in the background, once per session. Silent - the
@@ -4111,7 +4293,7 @@ class App(LiveMixin, ctk.CTk):
                 if not mesh or mesh.startswith(PROJECTS): continue           # no fused mesh, or it's on the scanner mount
                 verkey=(self._proc_current(name, node) or (None,))[0]
                 out=os.path.join(THUMBS, "%s__%s__%s__shaded.png" % (name, node, verkey or "v"))
-                if os.path.exists(out) and os.path.getmtime(out)>=os.path.getmtime(mesh) and os.path.getsize(out)>1024:
+                if _preview_png_fresh(out, mesh):
                     continue                                                 # already cached and fresh
                 while getattr(self, "_shade_running", False): _t.sleep(0.3) # let the user's own click take the machine
                 env=dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
@@ -4310,9 +4492,10 @@ class App(LiveMixin, ctk.CTk):
         for nd in nodes:
             if not os.path.isdir(nd): continue
             node=os.path.basename(nd)
-            if not (os.path.exists(os.path.join(nd, "fuse_mesh.ply")) or os.path.exists(os.path.join(nd, "fuse.ply"))):
-                continue   # no finished geometry at all: leave raw-only scans to the Full project path
-            for fn,outn,kind in (("fuse_mesh.ply","%s_%s.ply"%(name,node),"mesh"),
+            mesh=_scanner_mesh_in(nd)
+            if not mesh:
+                continue   # finished-models: skip a scan with no built mesh entirely - don't leave a stray preview-only "scan" that shows blue and can't be built (its raw data wasn't imported)
+            for fn,outn,kind in (((os.path.basename(mesh)),"%s_%s.ply"%(name,node),"mesh"),
                                  ("fuse.ply","%s_%s_cloud.ply"%(name,node),"cloud"),
                                  ("preview.png","%s_%s.png"%(name,node),"prev"),
                                  ("property.rvproj","%s_%s.rvproj"%(name,node),"meta")):   # scan metadata (counts + modes) so it shows offline
@@ -4502,7 +4685,7 @@ class App(LiveMixin, ctk.CTk):
             try: return max(flat, key=os.path.getsize)
             except Exception: return flat[0]
         for base in (local, os.path.join(PROJECTS, name)):
-            plys=glob.glob(os.path.join(base, "data", "*", "fuse_mesh.ply"))
+            plys=_scanner_mesh_glob(base)
             if plys:
                 try: return max(plys, key=os.path.getsize)
                 except Exception: return plys[0]
@@ -4939,8 +5122,8 @@ class App(LiveMixin, ctk.CTk):
         self.proc_pick.pack(side="left", padx=(16,8))
         self._tip(self.proc_pick, "Which project to work on. Same selection as the Import tab.")
         self.proc_title=ctk.CTkLabel(ph, text="", text_color=MUT, font=ctk.CTkFont(size=12)); self.proc_title.pack(side="left")
-        ctk.CTkButton(ph, text="Delete project from this PC", width=190, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
-                      hover_color="#3a2530", text_color=MUT, command=self._proc_delete_project).pack(side="right")
+        ctk.CTkButton(ph, text="Delete whole project…", width=170, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color="#5a2a38",
+                      hover_color="#3a2530", text_color="#ff9db0", command=self._proc_delete_project).pack(side="right")
         self.base_btn=ctk.CTkButton(ph, text="Remove base", image=_icon("cut-base", "default", 16), compound="left", width=130, height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE,
                                     hover_color=CARD2, text_color=TX, command=self.on_remove_base); self.base_btn.pack(side="right", padx=8)
         self._tip(self.base_btn, "Slice the table or turntable off the current scan with a cut plane. Saves a cleaned copy; the original is kept.")
@@ -5002,7 +5185,7 @@ class App(LiveMixin, ctk.CTk):
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name); out=[]
         for key,label,cands in (("edited","cleaned model",[os.path.join(local,"%s_%s_edited.ply"%(name,node))]),
                                 ("clean","prepared copy",[os.path.join(local,"%s_%s_clean.ply"%(name,node)), os.path.join(local,"%s_%s_pcfused_clean.ply"%(name,node))]),
-                                ("scanner","the scanner's model",[os.path.join(local,"%s_%s.ply"%(name,node)), os.path.join(local,"data",node,"fuse_mesh.ply")]),
+                                ("scanner","the scanner's model",[os.path.join(local,"%s_%s.ply"%(name,node))] + [os.path.join(local,"data",node,fn) for fn in SCANNER_MESH_FILES]),
                                 ("pcfused","PC build (from raw data)",[os.path.join(local,"%s_%s_pcfused.ply"%(name,node))])):
             existing=[c for c in cands if os.path.exists(c) and os.path.getsize(c)>1024]
             if existing:
@@ -5073,12 +5256,72 @@ class App(LiveMixin, ctk.CTk):
             self._proc_render(name)
             if self.selected==name: self._mv_key=None; self.projects_sig=None; self.listed=False; self.start_listing()
         self._trash_async(path, _done)
+    def _combined_version_paths(self, name):
+        local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
+        return [os.path.join(local, name+s) for s in ("_combined_edited.ply","_combined_clean.ply","_combined_pcfused.ply") if os.path.exists(os.path.join(local, name+s))]
+    def _proc_delete_combined(self, name):
+        paths=self._combined_version_paths(name)
+        if not paths:
+            self.set_banner("No combined model to delete.", WARN); return
+        if not self._confirm("Delete combined model?", "%s: only the Combined model goes to the trash. The original scans and raw data stay." % self.disp(name)):
+            return
+        self.set_status("Moving combined model to the trash…")
+        left={"n":len(paths), "bad":False}
+        def one_done(ok):
+            left["n"]-=1; left["bad"]=left["bad"] or not ok
+            if left["n"]>0: return
+            self.set_status("")
+            if left["bad"]:
+                self.set_banner("Some combined model files could not be moved to the trash.", WARN); return
+            rec=self.records.setdefault(name,{})
+            rec.get("current",{}).pop("combined", None)
+            self._persist(); self._mesh_stats={}; self.gallery_cache.pop(name, None)
+            for f in glob.glob(os.path.join(THUMBS, "%s__combined*" % name)):
+                try: os.remove(f)
+                except Exception: pass
+            self.set_banner("Moved the combined model to the trash. The scans stayed.", MUT)
+            self._mv_key=None; self.projects_sig=None; self.listed=False; self.start_listing()
+            if self.selected==name:
+                local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
+                items=gather_gallery(name, local, render_combined=self._auto_mesh_preview())
+                self.gallery_cache[name]=items
+                first=next((it for it in items if it[0]!="combined"), items[0] if items else None)
+                self._film_sel=first[0] if first else None
+                self.render_gallery(name, items)
+                if first: self._pick_scan(name, first[0], first[1])
+            self._proc_render(name)
+        for path in paths:
+            self._trash_async(path, one_done)
+    def _confirm_delete_project(self, name):
+        t=self._top("Delete whole project?", 520, 300, key="delete_project_confirm")
+        if t is None: return False
+        res={"ok":False}
+        ctk.CTkLabel(t, text="Delete the whole project from this PC?", font=ctk.CTkFont(size=18, weight="bold"), text_color="#ff9db0").pack(anchor="w", padx=18, pady=(18,6))
+        ctk.CTkLabel(t, text="This moves the entire project folder to the trash, including scans, raw data, prepared models, and any combined model.\n\nTo delete only the combined model, select the Combined scan and use Delete combined.", text_color=TX, justify="left", wraplength=470).pack(anchor="w", padx=18)
+        ctk.CTkLabel(t, text="Type DELETE to continue", text_color=MUT, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=18, pady=(14,4))
+        v=ctk.StringVar(value="")
+        ent=ctk.CTkEntry(t, textvariable=v, height=34, corner_radius=8, fg_color="#0d0f14", border_color=STROKE, text_color=TX); ent.pack(fill="x", padx=18)
+        row=ctk.CTkFrame(t, fg_color="transparent"); row.pack(fill="x", padx=12, pady=16)
+        def close(ok=False):
+            res["ok"]=ok; t.destroy()
+        ctk.CTkButton(row, text="Cancel", width=110, height=34, corner_radius=17, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=lambda: close(False)).pack(side="right", padx=6)
+        ctk.CTkButton(row, text="Delete whole project", width=170, height=34, corner_radius=17, fg_color="#3a2530", hover_color="#4a2f3c", text_color="#ff9db0", command=lambda: close(v.get().strip()=="DELETE")).pack(side="right", padx=6)
+        t.protocol("WM_DELETE_WINDOW", lambda: close(False))
+        try:
+            ent.focus_set(); t.grab_set(); t.wait_window()
+        except Exception: pass
+        finally:
+            try: t.grab_release()
+            except Exception: pass
+        if v.get().strip() and v.get().strip()!="DELETE":
+            self.set_banner("Delete cancelled: type DELETE exactly to remove a whole project.", WARN)
+        return res["ok"]
     def _proc_delete_project(self):
         name=self.selected
         if not name: return
         local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
         if not os.path.isdir(local): self.set_banner("That project is not on this PC.", WARN); return
-        if not self._confirm("Delete from this PC?", "%s and everything in its folder go to the trash.\nThe copy on the scanner is not touched." % self.disp(name)): return
+        if not self._confirm_delete_project(name): return
         self.set_status("Moving to the trash…")
         def _done(ok):
             self.set_status("")
@@ -5165,6 +5408,8 @@ class App(LiveMixin, ctk.CTk):
             cb=mk("prepare", "Prepare…", "Remove floating pieces, smooth the surface, fill small holes, reduce triangles. You see before and after, then keep or discard.",
                   bool(vs), lambda n=name,nd=node: self._prepare_dialog(n, nd))
             xb=mk("export", "Export…", "Save this scan as STL, OBJ, GLB or PLY, with its size and a mesh check.", bool(vs), lambda n=name,nd=node: self._export_dialog(n, nd))
+            if node=="combined":
+                mk("delete", "Delete combined", "Only delete the Combined model. The original scans and raw data stay.", bool(vs), lambda n=name: self._proc_delete_combined(n))
             pb=ctk.CTkProgressBar(card, height=6, corner_radius=3, progress_color=AC, fg_color="#0d0f14"); pb.set(0)
             pl=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w")
             self._proc_rows[node]={"card":card, "bar":pb, "lbl":pl, "build":bb, "prepare":cb, "export":xb}
@@ -5349,7 +5594,7 @@ class App(LiveMixin, ctk.CTk):
                 steps=[("On the scanner", "Share to PC, then pick USB Cable or Wi-Fi."),
                        ("In PointYoink", "Click USB or WiFi here, tick the project, and Import.")],
                 info=None, where="On the scanner",
-                shots=[("USB", "scanner-usb-tab"), ("Wi-Fi", "scanner-wifi-code")],
+                shots=[("Wi-Fi", "scanner-wifi-code"), ("USB", "scanner-usb-tab")],
                 caption="Finished models is quick; Full project also brings the raw frames for Build and Combine."),
            dict(name="Build", icon="build", title="Build a model",
                 purpose="Turn your captured scan into a surface you can edit and export.",
@@ -5371,12 +5616,12 @@ class App(LiveMixin, ctk.CTk):
                 info=None, where="In PointYoink",
                 shots=[("Combine scans", "app-combine")], caption="Click the same feature on both scans, then Line up (or Auto)."),
            dict(name="Prepare", icon="prepare", title="Prepare the surface",
-                purpose="Remove floating pieces, reduce triangles, and smooth the surface.",
-                steps=[("On the scanner", "Isolation, Simplify and Smooth, one panel each."),
-                       ("In PointYoink", "Tick the clean-up actions you want; Prepare runs them on a copy and shows before and after.")],
-                info=None, where="On the scanner",
+                purpose="Clean the built model on this PC: remove loose pieces, reduce triangles, fill small holes, or smooth the surface.",
+                steps=[("Optional on the scanner", "You can use Isolation, Simplify or Smooth before sharing, but it is not required here."),
+                       ("In PointYoink", "Open Prepare, tick the clean-up actions you want, preview before and after, then save the prepared copy.")],
+                info=None, where="Optional on the scanner",
                 shots=[("Isolation", "scanner-isolation"), ("Simplify", "scanner-simplify"), ("Smooth", "scanner-smooth")],
-                caption="Save prepared version or Discard; the original is never changed."),
+                caption="PointYoink prepares a copy; the original is never changed."),
            dict(name="Export", icon="export", title="Export for a slicer",
                 purpose="Save the finished model as STL, OBJ, GLB or PLY.",
                 steps=[("In PointYoink", "Pick the version, the format and the folder."),
@@ -5401,7 +5646,17 @@ class App(LiveMixin, ctk.CTk):
         except Exception as e:
             log_error("zoom-image", e); return
         try:
+            key="guide_zoom"
+            if not hasattr(self, "_dialogs"): self._dialogs={}
+            old=self._dialogs.get(key)
+            if old is not None:
+                try:
+                    if old.winfo_exists(): old.destroy()
+                except Exception: pass
+                self._dialogs.pop(key, None)
             top=tk.Toplevel(self); top.configure(bg="#05070a"); top.title(os.path.basename(path))
+            self._dialogs[key]=top
+            top.protocol("WM_DELETE_WINDOW", lambda: (self._dialogs.pop(key, None), top.destroy()))
             try: top.attributes("-topmost", True)
             except Exception: pass
             # size to THIS window's monitor, not winfo_screenwidth() (that spans every monitor on a multi-head
@@ -5421,11 +5676,16 @@ class App(LiveMixin, ctk.CTk):
             W,H=w+24,h+56
             try: top.geometry("%dx%d+%d+%d" % (W,H, mx+max(0,(mw-W)//2), my+max(0,(mh-H)//2)))   # centred on the app window
             except Exception: pass
-            for wg in (top, lbl): wg.bind("<Button-1>", lambda e: top.destroy())
-            top.bind("<Escape>", lambda e: top.destroy())
+            def close_zoom(_e=None):
+                self._dialogs.pop("guide_zoom", None)
+                top.destroy()
+            for wg in (top, lbl): wg.bind("<Button-1>", close_zoom)
+            top.bind("<Escape>", close_zoom)
         except Exception as e:
             log_error("zoom-image", e)
-            try: top.destroy()          # don't leave a half-built window if something after Toplevel() failed
+            try:
+                self._dialogs.pop("guide_zoom", None)
+                top.destroy()          # don't leave a half-built window if something after Toplevel() failed
             except Exception: pass
     def _clickimg(self, parent, path, w, **cellkw):
         """An image in a card that enlarges on click (hand cursor + click binding)."""
@@ -5454,7 +5714,7 @@ class App(LiveMixin, ctk.CTk):
             c=ctk.CTkFrame(strip, fg_color="transparent"); c.pack(side="left", expand=True, fill="x")
             top_=ctk.CTkFrame(c, fg_color="transparent"); top_.pack()
             num=ctk.CTkLabel(top_, text=str(k+1), width=30, height=30, corner_radius=15, fg_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=13, weight="bold")); num.pack(side="left", padx=(0,9))
-            nm=ctk.CTkLabel(top_, text=g["name"], text_color=MUT, font=ctk.CTkFont(size=15, weight="bold")); nm.pack(side="left")
+            nm=ctk.CTkLabel(top_, text=g["name"], text_color=MUT, font=ctk.CTkFont(size=14, weight="bold")); nm.pack(side="left")
             ul=tk.Frame(c, bg=BG, height=3, bd=0, highlightthickness=0); ul.pack(fill="x", pady=(8,0))
             for wg in (c, top_, num, nm): wg.configure(cursor="hand2"); wg.bind("<Button-1>", lambda e,kk=k: jump(kk))
             cells.append((num, nm, ul))
@@ -5538,20 +5798,56 @@ class App(LiveMixin, ctk.CTk):
         if self.page!="projects" or not name: ns.pack_forget(); return
         title, detail, btxt, cmd, step, alt, ico = self._proc_next(name, nodes, local)
         ns.pack(fill="x", pady=(2,4)); ns.grid_columnconfigure(1, weight=1)   # compact: give the 3D preview more room
-        ctk.CTkLabel(ns, text="N E X T", text_color=MUT, font=ctk.CTkFont(size=9, weight="bold")).grid(row=0,column=0, padx=(14,10), pady=(9,0), sticky="w")   # a quiet section label, not a button
+        tag=ctk.CTkLabel(ns, text="NEXT", text_color=AC, font=ctk.CTkFont(size=11, weight="bold"))
+        tag.grid(row=0,column=0, padx=(14,10), pady=(9,0), sticky="w")   # a quiet section label, not a button
         hb=ctk.CTkButton(ns, text="How this works  (?)", width=152, height=24, corner_radius=12, fg_color="transparent", border_width=1, border_color=STROKE, hover_color="#15304d", text_color=AC, font=ctk.CTkFont(size=11), command=self._howto_dialog)
         hb.grid(row=2,column=0, padx=(12,26), pady=(0,8), sticky="w")   # right pad separates it from the step trail
         tl=ctk.CTkLabel(ns, text=title, text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w", justify="left"); tl.grid(row=0,column=1, sticky="w", pady=(8,0))
         self._tip(tl, detail)   # the per-step "why" on hover - no inline expand that jumps the layout; the full guide is the How this works button
+        compact_step=ctk.CTkLabel(ns, text="Step %d of %d - %s" % (step+1, len(self.STEPS), self.STEPS[step]), text_color=DIM, font=ctk.CTkFont(size=11), anchor="w", justify="left")
         trail=ctk.CTkFrame(ns, fg_color="transparent"); trail.grid(row=2,column=1, sticky="w", pady=(0,8))
-        nb=[None]
+        nb=[None]; primary=[None]; secondary=[None]
         def relayout(e):
-            """Wide: the button sits on the right, text wraps before it. Narrow: the button drops under the text."""
-            wide=e.width>=760
-            wrap=max(240, e.width-(320 if (wide and btxt) else 130)); tl.configure(wraplength=wrap)
+            """Wide keeps the step trail. Compact keeps the action inside the card."""
+            wide=e.width>=860
+            trail_ok=e.width>=720
+            compact=e.width<430
+            btnw=320 if wide else min(250, max(210, e.width-280))
+            wrap=max(150, e.width-(360 if btxt else 120)); tl.configure(wraplength=wrap)
+            for b in (primary[0], secondary[0]):
+                if b is not None:
+                    try: b.configure(width=btnw)
+                    except Exception: pass
+            if compact:
+                try: trail.grid_remove()
+                except Exception: pass
+                try: hb.grid_remove()
+                except Exception: pass
+                try: tag.grid_remove()
+                except Exception: pass
+                tl.grid(row=0,column=0, columnspan=3, sticky="ew", padx=(14,14), pady=(8,0))
+                compact_step.grid(row=1,column=0, columnspan=3, sticky="ew", padx=(14,14), pady=(0,6))
+            else:
+                tag.grid(row=0,column=0, padx=(14,10), pady=(9,0), sticky="w")
+                tl.grid(row=0,column=1, columnspan=1, sticky="w", padx=0, pady=(8,0))
+                if trail_ok:
+                    try: compact_step.grid_remove()
+                    except Exception: pass
+                    hb.grid(row=2,column=0, padx=(12,26), pady=(0,8), sticky="w")
+                    trail.grid(row=2,column=1, sticky="w", pady=(0,8))
+                else:
+                    try: hb.grid_remove()
+                    except Exception: pass
+                    try: trail.grid_remove()
+                    except Exception: pass
+                    compact_step.grid(row=1,column=1, sticky="w", pady=(0,8))
             if nb[0] is not None:
-                if wide: nb[0].grid(row=0,column=2, rowspan=3, padx=16, pady=10, sticky="e")
-                else: nb[0].grid(row=3,column=1, padx=(0,14), pady=(0,12), sticky="w")
+                if not compact: nb[0].grid(row=0,column=2, rowspan=3, padx=16, pady=10, sticky="e")
+                elif compact: nb[0].grid(row=2,column=1, columnspan=2, padx=(0,14), pady=(8,12), sticky="ew")
+                for b in (primary[0], secondary[0]):
+                    if b is not None:
+                        try: b.pack_configure(fill=("x" if compact else None))
+                        except Exception: pass
         if getattr(self, "_next_cfg_id", None):
             try: ns.unbind("<Configure>", self._next_cfg_id)
             except Exception: pass
@@ -5562,16 +5858,18 @@ class App(LiveMixin, ctk.CTk):
             if i<len(self.STEPS)-1: ctk.CTkLabel(trail, text="  →  ", text_color=DIM, font=ctk.CTkFont(size=11)).pack(side="left")
         if btxt:
             bwrap=ctk.CTkFrame(ns, fg_color="transparent")
-            ctk.CTkButton(bwrap, text=btxt, image=(_icon(ico, "on-accent", 16) if ico else None), compound="left", width=210, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd).pack()
+            primary[0]=ctk.CTkButton(bwrap, text=btxt, image=(_icon(ico, "on-accent", 16) if ico else None), compound="left", width=210, height=36, corner_radius=18, fg_color=AC, hover_color=AC_H, text_color="#04121f", font=ctk.CTkFont(size=13, weight="bold"), command=cmd)
+            primary[0].pack()
             if alt:   # a secondary "No base - skip" / suggestion opt-out sits under the main action
-                ctk.CTkButton(bwrap, text=alt[0], image=(_icon(alt[2], "muted", 14) if alt[2] else None), compound="left", width=220, height=26, corner_radius=13, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=alt[1]).pack(pady=(6,0))
+                secondary[0]=ctk.CTkButton(bwrap, text=alt[0], image=(_icon(alt[2], "muted", 14) if alt[2] else None), compound="left", width=220, height=26, corner_radius=13, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, font=ctk.CTkFont(size=11), command=alt[1])
+                secondary[0].pack(pady=(6,0))
             nb[0]=bwrap; nb[0].grid(row=0,column=2, rowspan=3, padx=16, pady=10, sticky="e")
     def _proc_next_strip(self, name, nodes, local):
         title, detail, btxt, cmd, step, alt, ico = self._proc_next(name, nodes, local)
         strip=ctk.CTkFrame(self.proc_cards, fg_color="#0f1a2b", corner_radius=14, border_width=1, border_color="#1f3a5f"); strip.grid(row=0, column=0, sticky="ew", padx=6, pady=(4,10))
         strip.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(strip, text="NEXT", text_color=AC, font=ctk.CTkFont(size=11, weight="bold")).grid(row=0,column=0, padx=(16,10), pady=(12,0), sticky="w")
-        ctk.CTkLabel(strip, text=title, text_color=TX, font=ctk.CTkFont(size=15, weight="bold"), anchor="w").grid(row=0,column=1, sticky="w", pady=(12,0))
+        ctk.CTkLabel(strip, text=title, text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w").grid(row=0,column=1, sticky="w", pady=(12,0))
         ctk.CTkLabel(strip, text=detail, text_color=MUT, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=640).grid(row=1,column=1, sticky="w", pady=(0,4))
         trail=ctk.CTkFrame(strip, fg_color="transparent"); trail.grid(row=2,column=1, sticky="w", pady=(0,12))
         for i,nm in enumerate(self.STEPS):
@@ -5747,6 +6045,8 @@ class App(LiveMixin, ctk.CTk):
             aside="This project has a Combined model - usually you prepare and export that (the Combined tile). This still works on just this scan."
             mk("prepare", "  Prepare…", bool(vs), lambda n=name,nd=node: self._prepare_dialog(n, nd), aside if combined_exists else "Remove floating pieces, smooth, fill holes, reduce triangles. Before and after, then keep or discard.")
             mk("export", "  Export…", bool(vs), lambda n=name,nd=node: self._export_dialog(n, nd), aside if combined_exists else "Save as STL, OBJ, GLB or PLY with a size and mesh check.")
+            if node=="combined":
+                mk("delete", "  Delete combined model…", bool(vs), lambda n=name: self._proc_delete_combined(n), "Only delete the Combined model. The original scans and raw data stay.")
             if combined_exists and node!="combined": ctk.CTkLabel(pp, text="Combined recommended - but you can still prepare/export this scan.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=230).pack(fill="x", padx=6, pady=(4,0))
         self._hr(pp, pady=(14,6)); self._title(pp, "Whole project", size=13)
         def act(text, cmd, tip=None, danger=False, icon=None):
@@ -5757,7 +6057,7 @@ class App(LiveMixin, ctk.CTk):
         act("  Compare versions…", lambda: self._compare_dialog(name), "Two 3D views side by side, any scan or version in each, turning together.", icon="compare")
         act("  Combine scans…", lambda: self._align_dialog(name), "Scanned each side separately? Line the scans up and build one model from all of them.", icon="combine")
         act("  Build all models", self.on_process_pc, "Build the 3D model of every scan that has raw data.", icon="build")
-        act("  Delete project from this PC", self._proc_delete_project, "Everything in its folder goes to the trash. The scanner copy is not touched.", danger=True, icon="delete")
+        act("  Delete whole project…", self._proc_delete_project, "Danger: moves the whole project folder to the trash. To remove only Combined, select the Combined tile and use Delete combined.", danger=True, icon="delete")
     def _proc_progress(self, node, frac, text):
         r=self._proc_rows.get(node)
         if not r: return
@@ -5784,7 +6084,7 @@ class App(LiveMixin, ctk.CTk):
         """How far the scanner itself took this scan: 'meshed' (One-tap Edit or Mesh was run there), 'fused'
         (point cloud only), 'raw' (frames only), or None (nothing on this PC for it)."""
         d=os.path.join(local, "data", node)
-        if os.path.exists(os.path.join(d, "fuse_mesh.ply")) or os.path.exists(os.path.join(local, "%s_%s.ply" % (os.path.basename(local), node))): return "meshed"
+        if _scanner_mesh_in(d) or os.path.exists(os.path.join(local, "%s_%s.ply" % (os.path.basename(local), node))): return "meshed"
         if os.path.exists(os.path.join(d, "fuse.ply")) or os.path.exists(os.path.join(local, "%s_%s_cloud.ply" % (os.path.basename(local), node))): return "fused"
         if self._has_raw_frames(local, node): return "raw"
         return None
@@ -5891,7 +6191,7 @@ class App(LiveMixin, ctk.CTk):
             self._alert("Past versions", "No saved prepared versions yet for %s.\nPrepare it and Save prepared version to start a history." % self._scan_label(name, node)); return
         t=self._top("Past versions · %s" % self._scan_label(name, node), 560, min(720, 170+66*len(hist)), key="prephist")
         if t is None: return
-        ctk.CTkLabel(t, text="Prepared versions of %s" % self._scan_label(name, node), font=ctk.CTkFont(size=15, weight="bold"), text_color=TX).pack(anchor="w", padx=20, pady=(16,2))
+        ctk.CTkLabel(t, text="Prepared versions of %s" % self._scan_label(name, node), font=ctk.CTkFont(size=14, weight="bold"), text_color=TX).pack(anchor="w", padx=20, pady=(16,2))
         ctk.CTkLabel(t, text="Every Save prepared version keeps the previous one here. Restore swaps it back in (the current one is kept too).", text_color=MUT, font=ctk.CTkFont(size=11), wraplength=500, justify="left").pack(anchor="w", padx=20, pady=(0,8))
         box=ctk.CTkScrollableFrame(t, fg_color=CARD, corner_radius=12); box.pack(fill="both", expand=True, padx=16, pady=(0,12))
         def summ(s):
@@ -6013,7 +6313,7 @@ class App(LiveMixin, ctk.CTk):
         def run():
             if not (self.clean_do_iso.get() or self.clean_do_smooth.get() or self.clean_holes.get() or self.clean_do_keep.get() or self.clean_do_base.get()):
                 status.configure(text="Tick at least one action.", text_color=WARN); return
-            clean_opts=self._clean_options(); pstate["opts"]=clean_opts; self._persist(); able(runb, False); keepb.pack_forget(); discb.pack_forget()
+            clean_opts=self._clean_options(); pstate["opts"]=clean_opts; self._persist(); able(runb, False); able(keepb, False); discb.pack_forget()
             loads[1].configure(text="Working…"); loads[1].grid(); loads[1].lift(); t0=time.time()
             status.configure(text="Working on a copy… (a big model takes a minute)", text_color=MUT)
             def tick():
@@ -6196,7 +6496,7 @@ class App(LiveMixin, ctk.CTk):
         t=self._top("Combine scans · %s" % self.disp(name), 1180, 1000, key="align")
         if t is None: return
         rec=self.records.setdefault(name,{}).setdefault("align",{})
-        st={"base": rec.get("_base") if rec.get("_base") in nodes else nodes[0], "moving": None, "pairs": [], "pending": None, "result": None, "busy": False}
+        st={"base": rec.get("_base") if rec.get("_base") in nodes else nodes[0], "moving": None, "pairs": [], "pending": None, "redo": None, "result": None, "busy": False}
         st["moving"]=next((n for n in nodes if n!=st["base"]), None)
         lab=lambda n: self._scan_label(name, n)
         # two scans can share a label (auto index clash or a duplicate custom name). The dropdowns key on
@@ -6207,16 +6507,42 @@ class App(LiveMixin, ctk.CTk):
         dlab=lambda n: ("%s  (%s)" % (lab(n), n)) if _lc.get(lab(n),0)>1 else lab(n)
         node_by_dlab={dlab(n): n for n in nodes}
         card=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); card.pack(fill="both", expand=True, padx=12, pady=12)
-        card.grid_columnconfigure((0,1), weight=1); card.grid_rowconfigure(2, weight=1); card.grid_rowconfigure(3, weight=1)
+        card.grid_columnconfigure((0,1), weight=1); card.grid_columnconfigure(2, weight=0, minsize=220); card.grid_rowconfigure(2, weight=1); card.grid_rowconfigure(3, weight=1)
         menu=dict(fg_color="#0d0f14", button_color=CARD2, button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=8)
-        bar=ctk.CTkFrame(card, fg_color="transparent"); bar.grid(row=0,column=0, columnspan=2, sticky="ew", padx=14, pady=(12,4))
-        ctk.CTkLabel(bar, text="Base scan", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
+        bar=ctk.CTkFrame(card, fg_color="transparent"); bar.grid(row=0,column=0, columnspan=3, sticky="ew", padx=14, pady=(12,4))
+        ctk.CTkLabel(bar, text="Align against", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
         bsel=ctk.StringVar(value=dlab(st["base"])); msel=ctk.StringVar(value=dlab(st["moving"]) if st["moving"] else "")
         bmenu=ctk.CTkOptionMenu(bar, values=[dlab(n) for n in nodes], variable=bsel, width=130, command=lambda _: pick_base(), **menu); bmenu.pack(side="left", padx=(8,18))
-        ctk.CTkLabel(bar, text="Scan to line up", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
-        mmenu=ctk.CTkOptionMenu(bar, values=[dlab(n) for n in nodes if n!=st["base"]], variable=msel, width=130, command=lambda _: pick_moving(), **menu); mmenu.pack(side="left", padx=(8,18))
+        ctk.CTkLabel(bar, text="Moving scan", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
+        mmenu=ctk.CTkOptionMenu(bar, values=[dlab(n) for n in nodes if n!=st["base"]], variable=msel, width=130, command=lambda _: pick_moving(), **menu); mmenu.pack(side="left", padx=(8,10))
+        ctk.CTkButton(bar, text="‹ pair", width=64, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: step_pair(-1)).pack(side="left", padx=(0,4))
+        ctk.CTkButton(bar, text="pair ›", width=64, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: step_pair(1)).pack(side="left", padx=(0,10))
+        ctk.CTkButton(bar, text="Next needed", width=96, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: next_needed()).pack(side="left", padx=(0,14))
         chips=ctk.CTkLabel(bar, text="", text_color=OK, font=ctk.CTkFont(size=12)); chips.pack(side="left", padx=6)
-        hint=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=12), justify="left", wraplength=1100, anchor="w"); hint.grid(row=1,column=0, columnspan=2, sticky="ew", padx=16, pady=(0,6))
+        hint=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=12), justify="left", wraplength=850, anchor="w"); hint.grid(row=1,column=0, columnspan=2, sticky="ew", padx=16, pady=(0,6))
+        def choose_pair(base, moving):
+            if base not in nodes or moving not in nodes or base==moving: return
+            st["base"]=base; st["moving"]=moving; rec["_base"]=base; self._persist()
+            bsel.set(dlab(base)); msel.set(dlab(moving)); mmenu.configure(values=[dlab(n) for n in nodes if n!=base])
+            load_views(); refresh_chips()
+        def step_pair(delta):
+            pairs=[(b,m) for b in nodes for m in nodes if m!=b]
+            cur=(st["base"], st["moving"])
+            i=pairs.index(cur) if cur in pairs else 0
+            choose_pair(*pairs[(i+delta) % len(pairs)])
+        def next_needed():
+            for b in nodes:
+                for m in nodes:
+                    if m!=b and self._align_matrix_to_base(rec, m, b) is None:
+                        choose_pair(b, m); return True
+            status.configure(text="Every scan is connected. Build one model from all of them below.", text_color=OK); return False
+        def save_or_next_needed():
+            # Fast path for the real workflow: Auto this pair, then press Next.
+            # If there is an unsaved orange preview, keep it before advancing.
+            if st.get("result"):
+                keep(); return
+            if not next_needed():
+                status.configure(text="Every scan is connected. Build one model from all of them below.", text_color=OK)
         # two pick views on top (base | moving), the merged result wide below (the user's chosen layout)
         frames=[ctk.CTkFrame(card, fg_color="#0a0c10", corner_radius=10) for _ in range(3)]
         frames[0].grid(row=2,column=0, sticky="nsew", padx=(14,4), pady=4); frames[1].grid(row=2,column=1, sticky="nsew", padx=(4,14), pady=4)
@@ -6232,14 +6558,260 @@ class App(LiveMixin, ctk.CTk):
             """Buttons read as off when off: grey with dim text, instead of a bright button with invisible text."""
             b.configure(state=("normal" if on else "disabled"), fg_color=(fill if on else CARD2), text_color=("#04121f" if on else DIM), text_color_disabled=DIM,
                         hover_color=(AC_H if fill==AC else "#35b57c") if on else CARD2)
-        status=ctk.CTkLabel(card, text="", text_color=TX, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=1100); status.grid(row=4,column=0, columnspan=2, sticky="ew", padx=16, pady=(6,0))
-        btns=ctk.CTkFrame(card, fg_color="transparent"); btns.grid(row=5,column=0, columnspan=2, sticky="ew", padx=12, pady=(6,12))
+        status=ctk.CTkLabel(card, text="", text_color=TX, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=900); status.grid(row=4,column=0, columnspan=3, sticky="ew", padx=16, pady=(6,0))
+        btns=ctk.CTkFrame(card, fg_color="transparent"); btns.grid(row=6,column=0, columnspan=3, sticky="ew", padx=12, pady=(6,12))
+        # The workflow palette grows as manual pairs, saved matches, and nudge controls
+        # are added. Keep it in its own scrollable column so shrinking the dialog never
+        # hides the lower actions; the 3D views and footer remain fixed in the main card.
+        side=ctk.CTkScrollableFrame(card, fg_color="#0d1119", corner_radius=12,
+                                    scrollbar_fg_color="#0d1119", scrollbar_button_color=STROKE,
+                                    scrollbar_button_hover_color=AC, width=236)
+        side.grid(row=1,column=2, rowspan=5, sticky="nsew", padx=(2,10), pady=(0,12))
+        try:
+            side._scrollbar.configure(width=12)
+        except Exception:
+            pass
+        ctk.CTkLabel(side, text="Alignment workflow", text_color=TX, font=ctk.CTkFont(size=14, weight="bold"), anchor="w").pack(fill="x", padx=12, pady=(12,2))
+        side_state=ctk.CTkLabel(side, text="", text_color=MUT, font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=190); side_state.pack(fill="x", padx=10, pady=(0,8))
+        align_source=ctk.StringVar(value="Auto: cloud first")
+        align_detail=ctk.StringVar(value="Normal")
+        align_range=ctk.StringVar(value="Normal")
+        align_samples_preset=ctk.StringVar(value="Normal")
+        align_auto_points=ctk.StringVar(value="12")
+        _detail_vals={"Fast":2.0,"Normal":1.0,"Fine":0.5}
+        _range_vals={"Tight":3.0,"Normal":6.0,"Loose":12.0}
+        _sample_vals={"Light":100000,"Normal":250000,"Heavy":500000}
+        _auto_point_vals={"Off":0,"6":6,"12":12,"24":24}
+        smenu=dict(fg_color="#0a0c10", button_color=CARD2, button_hover_color=STROKE, dropdown_fg_color=CARD2, text_color=TX, corner_radius=8)
+        def info_tip(parent, text):
+            q=ctk.CTkLabel(parent, text="?", width=16, height=16, corner_radius=8, fg_color=CARD2, text_color=AC, font=ctk.CTkFont(size=10, weight="bold"))
+            self._tip(q, text); return q
+        def subsection(title, tip=None):
+            box=ctk.CTkFrame(side, fg_color="#111722", corner_radius=10)
+            box.pack(fill="x", padx=8, pady=(6,4))
+            head=ctk.CTkFrame(box, fg_color="transparent"); head.pack(fill="x", padx=10, pady=(8,2))
+            ctk.CTkLabel(head, text=title, text_color=TX, font=ctk.CTkFont(size=12, weight="bold"), anchor="w").pack(side="left")
+            if tip: info_tip(head, tip).pack(side="left", padx=6)
+            return box
+        settings_box=subsection("Match settings", "Start with Normal. Use Loose if scans begin offset. Use Tight/Fine after it is already close.")
+        srcrow=ctk.CTkFrame(settings_box, fg_color="transparent"); srcrow.pack(fill="x", padx=10, pady=(3,2))
+        srcopt=ctk.CTkOptionMenu(srcrow, values=["Auto: cloud first", "Cloud only", "Mesh surface"], variable=align_source, width=164, height=26, **smenu); srcopt.pack(side="left", fill="x", expand=True)
+        info_tip(srcrow, "Auto: use scanner point cloud if present, otherwise mesh. Cloud only: raw scanner points only. Mesh surface: sampled finished model.").pack(side="right", padx=(4,0))
+        def setting_row(label, var, vals, tip):
+            row=ctk.CTkFrame(settings_box, fg_color="transparent"); row.pack(fill="x", padx=10, pady=(2,1))
+            labw=ctk.CTkLabel(row, text=label, text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", width=72); labw.pack(side="left")
+            info_tip(row, tip).pack(side="left", padx=(0,4))
+            opt=ctk.CTkOptionMenu(row, values=vals, variable=var, width=104, height=24, **smenu); opt.pack(side="right")
+            self._tip(labw, tip); self._tip(opt, tip)
+        setting_row("Detail", align_detail, ["Fast","Normal","Fine"], "How small the matching chunks are. Fine can be more precise but slower/noisier; Fast is rougher.")
+        setting_row("Match range", align_range, ["Tight","Normal","Loose"], "How far points may move to count as matching. Use Loose if scans start slightly off; Tight for final refine.")
+        setting_row("Samples", align_samples_preset, ["Light","Normal","Heavy"], "How many points Auto/ICP uses. Heavy is slower but can be steadier on messy scans.")
+        setting_row("Auto points", align_auto_points, ["Off","6","12","24"], "How many actual Auto correspondences to show as editable dots after alignment. Off hides them.")
+        ctk.CTkLabel(settings_box, text="Auto uses scanner point clouds first. Mesh is fallback.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=190).pack(fill="x", padx=10, pady=(2,8))
+        manual_box=subsection("Manual point pairs", "Click one point on the base scan and the same physical point on the moving scan. Use the list to delete or redo only the bad half.")
+        manual_next=ctk.CTkLabel(manual_box, text="Next click: base or moving scan", text_color=AC, font=ctk.CTkFont(size=11, weight="bold"), anchor="w", justify="left", wraplength=190)
+        manual_next.pack(fill="x", padx=10, pady=(2,3))
+        manual_list=ctk.CTkFrame(manual_box, fg_color="transparent")
+        manual_list.pack(fill="x", padx=8, pady=(0,4))
+        manual_help=ctk.CTkLabel(manual_box, text="Need 3+ spread-out pairs. Same color/number = same physical spot.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=190)
+        manual_help.pack(fill="x", padx=10, pady=(0,8))
+        def side_button(text, cmd, icon=None, danger=False):
+            b=ctk.CTkButton(side, text=text, image=(_icon(icon, "danger" if danger else "default", 16) if icon else None), compound="left", height=30, corner_radius=8, fg_color="transparent", border_width=1, border_color=("#5a2a38" if danger else STROKE), hover_color=("#3a2530" if danger else CARD2), text_color=("#ff9db0" if danger else TX), anchor="w", command=cmd)
+            b.pack(fill="x", padx=10, pady=3); return b
+        action_box=subsection("Actions")
+        _side_parent=side
+        side=action_box
+        side_auto=side_button("  Auto align this pair", lambda: run_align(True), "magic")
+        self._tip(side_auto, "Try to line up only the two scans shown at the top. It does not align all scans at once.")
+        side_save=side_button("  Save this match", lambda: keep(), "check")
+        self._tip(side_save, "Keep the orange preview as a saved scan-to-scan match. You can still nudge or clear it later.")
+        side_clear=side_button("  Clear preview/match", lambda: clear_current_match(), "close", danger=True)
+        self._tip(side_clear, "Clear the orange preview if Auto made a bad fit. If a saved match exists, remove only that alignment, not the scan files.")
+        side_next=side_button("  Save / next pair", save_or_next_needed, "redo")
+        self._tip(side_next, "If the orange preview is unsaved, save it first. Then jump to a pair that still needs a match.")
+        side_build=side_button("  Build connected scans", lambda: combine(), "combine")
+        self._tip(side_build, "Fuse every scan connected to the selected base into one combined model.")
+        side=_side_parent
+        matches_box=subsection("Saved matches", "These are the scan-to-scan matches you have saved. Build uses these connections.")
+        side_matches=ctk.CTkFrame(matches_box, fg_color="transparent")
+        side_matches.pack(fill="x", padx=8, pady=(2,8))
+        nudge_box=subsection("Nudge moving scan", "Base stays locked. These buttons move the moving scan, shown orange, against the base scan, shown grey. It edits only the saved transform.")
+        _side_parent=side
+        side=nudge_box
+        nrow=ctk.CTkFrame(side, fg_color="transparent"); nrow.pack(fill="x", padx=8, pady=(2,3))
+        nudge_preset=ctk.StringVar(value="1 mm")
+        _nudge_vals={"0.25 mm":0.25,"0.5 mm":0.5,"1 mm":1.0,"2 mm":2.0,"5 mm":5.0}
+        ctk.CTkLabel(nrow, text="Amount", text_color=DIM, font=ctk.CTkFont(size=10), width=72, anchor="w").pack(side="left")
+        nopt=ctk.CTkOptionMenu(nrow, values=list(_nudge_vals.keys()), variable=nudge_preset, width=104, height=24, **smenu); nopt.pack(side="right")
+        self._tip(nopt, "How far each nudge click moves the moving scan. Use small values for final cleanup.")
+        nudge_mm=ctk.StringVar(value="1.0")
+        grid=ctk.CTkFrame(side, fg_color="transparent"); grid.pack(fill="x", padx=8, pady=(2,8))
+        axis_tips={0:"X nudges left/right in model space.",1:"Y nudges forward/back in model space.",2:"Z nudges up/down in model space."}
+        for i,(label, axis, sign) in enumerate((("X -",0,-1),("X +",0,1),("Y -",1,-1),("Y +",1,1),("Z -",2,-1),("Z +",2,1))):
+            b=ctk.CTkButton(grid, text=label, width=58, height=25, corner_radius=7, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda a=axis,s=sign: nudge(a,s))
+            b.grid(row=i//2, column=i%2, padx=2, pady=2, sticky="ew"); self._tip(b, axis_tips[axis])
+        ctk.CTkLabel(side, text="Base is locked. Nudge moves the moving scan, the orange one. Then Save this match.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=190).pack(fill="x", padx=10, pady=(0,8))
+        side=_side_parent
+        def manual_validation_message():
+            n=len(st.get("pairs") or [])
+            if n<3:
+                return False, "Need %d more pair%s." % (3-n, "" if 3-n==1 else "s"), MUT
+            try:
+                from registration_metrics import validate_landmark_pairs
+                validate_landmark_pairs(st["pairs"])
+                return True, "%d valid pair%s. Press Align via points." % (n, "" if n==1 else "s"), OK
+            except Exception as e:
+                return False, str(e), WARN
+        def redraw_manual_markers():
+            try:
+                import shade
+                for side_i in (0,1):
+                    if not hasattr(views[side_i], "markers"):
+                        continue
+                    marks=[]
+                    tf=getattr(views[side_i], "tf", None)
+                    if tf is not None:
+                        for k,pr in enumerate(st.get("pairs") or []):
+                            pt=pr[0] if side_i==0 else pr[1]
+                            marks.append((shade.world_to_view(pt, tf), self.PAIR_COLOURS[k % len(self.PAIR_COLOURS)]))
+                        pend=st.get("pending")
+                        if pend is not None and pend[0]==side_i:
+                            marks.append((shade.world_to_view(pend[1], tf), self.PAIR_COLOURS[len(st.get("pairs") or []) % len(self.PAIR_COLOURS)]))
+                    views[side_i].markers=marks
+                    views[side_i].draw()
+            except Exception as e:
+                log_error("align-redraw-manual-markers", e)
+        def delete_pair(idx):
+            if st.get("busy"): return
+            if 0 <= idx < len(st.get("pairs") or []):
+                st["pairs"].pop(idx); st["pending"]=None; st["redo"]=None; st["result"]=None
+                redraw_manual_markers(); update_manual_controls(); able(keepb, False)
+                status.configure(text="Deleted pair %d. Add or align the remaining points." % (idx+1), text_color=MUT)
+        def redo_pair(idx, side_i):
+            if st.get("busy"): return
+            if not (0 <= idx < len(st.get("pairs") or [])): return
+            st["pending"]=None; st["redo"]=(idx, side_i); st["result"]=None; able(keepb, False); redraw_manual_markers(); update_manual_controls()
+            status.configure(text="Redo pair %d: click the new %s point now." % (idx+1, "base" if side_i==0 else "moving"), text_color=AC)
+        def refresh_manual_panel():
+            try:
+                for child in manual_list.winfo_children(): child.destroy()
+                pairs=st.get("pairs") or []
+                redo=st.get("redo")
+                pend=st.get("pending")
+                if redo is not None:
+                    manual_next.configure(text="Next click: redo pair %d on %s" % (redo[0]+1, "base" if redo[1]==0 else "moving"), text_color=AC)
+                elif pend is not None:
+                    manual_next.configure(text="Next click: matching point on %s" % ("moving scan" if pend[0]==0 else "base scan"), text_color=AC)
+                else:
+                    manual_next.configure(text="Next click: start pair %d on either scan" % (len(pairs)+1), text_color=AC)
+                if not pairs and pend is None:
+                    ctk.CTkLabel(manual_list, text="No manual pairs yet", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w").pack(fill="x", padx=2, pady=1)
+                for idx,pr in enumerate(pairs):
+                    row=ctk.CTkFrame(manual_list, fg_color="#0a0c10", corner_radius=7)
+                    row.pack(fill="x", pady=2)
+                    c=self.PAIR_COLOURS[idx % len(self.PAIR_COLOURS)]
+                    dot="#%02x%02x%02x" % tuple(max(0,min(255,int(v*255))) for v in c)
+                    ctk.CTkLabel(row, text=str(idx+1), width=20, text_color=dot, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=(5,2), pady=4)
+                    ctk.CTkButton(row, text="redo B", width=48, height=22, corner_radius=6, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=10), command=lambda i=idx: redo_pair(i,0)).pack(side="left", padx=1)
+                    ctk.CTkButton(row, text="redo M", width=50, height=22, corner_radius=6, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=10), command=lambda i=idx: redo_pair(i,1)).pack(side="left", padx=1)
+                    ctk.CTkButton(row, text="×", width=24, height=22, corner_radius=6, fg_color="transparent", border_width=1, border_color="#5a2a38", hover_color="#3a2530", text_color="#ff9db0", font=ctk.CTkFont(size=11, weight="bold"), command=lambda i=idx: delete_pair(i)).pack(side="right", padx=(1,5))
+                if pend is not None:
+                    ctk.CTkLabel(manual_list, text="Pair %d half placed — click the other scan" % (len(pairs)+1), text_color=AC, font=ctk.CTkFont(size=10), anchor="w").pack(fill="x", padx=2, pady=2)
+                ok,msg,col=manual_validation_message()
+                manual_help.configure(text=msg if pairs else "Need 3+ spread-out pairs. Same color/number = same physical spot.", text_color=col if pairs else DIM)
+            except Exception as e:
+                log_error("align-refresh-manual-panel", e)
+        def update_manual_controls():
+            n=len(st.get("pairs") or [])
+            ok,msg,col=manual_validation_message()
+            try:
+                pairs_lbl.configure(text="Manual: %d pair%s" % (n, "" if n==1 else "s"))
+                able(alignb, ok)
+            except Exception:
+                pass
+            refresh_manual_panel()
+            return ok
+        def current_pair_record():
+            r=rec.get(st.get("moving")) if st.get("moving") else None
+            return r if isinstance(r, dict) and r.get("base")==st.get("base") and r.get("matrix") else None
+        def clear_current_match():
+            if st.get("result"):
+                st["result"]=None; st["pairs"]=[]; st["pending"]=None
+                load_views(); refresh_chips()
+                status.configure(text="Cleared the orange preview. Try Auto again, nudge, or use manual points.", text_color=MUT); return
+            if not st.get("moving") or not current_pair_record():
+                status.configure(text="Nothing to clear for this pair yet.", text_color=MUT); return
+            if not self._confirm("Clear saved match?", "%s -> %s will be removed. The scan files stay; only this saved alignment is cleared." % (lab(st["moving"]), lab(st["base"]))):
+                return
+            rec.pop(st["moving"], None); self._persist(); st["result"]=None; st["pairs"]=[]; st["pending"]=None
+            for v in views:
+                if hasattr(v, "markers"): v.markers=[]
+                if hasattr(v, "clear_layers"): v.clear_layers(draw=False)
+                try: v.draw()
+                except Exception: pass
+            status.configure(text="Cleared the saved match. Use Auto or manual points to align it again.", text_color=MUT)
+            load_views(); refresh_chips()
+        def pair_matrix_for_adjust():
+            if st.get("result") and st["result"].get("matrix"):
+                return st["result"]["matrix"], "result"
+            r=current_pair_record()
+            if r: return r["matrix"], "saved"
+            return None, None
+        def redraw_pair_overlay(mat):
+            if not (mat and st.get("moving") and hasattr(views[2], "add_layer")): return
+            try:
+                mov_p=self._proc_current(name, st["moving"])[2]
+                views[2].clear_layers(draw=False); views[2].add_layer(mov_p, mat, colour=(1.0,0.36,0.05))
+                caps[2].configure(text="Alignment · %s (grey) with %s adjusted (orange)" % (lab(st["base"]), lab(st["moving"])))
+            except Exception as e: log_error("align-adjust-preview", e)
+        def nudge(axis, sign):
+            mat, kind=pair_matrix_for_adjust()
+            if mat is None:
+                status.configure(text="Align or choose a saved match first, then nudge it.", text_color=WARN); return
+            try:
+                step=float(_nudge_vals.get(nudge_preset.get(), 1.0)) * sign
+                import numpy as np
+                m=np.array(mat, dtype=float).reshape(4,4); m[axis,3]+=step
+                out=m.tolist()
+                if kind=="result": st["result"]["matrix"]=out
+                else:
+                    rec[st["moving"]]["matrix"]=out; rec[st["moving"]]["manual_adjusted"]=True; rec[st["moving"]]["when"]=time.strftime("%Y-%m-%d %H:%M"); self._persist(); refresh_chips()
+                redraw_pair_overlay(out)
+                able(keepb, True)
+                status.configure(text="Nudged %s by %.2f mm. Save match when it looks right." % (("XYZ"[axis]), step), text_color=TX)
+            except Exception as e:
+                log_error("align-nudge", e); status.configure(text="Could not nudge this match (see Help > Log).", text_color=WARN)
         def refresh_chips():
-            done=[n for n in nodes if n in rec and isinstance(rec[n], dict) and rec[n].get("base")==st["base"]]
-            chips.configure(text=("Lined up so far: "+", ".join(lab(n) for n in done)) if done else "Nothing lined up yet")
-            able(comb, bool(done), OK); comb.configure(text="Build one model from %d scan%s" % (len(done)+1, "" if not done else "s"))
+            done=[n for n in nodes if n!=st["base"] and self._align_matrix_to_base(rec, n, st["base"]) is not None]
+            missing=[n for n in nodes if n!=st["base"] and n not in done]
+            chips.configure(text=("Can combine: "+", ".join(lab(n) for n in done)) if done else "Nothing connected to this base yet")
+            saved_rows=[(m,r) for m,r in rec.items() if not str(m).startswith("_") and isinstance(r, dict) and r.get("base")]
+            try:
+                side_state.configure(text="Pair: %s  ->  %s\nConnected to selected base: %d/%d" % (lab(st["moving"]), lab(st["base"]), len(done)+1, len(nodes)))
+                for child in side_matches.winfo_children(): child.destroy()
+                if not saved_rows:
+                    ctk.CTkLabel(side_matches, text="No saved matches yet", text_color=DIM,
+                                 font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=2, pady=2)
+                for moving, match in saved_rows:
+                    row=ctk.CTkFrame(side_matches, fg_color="#0a0c10", corner_radius=7)
+                    row.pack(fill="x", pady=2)
+                    ctk.CTkLabel(row, text="●", text_color=OK, font=ctk.CTkFont(size=11), width=16).pack(side="left", padx=(5,1), pady=5)
+                    names=ctk.CTkFrame(row, fg_color="transparent")
+                    names.pack(side="left", fill="x", expand=True, padx=(2,3), pady=3)
+                    ctk.CTkLabel(names, text="%s  →  %s" % (lab(moving), lab(match.get("base"))),
+                                 text_color=TX, font=ctk.CTkFont(size=10, weight="bold"), anchor="w").pack(fill="x")
+                    fit=match.get("fitness"); rmse=match.get("rmse")
+                    detail=[]
+                    if fit is not None: detail.append("fit %.0f%%" % (float(fit)*100))
+                    if rmse is not None: detail.append("gap %.2f mm" % float(rmse))
+                    ctk.CTkLabel(names, text=" · ".join(detail) if detail else "Saved alignment",
+                                 text_color=OK if detail else MUT, font=ctk.CTkFont(size=9), anchor="w").pack(fill="x")
+            except Exception: pass
+            able(comb, bool(done), OK)
+            comb.configure(text="Build %d/%d scans" % (len(done)+1, len(nodes)))
+            self._tip(comb, ("Ready: %s. Not connected yet: %s" % (", ".join(lab(n) for n in [st["base"]]+done), ", ".join(lab(n) for n in missing))) if missing else "Every scan is connected. Builds one model in the selected base scan's position.")
         def load_views():
-            st["pairs"]=[]; st["pending"]=None; st["result"]=None
+            st["pairs"]=[]; st["pending"]=None; st["redo"]=None; st["result"]=None
             for v in views:
                 v.markers=[] if hasattr(v, "markers") else None
                 if hasattr(v, "clear_layers"): v.clear_layers(draw=False)
@@ -6258,8 +6830,8 @@ class App(LiveMixin, ctk.CTk):
                     views[i].markers=[(shade.world_to_view(pt, views[i].tf), self.PAIR_COLOURS[k % len(self.PAIR_COLOURS)]) for k,pt in enumerate(pts)]
                     views[i].draw()
                 if i==2 and saved and hasattr(views[2], "add_layer") and st["moving"]:
-                    views[2].clear_layers(draw=False); views[2].add_layer(self._proc_current(name, st["moving"])[2], saved["matrix"], colour=(1.0,0.55,0.25))
-                    caps[2].configure(text="Alignment · %s (grey) with %s kept (orange)" % (lab(st["base"]), lab(st["moving"])))
+                    views[2].clear_layers(draw=False); views[2].add_layer(self._proc_current(name, st["moving"])[2], saved["matrix"], colour=(1.0,0.36,0.05))
+                    caps[2].configure(text="Saved match preview · %s is grey, %s is orange" % (lab(st["base"]), lab(st["moving"])))
             def shown(i):
                 def cb(ok):
                     if not t.winfo_exists(): return
@@ -6272,65 +6844,73 @@ class App(LiveMixin, ctk.CTk):
             views[2].load(self._proc_current(name, st["base"])[2], shown(2), max_faces=600000)     # merged view starts as the base (grey); the moving scan drops in as an orange layer once lined up
             if st["moving"]: views[1].load(self._proc_current(name, st["moving"])[2], shown(1), max_faces=600000)
             else: loads[1].grid_remove()
-            keepb.pack_forget()
+            able(keepb, False)
             if saved:
                 fit=saved.get("fitness"); n=len(st["pairs"])
-                status.configure(text="%s was lined up %s%s%s. Add or undo points and press Line up from points again, or press Start over." % (
-                    lab(st["moving"]), saved.get("when","before"), (" with %d point pair%s" % (n, "" if n==1 else "s")) if n else " by Auto", (", %.0f%% overlap" % (fit*100)) if fit else ""), text_color=TX)
+                status.configure(text="Saved match loaded: %s is shown in orange, aligned to %s. Use Clear this match to start over, or nudge/refine it." % (lab(st["moving"]), lab(st["base"])), text_color=TX)
             else: status.configure(text="")
-            hint.configure(text=("Click a spot you can recognise on either scan, then the matching spot on the other. Three pairs are enough; five spread-out ones are better. Then press Line up from points. "
+            hint.configure(text=("Click a spot you can recognise on either scan, then the matching spot on the other. Three pairs are enough; five spread-out ones are better. Then press Align via points. "
                                  "Or press Auto if the two scans overlap a lot.") if can_pick else
                                 "Point picking needs the graphics-card 3D view (Settings). Auto still works when the scans overlap a lot.")
-            pairs_lbl.configure(text="%d pair%s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s")); able(alignb, len(st["pairs"])>=3)
+            update_manual_controls()
         def pick_base():
             newb=node_by_dlab.get(bsel.get())
             if newb is None or newb==st["base"]: return
             if st["busy"]: bsel.set(dlab(st["base"])); return          # not while a fit is running
-            others=[n for n in nodes if n in rec and isinstance(rec[n], dict) and rec[n].get("base")!=newb]
-            if others and not self._confirm("Change the base scan?", "Scans already lined up were lined up to %s. Changing the base drops those." % lab(st["base"])): bsel.set(dlab(st["base"])); return
-            for n in others: rec.pop(n, None)
-            st["base"]=newb; rec["_base"]=newb; self._persist(); st["result"]=None; keepb.pack_forget()
+            st["base"]=newb; rec["_base"]=newb; self._persist(); st["result"]=None; able(keepb, False)
             mmenu.configure(values=[dlab(n) for n in nodes if n!=newb]); st["moving"]=next((n for n in nodes if n!=newb), None); msel.set(dlab(st["moving"]) if st["moving"] else "")
             load_views(); refresh_chips()
         def pick_moving():
             if st["busy"]: msel.set(dlab(st["moving"]) if st["moving"] else ""); return   # not while a fit is running
-            st["moving"]=node_by_dlab.get(msel.get()); st["result"]=None; keepb.pack_forget(); load_views()
+            st["moving"]=node_by_dlab.get(msel.get()); st["result"]=None; able(keepb, False); load_views()
         def on_pick(which, world, view):
             try: _on_pick(which, world, view)
             except Exception as e: log_error("align pick", e); status.configure(text="Could not place that point (see Help > Log).", text_color=WARN)
         def _on_pick(which, world, view):
             if st["busy"] or not can_pick: return
+            redo=st.get("redo")
+            if redo is not None:
+                idx, side_i=redo
+                if which != side_i:
+                    status.configure(text="Redo pair %d: click the %s view, not the other scan." % (idx+1, "base" if side_i==0 else "moving"), text_color=WARN)
+                    return
+                if not (0 <= idx < len(st.get("pairs") or [])):
+                    st["redo"]=None; update_manual_controls(); return
+                st["pairs"][idx][0 if side_i==0 else 1]=list(map(float, world))
+                st["redo"]=None; st["pending"]=None; st["result"]=None
+                redraw_manual_markers(); update_manual_controls(); able(keepb, False)
+                status.configure(text="Updated pair %d. %s" % (idx+1, "Press Align via points." if len(st["pairs"])>=3 else "Add more pairs."), text_color=TX)
+                return
             i=len(st["pairs"]); col=self.PAIR_COLOURS[i % len(self.PAIR_COLOURS)]
             pend=st["pending"]          # None, or (side, world): one half placed, waiting for its match on the other scan
             if pend is not None and pend[0]==which:        # clicked the same scan again: just move that half
-                views[which].markers.pop(); st["pending"]=(which, world); views[which].markers.append((view, col)); views[which].draw(); return
+                views[which].markers.pop(); st["pending"]=(which, world); views[which].markers.append((view, col)); views[which].draw(); refresh_manual_panel(); return
             if pend is None:                                # first half of a pair, on EITHER scan
                 st["pending"]=(which, world); views[which].markers.append((view, col)); views[which].draw()
                 other=st["moving"] if which==0 else st["base"]
-                status.configure(text="Point %d placed. Now click the same spot on %s." % (i+1, lab(other))); return
+                status.configure(text="Point %d placed. Now click the same spot on %s." % (i+1, lab(other))); refresh_manual_panel(); return
             # second half, on the other scan: store the pair base-first no matter which was clicked first
             base_pt, mov_pt = (pend[1], world) if pend[0]==0 else (world, pend[1])
             st["pairs"].append([list(map(float, base_pt)), list(map(float, mov_pt))]); st["pending"]=None
             views[which].markers.append((view, col)); views[which].draw()
-            pairs_lbl.configure(text="%d pair%s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s"))
-            status.configure(text="%d pair%s. %s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s", "Press Line up from points, or add more." if len(st["pairs"])>=3 else "Add %d more." % (3-len(st["pairs"]))))
-            able(alignb, len(st["pairs"])>=3)
+            status.configure(text="%d pair%s. %s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s", "Press Align via points, or add more." if len(st["pairs"])>=3 else "Add %d more." % (3-len(st["pairs"]))))
+            update_manual_controls()
         if can_pick:
             views[0].on_pick=lambda w,v: on_pick(0, w, v); views[1].on_pick=lambda w,v: on_pick(1, w, v)
         def start_over():
-            st["pairs"]=[]; st["pending"]=None; st["result"]=None
+            st["pairs"]=[]; st["pending"]=None; st["redo"]=None; st["result"]=None
             for v in views:
                 if hasattr(v, "markers"): v.markers=[]
                 if hasattr(v, "clear_layers"): v.clear_layers(draw=False)
                 v.draw()
             caps[0].configure(text="Base · %s · click a recognisable spot" % lab(st["base"]))
             caps[2].configure(text="Alignment · %s (grey) + %s (orange) as you line them up" % (lab(st["base"]), lab(st["moving"]) if st["moving"] else "…"))
-            pairs_lbl.configure(text="0 pairs"); able(alignb, False); keepb.pack_forget(); status.configure(text="Cleared. Click new points, or Auto.", text_color=MUT)
+            update_manual_controls(); able(keepb, False); status.configure(text="Cleared manual points. Click new points, or use Auto on the side.", text_color=MUT)
         def undo():
             pend=st["pending"]
             if pend is not None: st["pending"]=None; views[pend[0]].markers.pop(); views[pend[0]].draw()
             elif st["pairs"]: st["pairs"].pop(); views[0].markers.pop(); views[1].markers.pop(); views[0].draw(); views[1].draw()
-            pairs_lbl.configure(text="%d pair%s" % (len(st["pairs"]), "" if len(st["pairs"])==1 else "s")); able(alignb, len(st["pairs"])>=3)
+            update_manual_controls()
         busy={"t0":0.0, "msg":"", "job":None}
         def busy_text(m): busy["msg"]=m
         def busy_tick():
@@ -6338,8 +6918,8 @@ class App(LiveMixin, ctk.CTk):
             if busy["msg"] is not None: status.configure(text="Working: %s… %ds" % (busy["msg"] or "starting", int(time.time()-busy["t0"])), text_color=TX)
             busy["job"]=t.after(500, busy_tick)
         def busy_on(m):
-            busy["t0"]=time.time(); busy["msg"]=m; bar.grid(row=6,column=0, columnspan=2, sticky="ew", padx=16, pady=(0,10)); bar.configure(mode="indeterminate"); bar.start()
-            able(alignb, False); able(autob, False); able(comb, False, OK)
+            busy["t0"]=time.time(); busy["msg"]=m; bar.configure(mode="indeterminate", progress_color=AC); bar.start()
+            able(alignb, False); able(autob, False); able(keepb, False); able(comb, False, OK)
             for mn in (bmenu, mmenu):
                 try: mn.configure(state="disabled")
                 except Exception: pass
@@ -6350,9 +6930,73 @@ class App(LiveMixin, ctk.CTk):
                 except Exception: pass
             busy["job"]=None
             if t.winfo_exists():
-                bar.stop(); bar.grid_remove(); able(alignb, len(st["pairs"])>=3); able(autob, True); refresh_chips()
+                bar.stop(); bar.set(0); bar.configure(progress_color="#0d0f14"); update_manual_controls(); able(autob, True); able(keepb, bool(st.get("result"))); refresh_chips()
                 for mn in (bmenu, mmenu):
                     try: mn.configure(state="normal")
+                    except Exception: pass
+        def _cloud_only_for_node(node):
+            local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
+            for c in (os.path.join(local, "%s_%s_cloud.ply" % (name, node)), os.path.join(local, "data", node, "fuse.ply"), os.path.join(local, "data", node, "fuse_cloud.ply")):
+                try:
+                    if os.path.exists(c) and os.path.getsize(c)>1024: return c
+                except Exception: pass
+            return None
+        def _align_input_path(node):
+            mode=align_source.get()
+            cloud=_cloud_only_for_node(node)
+            if mode.startswith("Cloud"):
+                return cloud
+            if mode.startswith("Auto") and cloud:
+                return cloud
+            cur=self._proc_current(name, node)
+            return cur[2] if cur else None
+        def _float_setting(var, default, lo=None, hi=None):
+            try: v=float(var.get())
+            except Exception: v=default
+            if lo is not None: v=max(lo, v)
+            if hi is not None: v=min(hi, v)
+            return v
+        def _int_setting(var, default, lo=None, hi=None):
+            try: v=int(float(var.get()))
+            except Exception: v=default
+            if lo is not None: v=max(lo, v)
+            if hi is not None: v=min(hi, v)
+            return v
+        def align_pair_sync(base_node, moving_node, pairs=None, auto=True, label=None):
+            """Run one alignment job off the UI thread and return a result dict or an error string."""
+            pairs=[list(pr) for pr in (pairs or [])]
+            base_p=_align_input_path(base_node); mov_p=_align_input_path(moving_node)
+            if not base_p or not mov_p:
+                return None, "missing point cloud/model source"
+            vox=_detail_vals.get(align_detail.get(), 1.0); md=_range_vals.get(align_range.get(), 6.0); sam=_sample_vals.get(align_samples_preset.get(), 250000)
+            jid="%d-%x-%s-%s" % (os.getpid(), int(time.time()*1000), str(base_node), str(moving_node))
+            os.makedirs(THUMBS, exist_ok=True); pj=os.path.join(THUMBS, "align_pairs_%s.json" % jid); oj=os.path.join(THUMBS, "align_result_%s.json" % jid)
+            try:
+                json.dump({"pairs": pairs}, open(pj, "w"))
+                env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "8")
+                cmd=[_sys.executable, os.path.join(HERE, "align.py"), "--base", base_p, "--moving", mov_p, "--out", oj, "--voxel", str(vox), "--max-dist", str(md), "--samples", str(sam), "--auto-pairs", str(_auto_point_vals.get(align_auto_points.get(), 12))]
+                if pairs: cmd += ["--pairs", pj]
+                if auto: cmd.append("--auto")
+                proc=self._popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env); tail=[]; err=""
+                touch=self._stall_guard(proc, 900, "align")
+                for ln in proc.stdout:
+                    touch(); ln=ln.strip(); tail=(tail+[ln])[-6:]
+                    if ln.startswith("STAGE error "): err=ln[12:]
+                    elif ln.startswith("STAGE "):
+                        try: msg=json.loads(ln.split(" ",2)[2]).get("msg")
+                        except Exception: msg=None
+                        if msg and label: self.q.put(("call", lambda m=msg,l=label: busy_text("%s: %s" % (l, m))))
+                proc.wait(); self._forget_child(proc)
+                if proc.returncode==0 and os.path.exists(oj):
+                    res=json.load(open(oj)); res=dict(res, base=base_node, moving=moving_node, pairs=pairs)
+                    return res, ""
+                log_line("align failed: %s %s" % (err, " | ".join(tail)))
+                return None, err or "alignment failed"
+            except Exception as e:
+                log_error("align-sync", e); return None, str(e)
+            finally:
+                for f in (pj, oj):
+                    try: os.remove(f)
                     except Exception: pass
         def run_align(auto):
             if st["busy"] or not st["moving"]: return
@@ -6365,10 +7009,13 @@ class App(LiveMixin, ctk.CTk):
                     st["busy"]=False; busy_off(); run_align(True)
                 t.after(200, waito); return
             if auto and not self._require_open3d("Auto alignment"): return
-            st["busy"]=True; keepb.pack_forget(); busy_on("Starting…" if not auto else "Starting Auto… this takes a minute or two")
+            st["busy"]=True; able(keepb, False); busy_on("Starting…" if not auto else "Starting Auto… this takes a minute or two")
             job={"base": st["base"], "moving": st["moving"], "pairs": [list(pr) for pr in st["pairs"]], "id": "%d-%x" % (os.getpid(), int(time.time()*1000))}
             try:   # setup can fail too (cache dir unwritable, disk full): report it and free the controls, never leave them stuck busy
-                base_p=self._proc_current(name, job["base"])[2]; mov_p=self._proc_current(name, job["moving"])[2]
+                base_p=_align_input_path(job["base"]); mov_p=_align_input_path(job["moving"])
+                if not base_p or not mov_p:
+                    raise RuntimeError("point cloud source selected but one scan has no point cloud; choose Auto or Mesh surface")
+                vox=_detail_vals.get(align_detail.get(), 1.0); md=_range_vals.get(align_range.get(), 6.0); sam=_sample_vals.get(align_samples_preset.get(), 250000)
                 os.makedirs(THUMBS, exist_ok=True); pj=os.path.join(THUMBS, "align_pairs_%s.json" % job["id"]); oj=os.path.join(THUMBS, "align_result_%s.json" % job["id"])
                 json.dump({"pairs": job["pairs"]}, open(pj, "w"))
             except Exception as e:
@@ -6378,7 +7025,7 @@ class App(LiveMixin, ctk.CTk):
                 res=None; err=""
                 try:
                     env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "8")
-                    cmd=[_sys.executable, os.path.join(HERE, "align.py"), "--base", base_p, "--moving", mov_p, "--out", oj]
+                    cmd=[_sys.executable, os.path.join(HERE, "align.py"), "--base", base_p, "--moving", mov_p, "--out", oj, "--voxel", str(vox), "--max-dist", str(md), "--samples", str(sam), "--auto-pairs", str(_auto_point_vals.get(align_auto_points.get(), 12))]
                     if st["pairs"]: cmd+=["--pairs", pj]
                     if auto: cmd.append("--auto")
                     proc=self._popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env); tail=[]
@@ -6406,14 +7053,95 @@ class App(LiveMixin, ctk.CTk):
                     if res: res=dict(res, base=job["base"], moving=job["moving"], pairs=job["pairs"])
                     if not res: status.configure(text="Could not line these up%s. Try more spread-out points, or pick a scan with more overlap." % ((": "+err) if err else ""), text_color=WARN); return
                     st["result"]=res; fit=res.get("fitness"); rmse=res.get("rmse"); pe=res.get("pair_error_after")
-                    words=("%.0f%% of %s overlaps the base, typical gap %.2f mm" % (fit*100, lab(st["moving"]), rmse)) if fit is not None else "rough fit from your points only (no Open3D)"
-                    if pe is not None: words+="; your points land %.1f mm apart" % pe
-                    verdict="Looks good." if (fit is None or (fit>=0.3 and (rmse or 0)<1.5)) else "Weak fit: check the overlay before keeping it."
-                    status.configure(text="%s %s" % (words, verdict), text_color=(TX if verdict.startswith("Looks") else WARN))
+                    auto_pairs=res.get("auto_pairs") or []
+                    if auto_pairs and not st.get("pairs"):
+                        st["pairs"]=[list(pr) for pr in auto_pairs]
+                        redraw_manual_markers()
+                        update_manual_controls()
+                    srcword="cloud" if (_cloud_only_for_node(st["base"])==base_p and _cloud_only_for_node(st["moving"])==mov_p) else "mesh"
+                    verdict_ok=(fit is None or (fit>=0.50 and (rmse or 0)<1.5))
+                    if fit is not None:
+                        words="Fit %.0f%% · gap %.2f mm · %s" % (fit*100, rmse or 0, srcword)
+                    else:
+                        words="Point fit · no Auto score"
+                    if pe is not None: words+=" · points %.1f mm" % pe
+                    action="Looks good: Save / next pair" if verdict_ok else "Weak fit: inspect or nudge before saving"
+                    if auto_pairs:
+                        action += " Auto points shown; redo/delete any bad ones, then Align via points."
+                    status.configure(text="%s. %s." % (words, action), text_color=(TX if verdict_ok else WARN))
+                    self._tip(status, "%s aligned to %s. %s" % (lab(st["moving"]), lab(st["base"]), words))
                     if hasattr(views[2], "add_layer"):
-                        views[2].clear_layers(draw=False); views[2].add_layer(mov_p, res["matrix"], colour=(1.0,0.55,0.25))
-                        caps[2].configure(text="Alignment · %s (grey) with %s lined up (orange)" % (lab(st["base"]), lab(st["moving"])))
-                    keepb.pack(side="right", padx=6)
+                        overlay_src=self._proc_current(name, st["moving"])[2]
+                        def overlay_ready(ok):
+                            if not ok and t.winfo_exists():
+                                status.configure(text="Alignment succeeded, but the orange preview failed to draw. Save still works; see Help > Log.", text_color=WARN)
+                        views[2].clear_layers(draw=False); views[2].add_layer(overlay_src, res["matrix"], colour=(1.0,0.36,0.05), on_ready=overlay_ready)
+                        caps[2].configure(text="Alignment preview · %s is grey, %s is orange" % (lab(st["base"]), lab(st["moving"])))
+                    able(keepb, True)
+                self.q.put(("call", done))
+            threading.Thread(target=work, daemon=True).start()
+        def auto_all():
+            if st["busy"]: return
+            if _has_open3d_cache is None:
+                self._start_open3d_probe(); st["busy"]=True; busy_on("Checking Open3D…")
+                def waito():
+                    if not t.winfo_exists(): return
+                    if _has_open3d_cache is None: t.after(200, waito); return
+                    st["busy"]=False; busy_off(); auto_all()
+                t.after(200, waito); return
+            if not self._require_open3d("Auto alignment"): return
+            st["busy"]=True; able(keepb, False); busy_on("Auto aligning missing scans…")
+            base0=st["base"]; node_list=list(nodes)
+            seed={k:(dict(v) if isinstance(v, dict) else v) for k,v in rec.items()}
+            def work():
+                local={k:(dict(v) if isinstance(v, dict) else v) for k,v in seed.items()}
+                saved=[]; failed=[]
+                try:
+                    while True:
+                        connected=[n for n in node_list if self._align_matrix_to_base(local, n, base0) is not None]
+                        missing=[n for n in node_list if n not in connected]
+                        if not missing: break
+                        made=False
+                        for moving_node in list(missing):
+                            best=None; best_score=None; best_err=""
+                            for base_node in connected:
+                                if base_node==moving_node: continue
+                                label="%s to %s" % (lab(moving_node), lab(base_node))
+                                self.q.put(("call", lambda l=label: busy_text("Trying %s…" % l)))
+                                res, err=align_pair_sync(base_node, moving_node, [], True, label)
+                                if not res:
+                                    best_err=err or best_err; continue
+                                fit=res.get("fitness")
+                                rmse=res.get("rmse")
+                                score=((fit if fit is not None else 0.0), -(rmse if rmse is not None else 9999.0))
+                                if best is None or score>best_score:
+                                    best=res; best_score=score
+                            if best is not None:
+                                fit=best.get("fitness")
+                                if fit is None or fit>=0.20:
+                                    local[moving_node]={"base": best["base"], "matrix": best["matrix"], "fitness": best.get("fitness"), "rmse": best.get("rmse"), "pairs": [], "when": time.strftime("%Y-%m-%d %H:%M"), "auto_all": True}
+                                    saved.append((moving_node, best["base"], best.get("fitness"), best.get("rmse")))
+                                    made=True
+                                else:
+                                    failed.append((moving_node, "weak fit"))
+                            else:
+                                failed.append((moving_node, best_err or "no overlap found"))
+                        if not made: break
+                except Exception as e:
+                    log_error("align-auto-all", e); failed.append(("auto all", str(e)))
+                def done():
+                    st["busy"]=False; busy_off()
+                    if not t.winfo_exists(): return
+                    for moving_node, base_node, fit, rmse in saved:
+                        r=local.get(moving_node)
+                        if isinstance(r, dict): rec[moving_node]=r
+                    rec["_base"]=base0; self._persist(); refresh_chips(); load_views()
+                    if saved:
+                        msg="Auto all saved %d match%s." % (len(saved), "" if len(saved)==1 else "es")
+                        if failed: msg += " %d scan%s still need manual help." % (len(failed), "" if len(failed)==1 else "s")
+                        status.configure(text=msg, text_color=(OK if not failed else WARN))
+                    else:
+                        status.configure(text="Auto all did not find a strong new match. Try one pair manually, or use Loose range / Cloud first.", text_color=WARN)
                 self.q.put(("call", done))
             threading.Thread(target=work, daemon=True).start()
         def keep():
@@ -6422,30 +7150,60 @@ class App(LiveMixin, ctk.CTk):
             mv, bs=r.get("moving", st["moving"]), r.get("base", st["base"])     # the scans this result was computed for
             rec[mv]={"base": bs, "matrix": r["matrix"], "fitness": r.get("fitness"), "rmse": r.get("rmse"),
                      "pairs": [list(pr) for pr in r.get("pairs", st["pairs"])], "when": time.strftime("%Y-%m-%d %H:%M")}
-            rec["_base"]=bs; self._persist(); refresh_chips(); keepb.pack_forget(); st["result"]=None
+            rec["_base"]=st["base"]; self._persist(); refresh_chips(); able(keepb, False); st["result"]=None
             self.set_banner("%s lined up to %s. Saved with the project." % (lab(mv), lab(bs)), OK)
-            nxt=next((n for n in nodes if n!=st["base"] and not (isinstance(rec.get(n), dict) and rec[n].get("base")==st["base"])), None)
-            if nxt: st["moving"]=nxt; msel.set(lab(nxt)); load_views(); status.configure(text="Now line up %s." % lab(nxt))
-            else: status.configure(text="Every scan is lined up. Build one model from all of them below.")
+            nxt=next((n for n in nodes if n!=st["base"] and self._align_matrix_to_base(rec, n, st["base"]) is None), None)
+            if nxt: choose_pair(st["base"], nxt); status.configure(text="Saved. Now line up moving scan %s, or use Align against / pair buttons if it overlaps a different scan better." % lab(nxt), text_color=MUT)
+            else: status.configure(text="Every scan is connected. Build one model from all of them below.", text_color=OK)
         def combine():
-            done=[n for n in nodes if n in rec and isinstance(rec[n], dict) and rec[n].get("base")==st["base"]]
+            done=[n for n in nodes if n!=st["base"] and self._align_matrix_to_base(rec, n, st["base"]) is not None]
             self._combine(name, st["base"], done, status); able(comb, False, OK); busy_on(None)   # the combine worker writes its own frame counts into the status line
             def watch():
                 if not t.winfo_exists(): return
                 if not getattr(self, "_fusing", False): busy_off()
                 else: t.after(700, watch)
             t.after(1500, watch)
-        pairs_lbl=ctk.CTkLabel(btns, text="0 pairs", text_color=MUT, font=ctk.CTkFont(size=12)); pairs_lbl.pack(side="left", padx=(6,10))
-        ctk.CTkButton(btns, text="Undo point", width=100, height=32, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=undo).pack(side="left", padx=4)
-        ctk.CTkButton(btns, text="Start over", width=90, height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, command=start_over).pack(side="left", padx=4)
-        alignb=ctk.CTkButton(btns, text="Line up from points", width=160, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", state="disabled", command=lambda: run_align(False)); alignb.pack(side="left", padx=4)
-        autob=ctk.CTkButton(btns, text="Auto", width=80, height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: run_align(True)); autob.pack(side="left", padx=4)
-        self._tip(autob, "Finds the fit by itself. Works when the two scans share a lot of surface; otherwise use points.")
-        comb=ctk.CTkButton(btns, text="Build one model", image=_icon("combine", "on-accent", 16), compound="left", width=230, height=32, corner_radius=16, fg_color=OK, hover_color="#35b57c", text_color="#04121f", state="disabled", command=combine); comb.pack(side="right", padx=6)
+        pairs_lbl=ctk.CTkLabel(btns, text="Manual: 0 pairs", text_color=MUT, font=ctk.CTkFont(size=12)); pairs_lbl.pack(side="left", padx=(6,8))
+        ctk.CTkButton(btns, text="Undo point", width=96, height=32, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=undo).pack(side="left", padx=4)
+        ctk.CTkButton(btns, text="Clear points", width=100, height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=MUT, command=start_over).pack(side="left", padx=4)
+        alignb=ctk.CTkButton(btns, text="Align via points", width=142, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", state="disabled", command=lambda: run_align(False)); alignb.pack(side="left", padx=4)
+        autob=ctk.CTkButton(btns, text="Auto all scans", width=118, height=32, corner_radius=16, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=auto_all); autob.pack(side="left", padx=4)
+        self._tip(autob, "Try to auto-connect every missing scan to the selected base. It tests missing scans against already-connected scans and saves good matches.")
+        keepb=ctk.CTkButton(btns, text="Save match", width=130, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", state="disabled", command=keep); keepb.pack(side="left", padx=4)
+        self._tip(keepb, "Validate this preview and save this scan-to-scan match. Then continue to the next pair.")
+        comb=ctk.CTkButton(btns, text="Build connected", image=_icon("combine", "on-accent", 16), compound="left", width=205, height=32, corner_radius=16, fg_color=OK, hover_color="#35b57c", text_color="#04121f", state="disabled", command=combine); comb.pack(side="right", padx=6)
         self._tip(comb, "Fuses the raw frames of the base scan and every lined-up scan into one model, in the base scan's position. Needs the raw data of each scan on this PC.")
-        keepb=ctk.CTkButton(btns, text="Keep this alignment", width=160, height=32, corner_radius=16, fg_color=AC, hover_color=AC_H, text_color="#04121f", command=keep)
-        bar=ctk.CTkProgressBar(card, height=6, corner_radius=3, progress_color=AC, fg_color="#0d0f14")
-        able(alignb, False); load_views(); refresh_chips()
+        bar=ctk.CTkProgressBar(card, height=6, corner_radius=3, progress_color="#0d0f14", fg_color="#0d0f14")
+        bar.grid(row=5,column=0, columnspan=3, sticky="ew", padx=16, pady=(4,0)); bar.set(0)
+        able(alignb, False); able(keepb, False); load_views(); refresh_chips()
+    def _align_matrix_to_base(self, rec, node, base):
+        """Return a 4x4 matrix that maps node coordinates into base coordinates, following saved pairwise alignments."""
+        if node==base:
+            return [[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]]
+        try:
+            import numpy as np
+            eye=np.eye(4, dtype=float)
+            edges={}
+            for moving, r in rec.items():
+                if moving.startswith("_") or not isinstance(r, dict) or not r.get("base") or not r.get("matrix"):
+                    continue
+                src=moving; dst=r.get("base"); mat=np.array(r.get("matrix"), dtype=float).reshape(4,4)
+                edges.setdefault(src, []).append((dst, mat))
+                try:
+                    edges.setdefault(dst, []).append((src, np.linalg.inv(mat)))
+                except Exception:
+                    pass
+            seen={node}; q=[(node, eye)]
+            while q:
+                cur, T=q.pop(0)
+                for nxt, M in edges.get(cur, []):
+                    if nxt in seen: continue
+                    TN=M @ T
+                    if nxt==base: return TN.tolist()
+                    seen.add(nxt); q.append((nxt, TN))
+        except Exception as e:
+            log_error("align-resolve", e)
+        return None
     def _combine(self, name, base, aligned, status=None):
         """Fuse the base scan's frames and every aligned scan's frames (moved by its saved transform) into <name>_combined_pcfused.ply."""
         if getattr(self, "_fusing", False): self.set_banner("A build is already running.", WARN); return
@@ -6458,7 +7216,10 @@ class App(LiveMixin, ctk.CTk):
                 self._alert("Raw data needed", "%s has no raw scan data on this PC. Share the project over WiFi as Full project, then build again." % self._scan_label(name, node)); return
             tj=""
             if node!=base:
-                tj=os.path.join(local, "align_%s.json" % node); json.dump({"base": base, "matrix": rec[node]["matrix"]}, open(tj, "w"))
+                mat=self._align_matrix_to_base(rec, node, base)
+                if mat is None:
+                    self._alert("Alignment needed", "%s is not connected to %s yet. Line it up directly or through another scan first." % (self._scan_label(name, node), self._scan_label(name, base))); return
+                tj=os.path.join(local, "align_%s.json" % node); json.dump({"base": base, "matrix": mat}, open(tj, "w"))
             pj=""
             plane=self._base_planes(name).get(node)
             if plane and not plane.get("skip"):
@@ -6725,7 +7486,7 @@ class App(LiveMixin, ctk.CTk):
         except Exception: pass
         top.geometry(self._centred(520, 500)); self._imp_top=top   # room for the graph, the stat tiles and the button row
         card=ctk.CTkFrame(top, fg_color=CARD, corner_radius=16); card.pack(fill="both", expand=True, padx=16, pady=16)
-        self.imp_title=ctk.CTkLabel(card, text="Importing…", text_color=TX, font=ctk.CTkFont(size=15, weight="bold")); self.imp_title.pack(pady=(16,2))
+        self.imp_title=ctk.CTkLabel(card, text="Importing…", text_color=TX, font=ctk.CTkFont(size=14, weight="bold")); self.imp_title.pack(pady=(16,2))
         self.imp_sub=ctk.CTkLabel(card, text="Copying off the scanner…", text_color=MUT, font=ctk.CTkFont(size=11)); self.imp_sub.pack()
         self.imp_graph=tk.Canvas(card, height=110, bg="#0d0f14", highlightthickness=0); self.imp_graph.pack(fill="x", padx=24, pady=(14,6))
         stats=ctk.CTkFrame(card, fg_color="transparent"); stats.pack(fill="x", padx=24)
@@ -6918,7 +7679,7 @@ class App(LiveMixin, ctk.CTk):
                 def sz(pat):
                     return sum(os.path.getsize(f) for f in glob.glob(os.path.join(nd, pat)) if os.path.isfile(f))
                 raw=sum(os.path.getsize(f) for f in glob.glob(os.path.join(nd, "cache", "*")))
-                rows.append({"project":name, "node":os.path.basename(nd), "mesh":sz("fuse_mesh.ply"), "cloud":sz("fuse.ply"),
+                rows.append({"project":name, "node":os.path.basename(nd), "mesh":sum(sz(fn) for fn in SCANNER_MESH_FILES), "cloud":sz("fuse.ply"),
                              "raw":raw, "frames":len(glob.glob(os.path.join(nd, "cache", "*.dph"))), "thumb":os.path.join(nd, "preview.png")})
         t=self._top("Received over WiFi", 660, min(780, 300+66*max(1,len(rows))), key="wifipick")
         if t is None: return
@@ -7062,7 +7823,7 @@ class App(LiveMixin, ctk.CTk):
                     try: self.imgs["confirm_"+node]=cimg(pv, 72); th.configure(image=self.imgs["confirm_"+node])
                     except Exception: pass
                     root=os.path.join(stage or dest, n, "data", node)
-                    mesh=next((c for c in [os.path.join(root, "fuse_mesh.ply")] if os.path.exists(c)), None)
+                    mesh=_scanner_mesh_in(root)
                     th.bind("<Button-1>", lambda e, pv=pv, mesh=mesh, i=i, node=node, root=root, n=n: self._peek("scan %02d · %s" % (i+1, node), pv, mesh,
                             frames_dir=os.path.join(root, "cache"), calib=os.path.join(root, "param", "Pl.bin"), key="%s__%s" % (n, node)))
                     self._tip(th, "Click for a bigger look")
@@ -7568,7 +8329,7 @@ class App(LiveMixin, ctk.CTk):
         m=[p for p in glob.glob(os.path.join(local, name+"_*.ply")) if not p.endswith("_cloud.ply") and not _is_tmp(p)]
         c=glob.glob(os.path.join(local, name+"_*_cloud.ply"))
         if not m:
-            m=glob.glob(os.path.join(local, "data","*","fuse_mesh.ply")) or glob.glob(os.path.join(PROJECTS, name, "data","*","fuse_mesh.ply"))
+            m=_scanner_mesh_glob(local) or _scanner_mesh_glob(os.path.join(PROJECTS, name))
             c=glob.glob(os.path.join(local, "data","*","fuse.ply")) or glob.glob(os.path.join(PROJECTS, name, "data","*","fuse.ply"))
         return m, c
     def _estimate_sizes(self, sel, dest):
@@ -7613,7 +8374,7 @@ class App(LiveMixin, ctk.CTk):
         """Mesh .ply files for an imported project (flat layout, else nested mirror)."""
         flat=[p for p in glob.glob(os.path.join(base, name+"_*.ply")) if not p.endswith("_cloud.ply") and not _is_tmp(p)]
         if flat: return sorted(flat)
-        return sorted(glob.glob(os.path.join(base, "data", "*", "fuse_mesh.ply")))
+        return sorted(_scanner_mesh_glob(base))
     def _scope_meshes(self, base, name, scope):
         """Mesh plys to export, honoring the version scope: 'current' = only the version picked per scan
         (what the UI shows), 'all' = every version file on disk. Returns only what resolves; nothing is guessed."""
@@ -7672,7 +8433,7 @@ class App(LiveMixin, ctk.CTk):
                     for f in glob.glob(os.path.join(base,"*")):
                         if f.lower().endswith((".ply",".stl",".obj",".glb")) and not _is_tmp(f): files.append((f, os.path.basename(f)))
                     for f in glob.glob(os.path.join(base,"data","*","*")):
-                        # nested scans all have the same file names (fuse_mesh.ply): make each entry unique
+                        # nested scans can share scanner mesh file names: make each entry unique
                         if f.lower().endswith((".ply",".stl",".obj",".glb")) and not _is_tmp(f):
                             node=os.path.basename(os.path.dirname(f)); stem,ext=os.path.splitext(os.path.basename(f))
                             files.append((f, "%s_%s_%s%s" % (name, node, stem, ext)))

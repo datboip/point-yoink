@@ -226,7 +226,7 @@ def view_to_world(p, tf):
     p[..., 2] += tf["zshift"]
     return (p @ tf["R"]) * tf["scale"] + tf["mean"]
 
-def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0, zoom=0.95, pan=(0.0, 0.0), grid=True, gizmo=True):
+def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0, zoom=0.95, pan=(0.0, 0.0), grid=True, gizmo=False):
     """Draw the mesh with flat shading (painter's algorithm) on a grid floor. Returns a PIL image.
     zoom scales the view, pan shifts it in screen fractions; both are what the live viewer drives."""
     from PIL import Image, ImageDraw
@@ -253,14 +253,14 @@ def render(v, f, size=(900, 600), wire=False, azim=-35.0, elev=30.0, zoom=0.95, 
         t = [tuple(x) for x in pts[i]]
         if wire: dr.polygon(t, fill=WIRE_FILL, outline=WIRE)
         else: dr.polygon(t, fill=tuple(cols[i]))
-    if gizmo:   # X red, Y green, Z blue: the mesh's own axes, turning with the view, bottom-left
-        L = min(W, H) * 0.075; ox, oy = 18 + L, H - 18 - L
-        axes = (np.array([[1, 0, 0]]), np.array([[0, 1, 0]]), np.array([[0, 0, 1]]))
-        for a3, col, lab in zip(axes, ((255, 93, 108), (62, 207, 142), (90, 176, 255)), ("X", "Y", "Z")):
-            q = (a3 @ Rz.T) @ Rx.T; dx, dy = float(q[0, 0]), float(q[0, 2])
-            ex, ey = ox + dx * L, oy - dy * L
-            dr.line([(ox, oy), (ex, ey)], fill=col, width=2)
-            dr.text((ex + (4 if dx >= 0 else -10), ey - 6), lab, fill=col)
+    if gizmo:
+        # Use the same orientation widget as the live 3D views. The old static XYZ
+        # triad looked like a second, stale control in preloaded PNG previews.
+        try:
+            import viewnav
+            img = viewnav.draw_pil(img, viewnav.rot_from_az_el(azim, elev), show_home=False)
+        except Exception:
+            pass
     return img
 
 def preview_path(cache_dir, key, wire=False):
@@ -272,7 +272,12 @@ def ensure_preview(mesh_path, cache_dir, key, wire=False, size=(900, 600), thumb
     try:
         os.makedirs(cache_dir, exist_ok=True)
         out = preview_path(cache_dir, key, wire)
-        if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(mesh_path): return out
+        code_mtime = os.path.getmtime(__file__)
+        try:
+            code_mtime = max(code_mtime, os.path.getmtime(os.path.join(os.path.dirname(__file__), "viewnav.py")))
+        except Exception:
+            pass
+        if os.path.exists(out) and os.path.getmtime(out) >= max(os.path.getmtime(mesh_path), code_mtime): return out
         v, f = load_oriented(mesh_path)
         img = render(v, f, size=size, wire=wire)
         _tmp = out + ".tmp.%d" % os.getpid(); img.save(_tmp, format="PNG"); os.replace(_tmp, out)   # format explicit: _tmp's extension isn't .png (atomic write, see __main__)

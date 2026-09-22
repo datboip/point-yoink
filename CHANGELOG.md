@@ -3,6 +3,21 @@
 All notable changes to PointYoink. 0.7.0 was the first tagged release; the
 0.9.x line was development builds on the way to 1.0.0.
 
+## 1.1.0 (unreleased, on the codex-next branch)
+
+- Editing now uses full-resolution native geometry with revision-based dirty state, bounded undo and redo, validated transactional saves, and support for combined models.
+- Mesh editing adds topology selection actions to grow, shrink or select a connected piece from the current selection.
+- Full-project imports now recognise scanner meshes saved as `fuse_mesh_rgb.ply` or `fuse_mesh_tex.ply`, so scanner-built models no longer appear raw-only.
+- Combine can line up scan pairs through any overlapping scan and resolve the alignment chain into one shared base before building the combined model.
+- Added measured alignment foundations: landmark validation now rejects nonfinite, duplicate/coincident and collinear manual pairs before solving.
+- Alignment results now record millimetre units, `T_base_moving` frame convention and reason codes for low overlap, high residual or inconsistent landmarks.
+- Added reusable registration metrics for bidirectional coverage, inlier residuals, unmatched surface fraction and point-to-plane weak-direction checks.
+- Added a fixture profile/transform contract for the saved-base workflow, including content fingerprints and tested scan-to-fixture / scan-to-scan composition.
+- Combine manual alignment now has an explicit right-palette point-pair list with next-click guidance, per-pair delete, redo base point, redo moving point, and the clearer `Align via points` action.
+- Auto alignment now returns a small set of real final correspondences and displays them as editable point markers for review before saving.
+- Checkpoint build after 3D preview navigation cleanup: live views use the new orientation cube/home control, while static/preloaded PNG previews are model-only.
+- Reduced project-switch preview churn by avoiding recursive project reselection from background warmers.
+
 ## 1.0.1 (2026-09-22)
 
 - WiFi: the dialog now says up front when a host firewall (ufw or firewalld) is on and shows the exact command to allow the port; the package installs a ufw profile so `sudo ufw allow point-yoink` opens just port 9706.

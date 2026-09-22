@@ -6,6 +6,7 @@
 import os, threading, time, tkinter as tk
 import numpy as np
 import shade
+import viewnav
 
 LO_FACES, HI_FACES = 12000, 40000
 
@@ -15,7 +16,8 @@ class MeshView(tk.Label):
         self.lo = self.hi = None; self.path = None; self.wire = False; self._photo = None
         self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 0.95, [0.0, 0.0]
         self._drag = None; self._hi_job = None; self._busy = False; self._gen = 0
-        self.bind("<ButtonPress-1>", self._press); self.bind("<B1-Motion>", self._rotate)
+        self._view_anim = None; self._nav_hover = None
+        self.bind("<ButtonPress-1>", self._press); self.bind("<B1-Motion>", self._rotate); self.bind("<Motion>", self._motion)
         self.bind("<ButtonPress-3>", self._press); self.bind("<B3-Motion>", self._pan)
         self.bind("<ButtonPress-2>", self._press); self.bind("<B2-Motion>", self._pan)
         self.bind("<ButtonRelease-1>", self._release); self.bind("<ButtonRelease-3>", self._release); self.bind("<ButtonRelease-2>", self._release)
@@ -56,6 +58,7 @@ class MeshView(tk.Label):
         w, h = max(64, self.winfo_width()), max(64, self.winfo_height())
         from PIL import ImageTk
         img = shade.render(data[0], data[1], size=(w, h), wire=self.wire, azim=self.azim, elev=self.elev, zoom=self.zoom, pan=tuple(self.pan))
+        img = viewnav.draw_pil(img, viewnav.rot_from_az_el(self.azim, self.elev), getattr(self, "_nav_hover", None))
         self._photo = ImageTk.PhotoImage(img); self.configure(image=self._photo)
     def _schedule_hi(self, ms=150):
         if self._hi_job: self.after_cancel(self._hi_job)
@@ -65,19 +68,69 @@ class MeshView(tk.Label):
     def reset(self, draw=True):
         self.azim, self.elev, self.zoom, self.pan = -35.0, 30.0, 0.95, [0.0, 0.0]
         if draw: self.draw(hi=True)
+    def _animate_view_to(self, azim, elev, steps=8, ms=18):
+        try:
+            target_az, target_el = float(azim), float(elev)
+            start_az, start_el = float(self.azim), float(self.elev)
+            start_pan = list(self.pan)
+            da = ((target_az - start_az + 180.0) % 360.0) - 180.0
+            if self._view_anim:
+                try: self.after_cancel(self._view_anim)
+                except Exception: pass
+                self._view_anim = None
+            def step(i=1):
+                t = min(1.0, i / float(steps)); k = 1.0 - (1.0 - t) * (1.0 - t)
+                self.azim = start_az + da * k; self.elev = start_el + (target_el - start_el) * k
+                self.pan = [start_pan[0] * (1.0 - k), start_pan[1] * (1.0 - k)]
+                self.draw(hi=False)
+                if i < steps and self._alive(): self._view_anim = self.after(ms, lambda: step(i + 1))
+                else: self._view_anim = None; self.draw(hi=True)
+            step()
+        except Exception:
+            self.azim = float(azim); self.elev = float(elev); self.pan = [0.0, 0.0]; self.draw(hi=True)
     def set_view(self, azim, elev, draw=True):
-        """Snap to a standard view (Top/Front/Right/…), matching GLView."""
-        self.azim = float(azim); self.elev = float(elev); self.pan = [0.0, 0.0]
-        if draw: self.draw(hi=True)
+        """Move to a standard view (Top/Front/Right/…), matching GLView."""
+        if draw: self._animate_view_to(azim, elev)
+        else:
+            self.azim = float(azim); self.elev = float(elev); self.pan = [0.0, 0.0]
     def snapshot(self, path, size=(900, 600)):
         """Full-quality PNG of the current view (for thumbnails/sharing)."""
         if self.hi is None: return None
         shade.render(self.hi[0], self.hi[1], size=size, wire=self.wire, azim=self.azim, elev=self.elev, zoom=self.zoom, pan=tuple(self.pan)).save(path); return path
+    def _nav_hit(self, x, y):
+        try: return viewnav.hit(viewnav.rot_from_az_el(self.azim, self.elev), max(1, self.winfo_width()), max(1, self.winfo_height()), x, y)
+        except Exception: return None
     # ---- mouse ----
-    def _press(self, e): self._drag = (e.x, e.y)
-    def _release(self, e): self._drag = None; self._schedule_hi(60)
+    def _motion(self, e):
+        nav = self._nav_hit(e.x, e.y)
+        hv = nav.get("key") if nav and nav.get("kind") == "face" else None
+        if hv != getattr(self, "_nav_hover", None):
+            self._nav_hover = hv; self.draw(hi=False)
+    def _press(self, e):
+        nav = self._nav_hit(e.x, e.y) if getattr(e, "num", 1) == 1 else None
+        self._nav_press = None
+        if nav is not None:
+            if nav.get("kind") == "home": self.reset(); self._drag = None; return
+            if nav.get("view") is not None:
+                self._nav_press = (nav, e.x, e.y)
+                self._drag = (e.x, e.y)
+                return
+        self._drag = (e.x, e.y)
+    def _release(self, e):
+        navp = getattr(self, "_nav_press", None)
+        self._nav_press = None
+        self._drag = None
+        if navp is not None:
+            nav = viewnav.finish_click(navp, e.x, e.y)
+            if nav is not None:
+                self.set_view(*nav["view"])
+            self._schedule_hi(60); return
+        self._schedule_hi(60)
     def _rotate(self, e):
         if not self._drag: return
+        if getattr(self, "_nav_press", None) is not None:
+            if not viewnav.drag_exceeded(self._nav_press, e.x, e.y): return
+            self._nav_press = None
         dx, dy = e.x - self._drag[0], e.y - self._drag[1]; self._drag = (e.x, e.y)
         self.azim += dx * 0.5; self.elev = max(-89, min(89, self.elev + dy * 0.5)); self._live()   # drag right = spin right
     def _pan(self, e):
@@ -87,7 +140,7 @@ class MeshView(tk.Label):
         self.pan[0] += dx / (w * 0.42); self.pan[1] -= dy / (h * 0.42); self._live()
     def _wheel(self, e, direction=None):
         d = direction if direction is not None else (1 if e.delta > 0 else -1)
-        self.zoom = max(0.2, min(8.0, self.zoom * (1.12 if d > 0 else 1 / 1.12))); self._live()
+        self.zoom = max(0.05, min(40.0, self.zoom * (1.12 if d > 0 else 1 / 1.12))); self._live()
     def _live(self):
         if self._busy: return
         self._busy = True

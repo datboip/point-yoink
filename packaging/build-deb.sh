@@ -32,7 +32,7 @@ find "$V" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || tr
 rm -rf "$V/OpenGL/DLLS"   # PyOpenGL's bundled Windows DLLs (freeglut, GLE): useless on Linux, and their notices would otherwise need shipping
 
 # --- app files (the module files keep their names, they just live under point-yoink/) ---
-for f in pointyoink.py viewer.py process.py cutplane.py fuse.py wifi.py shade.py meshview.py glview.py align.py register.py icon.png; do
+for f in pointyoink.py viewer.py process.py cutplane.py fuse.py wifi.py shade.py meshview.py glview.py align.py register.py edit_session.py edit_commit.py mesh_ops.py icon.png; do
   cp "$ROOT/$f" "$PKG/$LIB/"
 done
 # whole assets tree: device help screenshots AND the icon set (assets/icons/png/<state>/<size>/*.png + manifest)
