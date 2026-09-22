@@ -988,15 +988,22 @@ class GLView(OpenGLFrame):
             # Draw the entire navigation cube as a small raster overlay. This keeps labels clipped
             # inside their faces and avoids ugly GL stroke text when the cube rotates.
             from PIL import Image
-            img = viewnav.draw_overlay_image(w, h, self.rot[:3, :3], getattr(self, "_nav_hover", None))
-            data = img.transpose(Image.FLIP_TOP_BOTTOM).tobytes("raw", "RGBA")
+            # rasterise only the strip the cube and home button occupy (left edge, full height is wasted work at
+            # 1688x1044), cached across frames that did not change rotation or hover, then blit that strip
+            lo = viewnav.layout(w, h); x0, y0, size = lo["cube"]; sw = min(w, x0 + size + 40)
+            key = (w, h, tuple(np.round(self.rot[:3, :3].ravel(), 3)), getattr(self, "_nav_hover", None))
+            cache = getattr(self, "_nav_cache", None)
+            if cache is None or cache[0] != key:
+                img = viewnav.overlay_cached(w, h, self.rot[:3, :3], getattr(self, "_nav_hover", None)).crop((0, 0, sw, h))
+                data = img.transpose(Image.FLIP_TOP_BOTTOM).tobytes("raw", "RGBA"); self._nav_cache = (key, sw, data)
+            _, sw, data = self._nav_cache
             GL.glViewport(0, 0, w, h)
             GL.glMatrixMode(GL.GL_PROJECTION); GL.glLoadIdentity(); GL.glOrtho(0, w, 0, h, -1, 1)
             GL.glMatrixMode(GL.GL_MODELVIEW); GL.glLoadIdentity()
             GL.glDisable(GL.GL_LIGHTING); GL.glDisable(GL.GL_DEPTH_TEST)
             GL.glEnable(GL.GL_BLEND); GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
             GL.glRasterPos2f(0, 0)
-            GL.glDrawPixels(w, h, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, data)
+            GL.glDrawPixels(sw, h, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, data)
             GL.glDisable(GL.GL_BLEND); GL.glEnable(GL.GL_DEPTH_TEST)
         except Exception:
             pass

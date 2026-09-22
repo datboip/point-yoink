@@ -210,13 +210,23 @@ def _draw_axis_arrow(d, a, b, color, label, font, width=4, alpha=255, label_text
         tp = b + u * 7.0
         d.text((tp[0], tp[1]), label, font=font, fill=col, anchor="mm")
 
+_FONTS = {}
+def _font(px):
+    """One ImageFont per size for the life of the process: loading from disk per frame is what made drags stutter."""
+    f = _FONTS.get(px)
+    if f is None:
+        from PIL import ImageFont
+        try: f = ImageFont.truetype("DejaVuSans-Bold.ttf", px)
+        except Exception: f = ImageFont.load_default()
+        _FONTS[px] = f
+    return f
+
 def _face_text_layer(size, text, poly, fill, quad=None):
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
     W, H = size
     pts = np.asarray(poly, dtype=float)
     label = text.title()
-    try: font = ImageFont.truetype("DejaVuSans-Bold.ttf", 62)
-    except Exception: font = ImageFont.load_default()
+    font = _font(62)
     # Fixed texture tile. It is warped onto a fixed cube-local quad from regions().
     src_w, src_h = 260, 92
     src = Image.new("RGBA", (src_w, src_h), (0, 0, 0, 0))
@@ -225,17 +235,20 @@ def _face_text_layer(size, text, poly, fill, quad=None):
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     # If a longer label needs help, fit it inside the texture once. This does not depend on view angle.
     if tw > src_w - 12:
-        try: font = ImageFont.truetype("DejaVuSans-Bold.ttf", 50)
-        except Exception: pass
+        font = _font(50)
         bbox = sd.textbbox((0, 0), label, font=font); tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     sd.text(((src_w - tw) * 0.5 - bbox[0], (src_h - th) * 0.5 - bbox[1]), label, font=font, fill=fill)
     dst = np.asarray(quad if quad is not None else pts, dtype=float)
-    coeffs = _quad_affine_coeffs([(0,0), (src_w,0), (src_w,src_h)], dst[:3])
-    layer = src.transform((W, H), Image.Transform.AFFINE, coeffs, resample=Image.Resampling.BICUBIC)
-    mask = Image.new("L", size, 0)
-    md = ImageDraw.Draw(mask)
-    md.polygon([tuple(p) for p in pts], fill=255)
-    layer.putalpha(Image.composite(layer.getchannel("A"), Image.new("L", size, 0), mask))
+    # warp into a box just around the face, not the whole window: the affine is the expensive part
+    x0 = int(max(0, np.floor(min(dst[:, 0].min(), pts[:, 0].min())) - 2)); y0 = int(max(0, np.floor(min(dst[:, 1].min(), pts[:, 1].min())) - 2))
+    x1 = int(min(W, np.ceil(max(dst[:, 0].max(), pts[:, 0].max())) + 2)); y1 = int(min(H, np.ceil(max(dst[:, 1].max(), pts[:, 1].max())) + 2))
+    bw, bh = max(1, x1 - x0), max(1, y1 - y0)
+    coeffs = _quad_affine_coeffs([(0,0), (src_w,0), (src_w,src_h)], dst[:3] - [x0, y0])
+    small = src.transform((bw, bh), Image.Transform.AFFINE, coeffs, resample=Image.Resampling.BICUBIC)
+    mask = Image.new("L", (bw, bh), 0)
+    ImageDraw.Draw(mask).polygon([(float(px) - x0, float(py) - y0) for px, py in pts], fill=255)
+    small.putalpha(Image.composite(small.getchannel("A"), Image.new("L", (bw, bh), 0), mask))
+    layer = Image.new("RGBA", size, (0, 0, 0, 0)); layer.paste(small, (x0, y0))
     return layer
 
 def _draw_home_svg_icon(d, cx, cy, scale, color):
@@ -245,15 +258,26 @@ def _draw_home_svg_icon(d, cx, cy, scale, color):
     d.line([pt(2.5, 10.5), pt(12, 2.5), pt(21.5, 10.5)], fill=color, width=max(1, int(round(1.65 * scale))), joint="curve")
     d.line([pt(5, 8.5), pt(5, 21), pt(10, 21), pt(10, 14), pt(14, 14), pt(14, 21), pt(19, 21), pt(19, 8.5)], fill=color, width=max(1, int(round(1.65 * scale))), joint="curve")
 
+_OVERLAY_CACHE = {}
+def overlay_cached(width, height, rot, hover=None, show_home=True):
+    """draw_overlay_image() memoised on what it depends on (rotation to 3 decimals, hover, size): a redraw
+    that did not turn the model reuses the last image instead of rasterising the cube again."""
+    R = np.asarray(rot, dtype=float)
+    key = (int(width), int(height), tuple(np.round(R.ravel(), 3)), hover, bool(show_home))
+    img = _OVERLAY_CACHE.get(key)
+    if img is None:
+        if len(_OVERLAY_CACHE) > 8: _OVERLAY_CACHE.clear()
+        img = draw_overlay_image(width, height, R, hover, show_home); _OVERLAY_CACHE[key] = img
+    return img
+
 def draw_overlay_image(width, height, rot, hover=None, show_home=True):
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
     width, height = int(width), int(height)
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     d = ImageDraw.Draw(img, "RGBA")
     lo, regs = regions(rot, width, height)
     _lo_axes, axes = axis_segments(rot, width, height)
-    try: axis_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 12)
-    except Exception: axis_font = None
+    axis_font = _font(12)
     for r in regs:
         c = HOVER if hover == r["key"] else COLORS.get(r["key"], COLORS["front"])
         d.polygon(r["poly"], fill=_rgb(c)+(172,), outline=_rgb(EDGE)+(255,))
