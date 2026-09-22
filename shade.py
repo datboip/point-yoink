@@ -300,5 +300,7 @@ if __name__ == "__main__":
     W, H = (int(x) for x in a.size.split("x"))
     t0 = time.time(); v, f = load_oriented(a.mesh); t1 = time.time()
     _tmp = a.out + ".tmp.%d" % os.getpid()          # atomic write: two renderers (foreground + warmer) can
-    render(v, f, size=(W, H), wire=a.wire).save(_tmp, format="PNG"); os.replace(_tmp, a.out)   # format explicit: _tmp's extension isn't .png; target the same PNG; never leave a half-written one
+    from PIL import PngImagePlugin
+    meta = PngImagePlugin.PngInfo(); meta.add_text("pointyoink-source", os.path.abspath(a.mesh))   # which file this was drawn from
+    render(v, f, size=(W, H), wire=a.wire).save(_tmp, format="PNG", pnginfo=meta); os.replace(_tmp, a.out)   # format explicit: _tmp's extension isn't .png; target the same PNG; never leave a half-written one
     print("%s: %d faces, load+decimate %.1fs, draw %.1fs" % (a.out, len(f), t1 - t0, time.time() - t1))

@@ -1121,9 +1121,19 @@ def _preview_png_fresh(path, mesh=None, min_size=1024):
         if not (os.path.exists(path) and os.path.getsize(path)>min_size): return False
         cutoff=_preview_code_mtime()
         if mesh and os.path.exists(mesh): cutoff=max(cutoff, os.path.getmtime(mesh))
-        return os.path.getmtime(path) >= cutoff
+        if os.path.getmtime(path) < cutoff: return False
+        if mesh:                                                          # drawn from THIS file? (shade.py stamps the source into the PNG)
+            src=_png_source(path)
+            if src and os.path.abspath(src)!=os.path.abspath(mesh): return False
+        return True
     except Exception:
         return False
+def _png_source(path):
+    """The mesh path a preview PNG was rendered from, if the renderer stamped it (shade.py does)."""
+    try:
+        from PIL import Image
+        with Image.open(path) as im: return (im.info or {}).get("pointyoink-source")
+    except Exception: return None
 
 WORDMARK="Ubuntu"   # clean lowercase 'i' (the default bold font renders it like 'I')
 
@@ -4305,9 +4315,9 @@ class App(LiveMixin, ctk.CTk):
                 if not self._warm_q: self._warm_running=False; return
                 name, node = self._warm_q.pop(0)
             try:
-                mesh=self._mesh_for_node(name, node)
+                cur=self._proc_current(name, node)                           # ONE lookup for path and version: two would race a version change
+                mesh=cur[2] if cur else None; verkey=cur[0] if cur else None
                 if not mesh or mesh.startswith(PROJECTS): continue           # no fused mesh, or it's on the scanner mount
-                verkey=(self._proc_current(name, node) or (None,))[0]
                 out=os.path.join(THUMBS, "%s__%s__%s__shaded.png" % (name, node, verkey or "v"))
                 if _preview_png_fresh(out, mesh):
                     continue                                                 # already cached and fresh
