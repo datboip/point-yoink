@@ -2436,7 +2436,7 @@ class App(LiveMixin, ctk.CTk):
         info=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); info.pack(fill="x", padx=24, pady=(14,8))
         info.grid_columnconfigure(1, weight=1)
         rows=[("Works with", "Revopoint MIRACO  ·  MIRACO Pro\nany Revopoint scanner with USB “File Transfer” (MTP)"),
-              ("Needs", "Linux  ·  jmtpfs  ·  rsync\nOpen3D for Build/Combine; allow TCP+UDP 9706 for Wi-Fi"),
+              ("Needs", "Linux  ·  jmtpfs  ·  rsync\nOpen3D for Build/Combine; allow TCP+UDP 9706 for WiFi"),
               ("Output", "standard .ply meshes & point clouds\nopen in Blender, MeshLab, or CloudCompare")]
         for i,(k,v) in enumerate(rows):
             ctk.CTkLabel(info, text=k, text_color=AC, font=ctk.CTkFont(size=11,weight="bold"),
