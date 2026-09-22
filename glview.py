@@ -921,6 +921,8 @@ class GLView(OpenGLFrame):
             GL.glDisableClientState(GL.GL_VERTEX_ARRAY); GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
             GL.glPointSize(1.0); GL.glEnable(GL.GL_LIGHTING)
             if self.edit_tool and self.visible_only and not self._depth_valid: self._capture_depth()   # point-cloud depth (colour doesn't affect it)
+        if self.layers:                        # pull overlays a hair toward the eye: where two scans coincide (a good
+            GL.glEnable(GL.GL_POLYGON_OFFSET_FILL); GL.glPolygonOffset(-1.0, -1.0)   # fit) the depth test would otherwise flicker
         for L in self.layers:                  # tinted overlays (another scan, for alignment checks)
             GL.glEnable(GL.GL_LIGHTING); GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
             GL.glMaterialfv(GL.GL_FRONT_AND_BACK, GL.GL_AMBIENT_AND_DIFFUSE, L["colour"] + (1.0,))
@@ -930,6 +932,7 @@ class GLView(OpenGLFrame):
             GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, L["vbo"][2]); GL.glDrawElements(GL.GL_TRIANGLES, L["n"], GL.GL_UNSIGNED_INT, None)
             GL.glDisableClientState(GL.GL_VERTEX_ARRAY); GL.glDisableClientState(GL.GL_NORMAL_ARRAY)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0); GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
+        if self.layers: GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
         GL.glMaterialfv(GL.GL_FRONT_AND_BACK, GL.GL_AMBIENT_AND_DIFFUSE, (0.74, 0.76, 0.80, 1.0))
         if self.plane is not None:             # the cut plane: a translucent amber square with its normal
             c, nrm, hs = self.plane; nrm = np.asarray(nrm, float); nrm /= (np.linalg.norm(nrm) + 1e-9)

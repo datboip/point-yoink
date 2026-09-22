@@ -105,6 +105,20 @@ def _firewall_blocks_port(port):
             if str(port) not in q.stdout: return ("firewalld", "sudo firewall-cmd --add-port=%d/tcp --add-port=%d/udp --permanent && sudo firewall-cmd --reload" % (port, port))
     except Exception: pass
     return None
+def _copy_stale(src, copy):
+    """True when the local copy of a device file is missing or does not match the source's size and mtime."""
+    try:
+        a=os.stat(src); b=os.stat(copy)
+        return a.st_size!=b.st_size or int(a.st_mtime)!=int(b.st_mtime)
+    except Exception: return True
+def _copy_keep_time(src, copy):
+    """Copy a device file to the local cache and give the copy the source's mtime, so every cache keyed on the
+    copy's stat (the mesh cache, the previews) changes when the file on the scanner changes."""
+    tmp=copy+".tmp.%d" % os.getpid()
+    shutil.copyfile(src, tmp)
+    try: st=os.stat(src); os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
+    except Exception: pass
+    os.replace(tmp, copy)
 def _icon_blank(size=16):
     """A transparent square the size of an icon, so rows without one still line up with rows that have one."""
     key=("", "blank", size, None)
@@ -3219,8 +3233,8 @@ class App(LiveMixin, ctk.CTk):
                 if mesh.startswith(PROJECTS):                  # device mount is slow: reuse the local view-cache copy if present
                     cached=os.path.join(THUMBS, "view", ("%s__%s__%s"%(name,node,verkey or "v"))+"_fuse_mesh.ply")   # match the name _shade_thread writes (key = name__node__verkey), or this never hit
                     if os.path.exists(cached):
-                        if os.path.getmtime(cached) < os.path.getmtime(mesh):   # device mesh edited since we copied it: refresh the local copy so the thumb isn't stale
-                            try: shutil.copyfile(mesh, cached)
+                        if _copy_stale(mesh, cached):   # device mesh edited since we copied it: refresh the local copy so the thumb isn't stale
+                            try: _copy_keep_time(mesh, cached)
                             except Exception: pass
                         src=cached
                 # freshness is judged against the mesh itself (the source of truth), not the local copy whose
@@ -4187,8 +4201,8 @@ class App(LiveMixin, ctk.CTk):
                 if mesh.startswith(PROJECTS):   # on the slow device mount: copy to the local cache first (shared with View in 3D)
                     cache=os.path.join(THUMBS, "view"); os.makedirs(cache, exist_ok=True)
                     path=os.path.join(cache, key+"_fuse_mesh.ply")
-                    if not os.path.exists(path) or os.path.getsize(path)!=os.path.getsize(mesh):
-                        self.q.put(("shade_msg", key, "Copying the 3D model off the scanner…")); shutil.copyfile(mesh, path)
+                    if _copy_stale(mesh, path):
+                        self.q.put(("shade_msg", key, "Copying the 3D model off the scanner…")); _copy_keep_time(mesh, path)
                 stats=_ply_counts(path)
                 self.q.put(("mesh_stats", key, stats))
                 env=dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
@@ -6542,6 +6556,7 @@ class App(LiveMixin, ctk.CTk):
         return w
     PAIR_COLOURS=((1.0,0.36,0.42),(0.24,0.81,0.56),(0.35,0.69,1.0),(1.0,0.75,0.3),(0.85,0.5,1.0),(0.4,0.9,0.9),(1.0,0.55,0.25),(0.7,0.9,0.3))
     def _align_dialog(self, name):
+        import numpy as np
         if not name: return
         nodes=[n for n in self._proc_nodes(name) if n!="combined" and self._proc_current(name, n)]
         if len(nodes)<2:
@@ -6704,6 +6719,18 @@ class App(LiveMixin, ctk.CTk):
         for i,(label, axis, sign) in enumerate((("X -",0,-1),("X +",0,1),("Y -",1,-1),("Y +",1,1),("Z -",2,-1),("Z +",2,1))):
             b=ctk.CTkButton(grid, text=label, width=58, height=25, corner_radius=7, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda a=axis,s=sign: nudge(a,s))
             b.grid(row=i//2, column=i%2, padx=2, pady=2, sticky="ew"); self._tip(b, axis_tips[axis])
+        # rotation, about the moving scan's own centre so a turn does not also swing it across the base
+        rrow=ctk.CTkFrame(side, fg_color="transparent"); rrow.pack(fill="x", padx=8, pady=(4,3))
+        rot_preset=ctk.StringVar(value="0.5°")
+        _rot_vals={"0.1°":0.1,"0.25°":0.25,"0.5°":0.5,"1°":1.0,"2°":2.0,"5°":5.0}
+        ctk.CTkLabel(rrow, text="Turn", text_color=DIM, font=ctk.CTkFont(size=10), width=72, anchor="w").pack(side="left")
+        ropt=ctk.CTkOptionMenu(rrow, values=list(_rot_vals.keys()), variable=rot_preset, width=104, height=24, **smenu); ropt.pack(side="right")
+        self._tip(ropt, "How far each turn click rotates the moving scan, about its own centre.")
+        rgrid=ctk.CTkFrame(side, fg_color="transparent"); rgrid.pack(fill="x", padx=8, pady=(2,8))
+        rot_tips={0:"Pitch: tip the moving scan forward or back (about X).",1:"Roll: lean it left or right (about Y).",2:"Yaw: spin it about the vertical (about Z)."}
+        for i,(label, axis, sign) in enumerate((("Pitch -",0,-1),("Pitch +",0,1),("Roll -",1,-1),("Roll +",1,1),("Yaw -",2,-1),("Yaw +",2,1))):
+            b=ctk.CTkButton(rgrid, text=label, width=58, height=25, corner_radius=7, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda a=axis, sg=sign: turn(a, sg))
+            b.grid(row=i//2, column=i%2, padx=2, pady=2, sticky="ew"); self._tip(b, rot_tips[axis])
         ctk.CTkLabel(side, text="Base is locked. Nudge moves the moving scan, the orange one. Then Save this match.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=190).pack(fill="x", padx=10, pady=(0,8))
         side=_side_parent
         def manual_validation_message():
@@ -6835,6 +6862,36 @@ class App(LiveMixin, ctk.CTk):
                 status.configure(text="Nudged %s by %.2f mm. Save match when it looks right." % (("XYZ"[axis]), step), text_color=TX)
             except Exception as e:
                 log_error("align-nudge", e); status.configure(text="Could not nudge this match (see Help > Log).", text_color=WARN)
+        def turn(axis, sign):
+            mat, kind=pair_matrix_for_adjust()
+            if mat is None:
+                status.configure(text="Align or choose a saved match first, then turn it.", text_color=WARN); return
+            try:
+                deg=float(_rot_vals.get(rot_preset.get(), 0.5)) * sign; a=np.radians(deg)
+                m=np.array(mat, dtype=float).reshape(4,4)
+                c, sn=np.cos(a), np.sin(a)
+                R=np.eye(4)
+                if axis==0: R[1:3,1:3]=[[c,-sn],[sn,c]]
+                elif axis==1: R[0,0]=c; R[0,2]=sn; R[2,0]=-sn; R[2,2]=c
+                else: R[0:2,0:2]=[[c,-sn],[sn,c]]
+                # pivot: where the moving scan's centre currently sits in base space (its own centre, moved by the fit)
+                piv=st.get("mov_centre")
+                if piv is None:
+                    try:
+                        import trimesh
+                        mp=self._proc_current(name, st["moving"])[2]; piv=np.asarray(trimesh.load(mp, process=False).vertices, float).mean(0); st["mov_centre"]=piv
+                    except Exception: piv=np.zeros(3)
+                p_base=(m @ np.append(piv, 1.0))[:3]
+                T1=np.eye(4); T1[:3,3]=-p_base; T2=np.eye(4); T2[:3,3]=p_base
+                out=(T2 @ R @ T1 @ m).tolist()
+                if kind=="result": st["result"]["matrix"]=out
+                else:
+                    rec[st["moving"]]["matrix"]=out; rec[st["moving"]]["manual_adjusted"]=True; rec[st["moving"]]["when"]=time.strftime("%Y-%m-%d %H:%M"); self._persist(); refresh_chips()
+                redraw_pair_overlay(out)
+                able(keepb, True)
+                status.configure(text="Turned %s by %.2f°. Save match when it looks right." % (("pitch","roll","yaw")[axis], deg), text_color=TX)
+            except Exception as e:
+                log_error("align-turn", e); status.configure(text="Could not turn this match (see Help > Log).", text_color=WARN)
         def refresh_chips():
             done=[n for n in nodes if n!=st["base"] and self._align_matrix_to_base(rec, n, st["base"]) is not None]
             missing=[n for n in nodes if n!=st["base"] and n not in done]
@@ -6916,7 +6973,7 @@ class App(LiveMixin, ctk.CTk):
             load_views(); refresh_chips()
         def pick_moving():
             if st["busy"]: msel.set(dlab(st["moving"]) if st["moving"] else ""); return   # not while a fit is running
-            st["moving"]=node_by_dlab.get(msel.get()); st["result"]=None; able(keepb, False); load_views()
+            st["moving"]=node_by_dlab.get(msel.get()); st["result"]=None; st.pop("mov_centre", None); able(keepb, False); load_views()
         def on_pick(which, world, view):
             try: _on_pick(which, world, view)
             except Exception as e: log_error("align pick", e); status.configure(text="Could not place that point (see Help > Log).", text_color=WARN)
