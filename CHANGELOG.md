@@ -3,6 +3,16 @@
 All notable changes to PointYoink. 0.7.0 was the first tagged release; the
 0.9.x line was development builds on the way to 1.0.0.
 
+## 1.0.1 (2026-09-22)
+
+- WiFi: the dialog now says up front when a host firewall (ufw or firewalld) is on and shows the exact command to allow the port; the package installs a ufw profile so `sudo ufw allow point-yoink` opens just port 9706.
+- WiFi: the scanner closing idle keep-alive sockets between file parts is no longer logged as an error, and Cancel stops the receiver before closing sockets so a late part cannot land in staging.
+- Import: Finished models keeps point-cloud-only scans (`fuse.ply`) and counts them; a Replace that copies no model restores the previous project and keeps the received data recoverable.
+- Import: a full-project reimport prefers the newest scanner model instead of an older flat copy.
+- Remove base: triangles crossing the cut plane are now sliced at the plane instead of dropped, so the cut edge is clean; coplanar faces on the kept side are kept.
+- Export: two exports of the same name started back to back get separate files.
+- The main window opens wider by default (1440 px) so the 3D preview has room; the About dialog notes Open3D and port 9706.
+
 ## 1.0.0 (2026-09-18)
 
 - Cancelling a WiFi Replace part-way now puts the previous project back instead of deleting it.

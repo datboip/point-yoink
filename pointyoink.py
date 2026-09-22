@@ -47,7 +47,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "1.0.0"
+APP = "PointYoink"; VERSION = "1.0.1"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -86,6 +86,25 @@ def _is_tmp(path):
     place that lists or ships models, so a half-written file never shows up as a scan or lands in a ZIP."""
     return bool(_TMP_RE.search(os.path.basename(path)))
 _TMP_RE=re.compile(r"\.(tmp\.\d+\.[A-Za-z0-9]+|tmp-\d+-[0-9a-f]+\.[A-Za-z0-9]+|part~[a-z0-9_]{8}\.[A-Za-z0-9]+|part-\d+|pts\.ply|tmp\.ply)$")
+def _firewall_blocks_port(port):
+    """(name, command) when a host firewall is on and the rule for `port` cannot be confirmed, else None.
+    ufw's rule list needs root, but /etc/ufw/ufw.conf (enabled or not) is readable; firewalld answers its
+    own status queries. When nothing can be read, say nothing rather than cry wolf."""
+    try:
+        conf=open("/etc/ufw/ufw.conf").read()
+        if "ENABLED=yes" in conf:
+            try: rules=open("/etc/ufw/user.rules").read()          # readable on some setups; if so, confirm the rule
+            except Exception: rules=None
+            if rules is not None and (str(port) in rules or "point-yoink" in rules): return None
+            return ("ufw", "sudo ufw allow point-yoink")
+    except Exception: pass
+    try:
+        r=subprocess.run(["firewall-cmd","--state"], capture_output=True, text=True, timeout=3)
+        if r.returncode==0 and "running" in r.stdout:
+            q=subprocess.run(["firewall-cmd","--list-ports"], capture_output=True, text=True, timeout=3)
+            if str(port) not in q.stdout: return ("firewalld", "sudo firewall-cmd --add-port=%d/tcp --add-port=%d/udp --permanent && sudo firewall-cmd --reload" % (port, port))
+    except Exception: pass
+    return None
 def _icon_blank(size=16):
     """A transparent square the size of an icon, so rows without one still line up with rows that have one."""
     key=("", "blank", size, None)
@@ -261,7 +280,15 @@ SEL_FILL="#252b37"; SEL_EDGE="#3d4a63"   # a selected project row: a lifted ligh
 AC="#4aa3ff"; AC_H="#63b3ff"; OK="#3ecf8e"; WARN="#ffb454"; DANGER="#ff6b6b"
 TX="#eef1f5"; MUT="#98a2b3"
 
-CHANGELOG = """0.8.0
+CHANGELOG = """1.0.1
+  - WiFi dialog warns when a firewall is on and shows the command; the .deb installs a ufw profile (sudo ufw allow point-yoink).
+  - WiFi receiver stops cleanly on Cancel; idle socket closes between parts are not errors.
+  - Finished-models import keeps point-cloud-only scans; a Replace that copies nothing restores the old project.
+  - Full-project reimports prefer the newest scanner model.
+  - Base cuts slice triangles at the plane instead of dropping them.
+  - Two exports of the same name never overwrite each other.
+
+0.8.0
   - Process on PC: rebuild a scan's mesh on your computer from the raw depth
     frames (GPU when available). Skips the scanner's slow on-device fusion and
     matches its output to about 0.2 mm. Uses frames already on disk from a full
@@ -1206,7 +1233,7 @@ class App(LiveMixin, ctk.CTk):
         # window size: default, but never bigger than the screen (keeps it usable on small/scaled displays)
         try:
             sw=self.winfo_screenwidth(); sh=self.winfo_screenheight()
-            dw=min(1090, int(sw*0.92)); dh=min(1070, int(sh*0.90))   # tall enough for preview + renders + tools
+            dw=min(1440, int(sw*0.92)); dh=min(1070, int(sh*0.90))   # give the 3D preview room on normal desktop displays while staying inside small screens
         except Exception:
             dw,dh=1090,1070
         self.title(("%s  %s" % (APP, VERSION)) if RELEASE else ("%s  %s (%s)" % (APP, VERSION, BUILD)))
@@ -2409,7 +2436,7 @@ class App(LiveMixin, ctk.CTk):
         info=ctk.CTkFrame(t, fg_color=CARD, corner_radius=14); info.pack(fill="x", padx=24, pady=(14,8))
         info.grid_columnconfigure(1, weight=1)
         rows=[("Works with", "Revopoint MIRACO  ·  MIRACO Pro\nany Revopoint scanner with USB “File Transfer” (MTP)"),
-              ("Needs", "Linux  ·  jmtpfs  ·  rsync"),
+              ("Needs", "Linux  ·  jmtpfs  ·  rsync\nOpen3D for Build/Combine; allow TCP+UDP 9706 for Wi-Fi"),
               ("Output", "standard .ply meshes & point clouds\nopen in Blender, MeshLab, or CloudCompare")]
         for i,(k,v) in enumerate(rows):
             ctk.CTkLabel(info, text=k, text_color=AC, font=ctk.CTkFont(size=11,weight="bold"),
@@ -4283,8 +4310,8 @@ class App(LiveMixin, ctk.CTk):
         for nd in nodes:
             if not os.path.isdir(nd): continue
             node=os.path.basename(nd)
-            if not os.path.exists(os.path.join(nd, "fuse_mesh.ply")):
-                continue   # finished-models: skip a scan with no built mesh entirely - don't leave a stray preview-only "scan" that shows blue and can't be built (its raw data wasn't imported)
+            if not (os.path.exists(os.path.join(nd, "fuse_mesh.ply")) or os.path.exists(os.path.join(nd, "fuse.ply"))):
+                continue   # no finished geometry at all: leave raw-only scans to the Full project path
             for fn,outn,kind in (("fuse_mesh.ply","%s_%s.ply"%(name,node),"mesh"),
                                  ("fuse.ply","%s_%s_cloud.ply"%(name,node),"cloud"),
                                  ("preview.png","%s_%s.png"%(name,node),"prev"),
@@ -4295,7 +4322,7 @@ class App(LiveMixin, ctk.CTk):
                     except Exception: pass
                     plan.append((sp, os.path.join(out,outn), kind, node))
         total_bytes=max(1,total_bytes)
-        meshes=[]; _t0=time.time(); done=[0]; _last=[0.0]; nscan=[0]; last_node=[None]
+        meshes=[]; kept=[]; _t0=time.time(); done=[0]; _last=[0.0]; nscan=[0]; last_node=[None]
         def rep(force=False):
             now=time.time()
             if not force and now-_last[0]<0.2: return
@@ -4309,13 +4336,15 @@ class App(LiveMixin, ctk.CTk):
             if self.cancel: return
             if node!=last_node[0]: nscan[0]+=1; last_node[0]=node
             try:
-                if self._copy_chunked(sp, dp, on_bytes) and kind=="mesh": meshes.append(dp)   # chunked -> reports bytes/sec continuously
+                if self._copy_chunked(sp, dp, on_bytes) and kind in ("mesh", "cloud"):
+                    kept.append(dp)
+                    if kind=="mesh": meshes.append(dp)   # chunked -> reports bytes/sec continuously
             except Exception as e: bad+=1; log_error("copy "+kind, e)
         rep(force=True)
         if bad and not self.cancel: raise OSError("%d of %d files failed to copy" % (bad, len(plan)))   # the project counts as failed, staging is kept
-        if (fmts or cleanup) and not self.cancel:
+        if meshes and (fmts or cleanup) and not self.cancel:
             self._process_meshes(meshes, name, fmts, cleanup, i, total, clean_opts=clean_opts)
-        return len(meshes)
+        return len(kept)
 
     def _ensure_clean_vars(self):
         """Clean-up knobs, named and defaulted like the scanner's Mesh panel.
@@ -4975,8 +5004,13 @@ class App(LiveMixin, ctk.CTk):
                                 ("clean","prepared copy",[os.path.join(local,"%s_%s_clean.ply"%(name,node)), os.path.join(local,"%s_%s_pcfused_clean.ply"%(name,node))]),
                                 ("scanner","the scanner's model",[os.path.join(local,"%s_%s.ply"%(name,node)), os.path.join(local,"data",node,"fuse_mesh.ply")]),
                                 ("pcfused","PC build (from raw data)",[os.path.join(local,"%s_%s_pcfused.ply"%(name,node))])):
-            for c in cands:
-                if os.path.exists(c) and os.path.getsize(c)>1024: out.append((key,label,c)); break
+            existing=[c for c in cands if os.path.exists(c) and os.path.getsize(c)>1024]
+            if existing:
+                # A finished-model import is flat, while a later full-project import
+                # keeps the scanner mesh under data/<scan>. Prefer the newest copy so
+                # a refresh cannot silently keep showing the older geometry.
+                c=max(existing, key=lambda path: os.path.getmtime(path)) if key=="scanner" else existing[0]
+                out.append((key,label,c))
         return out
     def _proc_current(self, name, node):
         """Which version the preview and exports use for this scan: the user's pick if it still exists, else the first available."""
@@ -6105,8 +6139,12 @@ class App(LiveMixin, ctk.CTk):
         def go():
             src=path_of(); fmt=fsel.get().lower(); ddir=os.path.expanduser(dv.get().strip() or "."); nm=re.sub(r"[^\w.-]+", "_", base.get().strip()) or "model"
             self.cfg["export_fmt"]=fsel.get(); self.cfg["export_dir"]=ddir; save_cfg(self.cfg)
+            # pick a name nobody has, on disk or in an export still running (the name is reserved until that job ends,
+            # so two exports started back to back never both claim the same file and overwrite each other)
+            busy=self.__dict__.setdefault("_export_claims", set())
             out=os.path.join(ddir, "%s.%s" % (nm, fmt)); n=1
-            while os.path.exists(out): out=os.path.join(ddir, "%s_%d.%s" % (nm, n, fmt)); n+=1
+            while os.path.exists(out) or out in busy: out=os.path.join(ddir, "%s_%d.%s" % (nm, n, fmt)); n+=1
+            busy.add(out)
             self._btn_busy(gob, "Writing…"); status.configure(text="Writing %s…" % os.path.basename(out), text_color=MUT)
             def work():
                 err=None; self._op_begin(); _root,_ext=os.path.splitext(out); tmp=None
@@ -6124,7 +6162,7 @@ class App(LiveMixin, ctk.CTk):
                     if tmp:
                         try: os.remove(tmp)
                         except Exception: pass
-                finally: self._op_end()
+                finally: self._op_end(); busy.discard(out)
                 def done():
                     if not t.winfo_exists(): return
                     self._btn_idle(gob)
@@ -6608,8 +6646,10 @@ class App(LiveMixin, ctk.CTk):
             col=ctk.CTkFrame(stats, fg_color="#0d0f14", corner_radius=10); col.grid(row=r, column=c, sticky="nsew", padx=3, pady=3)
             v=ctk.CTkLabel(col, text="-", text_color=TX, font=ctk.CTkFont(size=14, weight="bold")); v.pack(pady=(8,0))
             ctk.CTkLabel(col, text=cap, text_color=MUT, font=ctk.CTkFont(size=10)).pack(pady=(0,8)); self.wifi_stats[key]=v
-        self.wifi_hint=ctk.CTkLabel(card, text="Both must be on the same network. If the scanner isn't found within 30 seconds, allow port 9706 (UDP and TCP) in your firewall.",
-                                    text_color=MUT, font=ctk.CTkFont(size=10), wraplength=420, justify="center"); self.wifi_hint.pack(pady=(10,0))
+        fw=_firewall_blocks_port(9706)
+        hint=("Your firewall (%s) is on. Unless you already allowed port 9706, the scanner cannot reach this PC. Run:  %s" % fw
+              if fw else "Both must be on the same network. If the scanner isn't found within 30 seconds, allow port 9706 (UDP and TCP) in your firewall.")
+        self.wifi_hint=ctk.CTkLabel(card, text=hint, text_color=(WARN if fw else MUT), font=ctk.CTkFont(size=10), wraplength=420, justify="center"); self.wifi_hint.pack(pady=(10,0))
         br=ctk.CTkFrame(card, fg_color="transparent"); br.pack(side="bottom", pady=(0,16))
         self.wifi_newcode=ctk.CTkButton(br, text="New code", image=_icon("refresh", "default", 14), compound="left", width=110, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self._wifi_new_code)
         self.wifi_newcode.pack(side="left", padx=6)
@@ -7074,7 +7114,11 @@ class App(LiveMixin, ctk.CTk):
             r=do_replace()
         except Exception:
             restore(); raise
-        if self.cancel: restore(); return r
+        if self.cancel or r == 0:
+            # A models-only import can complete without copying a model (for example
+            # a raw-only scan). Treat that as a failed replacement so the previous
+            # project remains available and the staged transfer can be recovered.
+            restore(); return r
         if aside: shutil.rmtree(aside, ignore_errors=True)
         return r
     def _wifi_finish_worker(self, stage, keep, dest, mo, fmts, cleanup, replace=False, clean_opts=None):
@@ -7112,8 +7156,9 @@ class App(LiveMixin, ctk.CTk):
                 except Exception: pass
             except Exception as e:
                 failed.append(name); log_error("wifi-import", e)
-        if failed or self.cancel:
-            log_line("WiFi import %s: received data kept in %s and offered again at the next start" % ("cancelled" if self.cancel else "failed", stage))
+        if failed or self.cancel or no_models:
+            reason = "cancelled" if self.cancel else ("failed" if failed else "no usable models")
+            log_line("WiFi import %s: received data kept in %s and offered again at the next start" % (reason, stage))
         else:
             shutil.rmtree(stage, ignore_errors=True)
         self.q.put(("cancelled" if self.cancel else "done", dest, failed, no_models))

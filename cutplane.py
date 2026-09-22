@@ -13,21 +13,38 @@ try:
 except Exception:
     pass
 
-def ransac_normal(V, rng):
+def ransac_normal(V, rng, return_points=False):
     diag = float(__import__("numpy").linalg.norm(V.max(0) - V.min(0)))
     import numpy as np
     thr = diag * 0.01
     S = V[rng.choice(len(V), min(60000, len(V)), replace=False)]
     best, normal = 0, np.array([0.0, 0.0, 1.0])
+    support = np.empty((0, 3), dtype=float)
     for _ in range(200):
         p = S[rng.choice(len(S), 3, replace=False)]
         n = np.cross(p[1] - p[0], p[2] - p[0]); ln = np.linalg.norm(n)
         if ln < 1e-9:
             continue
         n = n / ln; d = -n.dot(p[0])
-        inl = int(np.sum(np.abs(S.dot(n) + d) < thr))
+        mask = np.abs(S.dot(n) + d) < thr
+        inl = int(np.sum(mask))
         if inl > best:
             best, normal = inl, n
+            if return_points: support = S[mask]
+    if return_points:
+        # Keep real surface samples, spread across the winning plane. These are
+        # review points from its inliers, not invented points projected onto it.
+        if len(support):
+            candidates = support[np.linspace(0, len(support)-1, min(4096, len(support)), dtype=int)]
+            chosen = [int(np.argmin(np.sum((candidates-candidates.mean(0))**2, axis=1)))]
+            distances = np.sum((candidates-candidates[chosen[0]])**2, axis=1)
+            for _ in range(min(12, len(candidates))-1):
+                j = int(np.argmax(distances))
+                if distances[j] <= 1e-18: break
+                chosen.append(j)
+                distances = np.minimum(distances, np.sum((candidates-candidates[j])**2, axis=1))
+            support = candidates[chosen].copy()
+        return normal, support
     return normal
 
 def main():
@@ -38,9 +55,11 @@ def main():
     if len(sys.argv) > 4 and sys.argv[3] == "--plane":
         v = sys.argv[4].split(","); given = ([float(v[0]), float(v[1]), float(v[2])], float(v[3]), v[4].lower() in ("1", "true", "yes"))
     import numpy as np, trimesh
-    m_full = trimesh.load(infile, force="mesh")
+    m_full = trimesh.load(infile, process=False)
+    if isinstance(m_full, trimesh.Scene):
+        m_full = m_full.dump(concatenate=True)
     m = m_full
-    if len(m_full.faces) > 800000 and given is None:     # the interactive view gets a lighter copy; the saved cut is always the full mesh
+    if len(getattr(m_full, "faces", [])) > 800000 and given is None:     # the interactive view gets a lighter copy; the saved cut is always the full mesh
         import fast_simplification
         v, f = fast_simplification.simplify(m_full.vertices, m_full.faces, target_count=800000)
         m = trimesh.Trimesh(v, f, process=False)
@@ -132,12 +151,41 @@ def main():
 
 def finish(m, normal, state, outfile):
     import numpy as np
-    # apply the cut to the full mesh. Everything on the kept side stays, including small separate pieces:
-    # the dialog promises "grey stays", and removing loose pieces is Prepare's job, not the cut's.
-    H = np.asarray(m.vertices).dot(normal)
-    keepv = (H > state["cut"]) if state["keep_above"] else (H < state["cut"])
-    keep_f = keepv[m.faces].all(axis=1)
-    m.update_faces(keep_f); m.remove_unreferenced_vertices()
+    import trimesh
+    normal = np.asarray(normal, dtype=float)
+    cut = float(state["cut"])
+    if normal.shape != (3,) or not np.isfinite(normal).all() or not np.isfinite(cut):
+        raise ValueError("Cut plane must be finite.")
+    norm = float(np.linalg.norm(normal))
+    if norm < 1e-12:
+        raise ValueError("Cut plane normal must be nonzero.")
+    # Preserve retained portions of crossing triangles. No cap, filling, cleanup,
+    # or disconnected-component removal is implied by a base cut.
+    if isinstance(m, trimesh.Trimesh) and len(m.faces):
+        origin = normal * (cut / (norm * norm))
+        direction = normal / norm * (1 if state["keep_above"] else -1)
+        # Use the face slicer directly: the capped wrapper imports optional
+        # Shapely even when cap=False, which fresh installations may not have.
+        vertices = np.asarray(m.vertices)
+        faces = np.asarray(m.faces)
+        dots = (vertices - origin).dot(direction)
+        coplanar = np.all(np.abs(dots[faces]) <= trimesh.constants.tol.merge, axis=1)
+        clipped_v, clipped_f, _ = trimesh.intersections.slice_faces_plane(
+            vertices, faces[~coplanar], direction, origin)
+        clipped = trimesh.Trimesh(clipped_v, clipped_f, process=False)
+        if coplanar.any():
+            # The lower-level slicer discards front-facing coplanar triangles.
+            # Keep all original on-plane surfaces: the user retained this side.
+            flat = trimesh.Trimesh(vertices.copy(), faces[coplanar], process=False)
+            flat.remove_unreferenced_vertices()
+            clipped = trimesh.util.concatenate([clipped, flat])
+        m = clipped
+    else:
+        heights = np.asarray(m.vertices).dot(normal)
+        keep = heights >= cut if state["keep_above"] else heights <= cut
+        colors = getattr(m.visual, "vertex_colors", None)
+        m = trimesh.points.PointCloud(np.asarray(m.vertices)[keep],
+                                      colors=colors[keep] if colors is not None and len(colors) == len(keep) else None)
     tmp = "%s.tmp.%d.ply" % (outfile[:-4] if outfile.lower().endswith(".ply") else outfile, os.getpid())
     m.export(tmp, file_type="ply")
     if not os.path.exists(tmp) or os.path.getsize(tmp) < 64:
@@ -145,7 +193,7 @@ def finish(m, normal, state, outfile):
         except Exception: pass
         print("CUT_ERROR could not write the result", flush=True); return 3
     os.replace(tmp, outfile)                          # never leave a half-written file where a good one was
-    print("CUT_DONE " + json.dumps({"faces": len(m.faces), "mb": round(os.path.getsize(outfile) / 1048576, 1),
+    print("CUT_DONE " + json.dumps({"faces": len(getattr(m, "faces", [])), "points": len(m.vertices), "mb": round(os.path.getsize(outfile) / 1048576, 1),
           "plane": {"n": [float(x) for x in normal], "d": float(state["cut"]), "keep_above": bool(state["keep_above"])}}), flush=True)
     return 0
 

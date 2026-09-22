@@ -45,8 +45,14 @@ class _Handler(BaseHTTPRequestHandler):
         sem = self.server.rx._sem
         if not sem.acquire(blocking=False):    # too many open connections: drop this one without parsing it
             self.close_connection = True; return
-        try: super().handle()
-        finally: sem.release()
+        try:
+            super().handle()
+        except (ConnectionResetError, BrokenPipeError, TimeoutError):
+            # The scanner closes idle keep-alive sockets between file parts.
+            # That is a normal transport boundary, not a failed transfer.
+            pass
+        finally:
+            sem.release()
     def _deny(self, status=403):
         self.send_response(status); self.send_header("Content-Length", "0"); self.end_headers(); self.close_connection = True
     def _allowed(self, route):
@@ -113,12 +119,17 @@ class Receiver:
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         threading.Thread(target=self._discovery, daemon=True).start()
     def stop(self):
+        # Flip the gate before closing sockets so a request racing with Cancel
+        # cannot write another part into the staging directory.
         self._on = False
+        httpd, udp = self.httpd, self.udp
+        self.httpd = None; self.udp = None
         try:
-            if self.httpd: self.httpd.shutdown(); self.httpd.server_close()
+            if httpd:
+                httpd.shutdown(); httpd.server_close()
         except Exception: pass
         try:
-            if self.udp: self.udp.close()
+            if udp: udp.close()
         except Exception: pass
     def _discovery(self):
         while self._on:

@@ -43,6 +43,15 @@ cp "$ROOT/LICENSE" "$ROOT/README.md" "$ROOT/CHANGELOG.md" "$ROOT/THIRD_PARTY_NOT
 # PyOpenGL's wheel carries no license file, so its text ships from the repo instead
 mkdir -p "$PKG/usr/share/doc/point-yoink/licenses" && cp "$ROOT"/packaging/licenses/*.txt "$PKG/usr/share/doc/point-yoink/licenses/"
 
+# --- ufw application profile: `sudo ufw allow point-yoink` opens just the WiFi receiver port ---
+mkdir -p "$PKG/etc/ufw/applications.d"
+cat > "$PKG/etc/ufw/applications.d/point-yoink" <<UFWEOF
+[point-yoink]
+title=PointYoink
+description=Receive Revopoint MIRACO scans shared over WiFi
+ports=9706/tcp|9706/udp
+UFWEOF
+
 # --- launcher (the command is `point-yoink`) ---
 cat > "$PKG/usr/bin/point-yoink" <<EOF
 #!/bin/sh
