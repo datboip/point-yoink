@@ -158,7 +158,7 @@ class GLView(OpenGLFrame):
     # ---- loading ----
     def load(self, path, on_ready=None, max_faces=MAX_FACES):
         """Load (and orient, and smooth-normal) the mesh in a worker thread, then upload to the GPU."""
-        self._gen += 1; gen = self._gen; self._n = 0
+        self._gen += 1; gen = self._gen; self._n = 0; self._loaded_key = None   # whoever asked tags it again once their load lands
         def work():
             try:
                 v, f, tf, nrm = shade.load_oriented_nrm(path, max_faces)   # verts+faces+transform+normals, all cached - the splash warms this exact entry
@@ -216,6 +216,7 @@ class GLView(OpenGLFrame):
         camera: a preview of an edit before it is applied. The original arrays are kept so restore_geometry()
         can put them back without reloading from disk."""
         if getattr(self, "_src", None) is None: return False
+        self._loaded_key = None                                    # a preview swap is not the scan the page asked for
         if getattr(self, "_swap_orig", None) is None: self._swap_orig = (self._src[0], self._nrm_cache(), self._src[1])
         v = np.ascontiguousarray(v, dtype=np.float32); f = np.ascontiguousarray(f, dtype=np.uint32).reshape(-1, 3)
         if n is None:

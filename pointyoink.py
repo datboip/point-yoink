@@ -4362,8 +4362,11 @@ class App(LiveMixin, ctk.CTk):
         # loads in a fraction of a second and looks better than the flat still - so auto-load it by default
         # instead of making the user click the still. Set "auto_live_preview": false to keep it click-to-open.
         if self.cfg.get("auto_live_preview", True):
+            key=self._shade_key[0]
+            if self._mv_key==key and getattr(self.mv, "_loaded_key", None)==key and self.mv.winfo_ismapped():
+                self.big_hint.configure(text="Drag to rotate · scroll to zoom · right-drag to pan · double-click to reset"); return   # same scan picked again: the 3D view is already up
             self.big_hint.configure(text="Loading the interactive 3D view…")
-            self._schedule_mv_start(self._shade_key[0], 300)   # open the cached 3D view once the still image is up
+            self._schedule_mv_start(key, 300)   # open the cached 3D view once the still image is up
         else:
             self.big_hint.configure(text="Still image · click to open the interactive 3D view (or pick a view above)")
     def _make_mv(self, software=False):
@@ -4390,7 +4393,10 @@ class App(LiveMixin, ctk.CTk):
     def _mv_start(self):
         """Load the interactive view for the current scan (mesh prep runs in a thread) and swap it in."""
         want=self._mv_want
-        if not want or self._mv_key==want[0] or not os.path.exists(want[1]): return
+        if not want or not os.path.exists(want[1]): return
+        # already showing this exact key? only if the widget's last upload really was it: a bookkeeping
+        # mismatch (a load superseded mid-way) must never leave the previous scan on screen
+        if self._mv_key==want[0] and getattr(self.mv, "_loaded_key", None)==want[0]: return
         key,path=want; self._mv_key=key; self.mv.wire=(self.shade_mode=="wire")
         try: import shade; self._mv_c0=(dict(shade.CACHE_STATS), time.time())   # snapshot to log mesh-cache reuse for THIS open
         except Exception: self._mv_c0=None
@@ -4404,6 +4410,7 @@ class App(LiveMixin, ctk.CTk):
         self._map_mv_under_still()
         def ready(ok, k=key):
             if k!=self._mv_key: return
+            if ok: self.mv._loaded_key=k
             if not ok and getattr(self.mv, "failed", False) and not isinstance(self.mv, __import__("meshview").MeshView):
                 log_line("GL view failed in this window (%s); switching to the software view" % getattr(self.mv, "_err", ""))
                 try: self.mv.destroy()
