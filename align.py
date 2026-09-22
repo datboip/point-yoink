@@ -17,6 +17,13 @@ from registration_metrics import (
     landmark_residuals_mm,
 )
 
+
+def _dump_json(path, obj):
+    """Write the result beside its final name and swap it in whole, so the parent never reads a half-written file."""
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w") as f: json.dump(obj, f)
+    os.replace(tmp, path)
+
 def emit(stage, **kw): print("STAGE %s %s" % (stage, json.dumps(kw)), flush=True)
 
 def kabsch(P, Q):
@@ -90,7 +97,7 @@ def main():
             pairs = validate_landmark_pairs(pairs)
         except ValueError as e:
             msg = str(e)
-            json.dump({"matrix": T0.tolist(), "fitness": None, "rmse": None, "reason_codes": ["invalid_landmarks"], "error": msg}, open(a.out, "w"))
+            _dump_json(a.out, {"matrix": T0.tolist(), "fitness": None, "rmse": None, "reason_codes": ["invalid_landmarks"], "error": msg})
             emit("error", msg=msg); return 2
     if pairs and len(pairs) >= 3:
         T0 = kabsch([p[1] for p in pairs], [p[0] for p in pairs])
@@ -104,8 +111,8 @@ def main():
     try:
         import open3d as o3d
     except Exception:
-        json.dump({"matrix": T0.tolist(), "fitness": None, "rmse": None, "pair_error_before": pair_err(pairs, np.eye(4)), "pair_error_after": pair_err(pairs, T0),
-                   "note": "Open3D not installed: rough fit from the points only"}, open(a.out, "w"))
+        _dump_json(a.out, {"matrix": T0.tolist(), "fitness": None, "rmse": None, "pair_error_before": pair_err(pairs, np.eye(4)), "pair_error_after": pair_err(pairs, T0),
+                   "note": "Open3D not installed: rough fit from the points only"})
         emit("result", fitness=None, rmse=None, icp=False); return 0
     B = cloud(bp, bn, a.voxel); M = cloud(mp, mn, a.voxel)
     if a.auto and len(pairs) < 3:
@@ -164,7 +171,7 @@ def main():
         out["reason_codes"].append("low_overlap")
     if rmse is not None and rmse > 1.5:
         out["reason_codes"].append("high_residual")
-    json.dump(out, open(a.out, "w")); emit("result", fitness=(round(fit, 3) if fit is not None else None), rmse=(round(rmse, 2) if rmse is not None else None), icp=not a.no_icp)
+    _dump_json(a.out, out); emit("result", fitness=(round(fit, 3) if fit is not None else None), rmse=(round(rmse, 2) if rmse is not None else None), icp=not a.no_icp)
     return 0
 
 if __name__ == "__main__":

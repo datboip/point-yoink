@@ -3996,6 +3996,8 @@ class App(LiveMixin, ctk.CTk):
                     try:
                         if os.path.getsize(archive)==0: os.remove(archive)
                     except Exception: pass
+                try: os.remove(job["temporary"])                 # the unpublished result: nothing else will clean it up
+                except Exception: pass
                 log_error("edit-commit", e)
                 self.q.put(("call", lambda j=job, err=str(e): self._edit_keep_done(j, False, err)))
         self._start_thread(commit, name="edit-commit")
@@ -6515,9 +6517,9 @@ class App(LiveMixin, ctk.CTk):
         bmenu=ctk.CTkOptionMenu(bar, values=[dlab(n) for n in nodes], variable=bsel, width=130, command=lambda _: pick_base(), **menu); bmenu.pack(side="left", padx=(8,18))
         ctk.CTkLabel(bar, text="Moving scan", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
         mmenu=ctk.CTkOptionMenu(bar, values=[dlab(n) for n in nodes if n!=st["base"]], variable=msel, width=130, command=lambda _: pick_moving(), **menu); mmenu.pack(side="left", padx=(8,10))
-        ctk.CTkButton(bar, text="‹ pair", width=64, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: step_pair(-1)).pack(side="left", padx=(0,4))
-        ctk.CTkButton(bar, text="pair ›", width=64, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: step_pair(1)).pack(side="left", padx=(0,10))
-        ctk.CTkButton(bar, text="Next needed", width=96, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: next_needed()).pack(side="left", padx=(0,14))
+        prev_b=ctk.CTkButton(bar, text="pair", image=_icon("back", "default", 12), compound="left", width=64, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: step_pair(-1)).pack(side="left", padx=(0,4))
+        next_b=ctk.CTkButton(bar, text="pair", image=_icon("chevron-right", "default", 12), compound="right", width=64, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: step_pair(1)).pack(side="left", padx=(0,10))
+        need_b=ctk.CTkButton(bar, text="Next needed", width=96, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: next_needed()).pack(side="left", padx=(0,14))
         chips=ctk.CTkLabel(bar, text="", text_color=OK, font=ctk.CTkFont(size=12)); chips.pack(side="left", padx=6)
         hint=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=12), justify="left", wraplength=850, anchor="w"); hint.grid(row=1,column=0, columnspan=2, sticky="ew", padx=16, pady=(0,6))
         def choose_pair(base, moving):
@@ -6714,9 +6716,9 @@ class App(LiveMixin, ctk.CTk):
                     ctk.CTkLabel(row, text=str(idx+1), width=20, text_color=dot, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=(5,2), pady=4)
                     ctk.CTkButton(row, text="redo B", width=48, height=22, corner_radius=6, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=10), command=lambda i=idx: redo_pair(i,0)).pack(side="left", padx=1)
                     ctk.CTkButton(row, text="redo M", width=50, height=22, corner_radius=6, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=10), command=lambda i=idx: redo_pair(i,1)).pack(side="left", padx=1)
-                    ctk.CTkButton(row, text="×", width=24, height=22, corner_radius=6, fg_color="transparent", border_width=1, border_color="#5a2a38", hover_color="#3a2530", text_color="#ff9db0", font=ctk.CTkFont(size=11, weight="bold"), command=lambda i=idx: delete_pair(i)).pack(side="right", padx=(1,5))
+                    ctk.CTkButton(row, text="", image=_icon("close", "muted", 12), width=24, height=22, corner_radius=6, fg_color="transparent", border_width=1, border_color="#5a2a38", hover_color="#3a2530", text_color="#ff9db0", font=ctk.CTkFont(size=11, weight="bold"), command=lambda i=idx: delete_pair(i)).pack(side="right", padx=(1,5))
                 if pend is not None:
-                    ctk.CTkLabel(manual_list, text="Pair %d half placed — click the other scan" % (len(pairs)+1), text_color=AC, font=ctk.CTkFont(size=10), anchor="w").pack(fill="x", padx=2, pady=2)
+                    ctk.CTkLabel(manual_list, text="Pair %d half placed. Click the other scan." % (len(pairs)+1), text_color=AC, font=ctk.CTkFont(size=10), anchor="w").pack(fill="x", padx=2, pady=2)
                 ok,msg,col=manual_validation_message()
                 manual_help.configure(text=msg if pairs else "Need 3+ spread-out pairs. Same color/number = same physical spot.", text_color=col if pairs else DIM)
             except Exception as e:
@@ -6920,8 +6922,10 @@ class App(LiveMixin, ctk.CTk):
         def busy_on(m):
             busy["t0"]=time.time(); busy["msg"]=m; bar.configure(mode="indeterminate", progress_color=AC); bar.start()
             able(alignb, False); able(autob, False); able(keepb, False); able(comb, False, OK)
-            for mn in (bmenu, mmenu):
-                try: mn.configure(state="disabled")
+            # every control that can change which pair is current or save a match: the running job is a
+            # snapshot, and a click here while it runs would be silently undone when the job lands
+            for w in (bmenu, mmenu, prev_b, next_b, need_b, side_auto, side_save, side_clear, side_next, side_build):
+                try: w.configure(state="disabled")
                 except Exception: pass
             busy["job"]=t.after(10, busy_tick)
         def busy_off():
@@ -6931,8 +6935,8 @@ class App(LiveMixin, ctk.CTk):
             busy["job"]=None
             if t.winfo_exists():
                 bar.stop(); bar.set(0); bar.configure(progress_color="#0d0f14"); update_manual_controls(); able(autob, True); able(keepb, bool(st.get("result"))); refresh_chips()
-                for mn in (bmenu, mmenu):
-                    try: mn.configure(state="normal")
+                for w in (bmenu, mmenu, prev_b, next_b, need_b, side_auto, side_save, side_clear, side_next, side_build):
+                    try: w.configure(state="normal")
                     except Exception: pass
         def _cloud_only_for_node(node):
             local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
