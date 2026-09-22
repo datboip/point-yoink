@@ -6647,9 +6647,9 @@ class App(LiveMixin, ctk.CTk):
             v=ctk.CTkLabel(col, text="-", text_color=TX, font=ctk.CTkFont(size=14, weight="bold")); v.pack(pady=(8,0))
             ctk.CTkLabel(col, text=cap, text_color=MUT, font=ctk.CTkFont(size=10)).pack(pady=(0,8)); self.wifi_stats[key]=v
         fw=_firewall_blocks_port(9706)
-        hint=("Your firewall (%s) is on. Unless you already allowed port 9706, the scanner cannot reach this PC. Run:  %s" % fw
+        hint=("%s is on. Unless port 9706 is already allowed,\nthe scanner cannot reach this PC. In a terminal, run:\n\n%s" % fw
               if fw else "Both must be on the same network. If the scanner isn't found within 30 seconds, allow port 9706 (UDP and TCP) in your firewall.")
-        self.wifi_hint=ctk.CTkLabel(card, text=hint, text_color=(WARN if fw else MUT), font=ctk.CTkFont(size=10), wraplength=420, justify="center"); self.wifi_hint.pack(pady=(10,0))
+        self.wifi_hint=ctk.CTkLabel(card, text=hint, text_color=(WARN if fw else MUT), font=ctk.CTkFont(size=(11 if fw else 10)), wraplength=420, justify="center"); self.wifi_hint.pack(pady=(10,0))
         br=ctk.CTkFrame(card, fg_color="transparent"); br.pack(side="bottom", pady=(0,16))
         self.wifi_newcode=ctk.CTkButton(br, text="New code", image=_icon("refresh", "default", 14), compound="left", width=110, corner_radius=16, fg_color=CARD2, hover_color=STROKE, text_color=TX, command=self._wifi_new_code)
         self.wifi_newcode.pack(side="left", padx=6)
