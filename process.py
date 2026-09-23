@@ -73,10 +73,12 @@ def main():
     ap.add_argument("--plane-thresh", type=float, default=0, help="mm; 0=auto from bbox")
     ap.add_argument("--clean", action="store_true", help="dedupe, drop small pieces, optional hole fill, smooth, optional simplify")
     # The scanner's own editing knobs; defaults match its Mesh panel.
-    ap.add_argument("--isolation-rate", type=float, default=15.0, help="drop pieces smaller than this %% of the largest one (100 = keep only the largest)")
+    ap.add_argument("--isolation-rate", type=float, default=100.0, help="drop pieces smaller than this %% of the largest one (100 = keep only the largest)")
     ap.add_argument("--fill-holes", action="store_true", help="fill holes (the scanner has this off by default)")
     ap.add_argument("--hole-size", type=float, default=0, help="largest hole to fill, in mm (0 = auto: ~4%% of the bbox diagonal, so real gaps close but an intentionally-open base does not)")
     ap.add_argument("--smooth-times", type=int, default=3, help="smoothing passes (scanner default 3; 0 = off)")
+    ap.add_argument("--smooth-method", choices=["humphrey", "taubin", "laplacian"], default="humphrey",
+                     help="humphrey (default, mild and stays close to the original shape), taubin (barely shrinks, a bit softer), laplacian (strongest, most shrinkage - can round off real detail)")
     ap.add_argument("--rebuild-surface", type=int, default=0, help="rebuild the surface from the points with Poisson reconstruction at this octree depth (0 = off; 9 = normal, 10 = more detail). Turns torn edges and streaks into one continuous skin; the low-density skin Poisson grows over real openings is trimmed off. Needs Open3D")
     ap.add_argument("--slivers", type=float, default=0, help="remove stretched triangles: any face whose longest edge is more than this many times the mesh's median edge (0 = off; 4 is a good default). The small holes this opens are closed by the hole fill when it is on")
     ap.add_argument("--simplify-pct", type=float, default=0, help="keep this %% of faces after cleaning (0 = keep all; the scanner's Simplify uses 40)")
@@ -108,6 +110,27 @@ def main():
         mesh.remove_duplicated_vertices(); mesh.remove_duplicated_triangles()
         mesh.remove_degenerate_triangles(); mesh.remove_unreferenced_vertices()
         if len(mesh.triangles) == 0: print("ball-pivoting produced no faces"); sys.exit(4)
+        # Ball-pivoting is on purpose here (it only spans where points are, unlike Poisson), but where the
+        # ball can't quite bridge a thin gap it leaves spiky boundary triangles instead of just an open edge.
+        # Clean those up the same way --clean does, so a Points-cloud rebuild is not a downgrade from it:
+        try:
+            V = np.asarray(mesh.vertices, dtype=np.float64); F = np.asarray(mesh.triangles, dtype=np.int64)
+            el = np.linalg.norm(V[F[:, [0, 1, 2]]] - V[F[:, [1, 2, 0]]], axis=2)
+            med = float(np.median(el)) if el.size else 0.0
+            if med > 0:
+                bad = el.max(axis=1) > med * 4.0
+                if bad.any():
+                    mesh.remove_triangles_by_mask(bad); mesh.remove_unreferenced_vertices()
+                    emit("slivers", removed=int(bad.sum()), median_edge_mm=round(med, 3))
+        except Exception as e:
+            emit("warn", step="rebuild-points-slivers", err=str(e)[:200])
+        try:
+            lab, cnt, _ = mesh.cluster_connected_triangles(); lab = np.asarray(lab); cnt = np.asarray(cnt)
+            if len(cnt) > 1:
+                mesh.remove_triangles_by_mask(cnt[lab] < cnt.max()); mesh.remove_unreferenced_vertices()
+                emit("isolated", pieces=len(cnt), kept=1)
+        except Exception as e:
+            emit("warn", step="rebuild-points-isolate", err=str(e)[:200])
         tmp = a.outfile + ".tmp.%d.ply" % os.getpid()
         ok = o3d.io.write_triangle_mesh(tmp, mesh)
         if not ok or not os.path.exists(tmp) or os.path.getsize(tmp) < 64:   # never replace a good file with a failed write
@@ -190,7 +213,9 @@ def main():
 
     # 3) ISOLATE - drop floating junk / table remnants. --isolate and --base-remove keep only the
     # largest connected piece; --clean keeps every piece at least --isolation-rate % of the largest
-    # (the scanner's "Isolation rate", default 15%), so an object scanned in parts survives.
+    # (default 100 = only the largest piece survives; a stray bit of turntable a base cut missed can be a
+    # large, noisy chunk, not a small fleck, so a lenient threshold lets it straight through). Lower it for
+    # a scan you know has more than one real piece.
     # Use connected_components + a face mask instead of .split() (which builds every
     # submesh and calls fill_holes) - faster, lighter, and no repair dependency.
     if a.isolate or a.base_remove or a.clean:
@@ -223,7 +248,38 @@ def main():
                     emit("slivers", removed=int(bad.sum()), median_edge_mm=round(med, 3), faces=len(m.faces))
             except Exception as e:
                 warnings.append("sliver removal"); emit("warn", step="slivers", err=str(e)[:200])
+        if a.rebuild_surface > 0:
+            try:
+                import open3d as o3d
+                pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(np.array(m.vertices, dtype=np.float64)))
+                pcd.normals = o3d.utility.Vector3dVector(np.array(m.vertex_normals, dtype=np.float64))
+                rm, dens = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=int(a.rebuild_surface), n_threads=max(1, os.cpu_count() or 1))
+                dens = np.asarray(dens)
+                # Poisson closes every opening with a thin low-density skin; cut the sparsest 4% away so real
+                # openings stay open and the extrapolated bits over gaps in the scan do not survive
+                rm.remove_vertices_by_mask(dens < np.quantile(dens, 0.04))
+                rm.remove_degenerate_triangles(); rm.remove_unreferenced_vertices()
+                lab, cnt, _ = rm.cluster_connected_triangles(); lab = np.asarray(lab); cnt = np.asarray(cnt)
+                if len(cnt):
+                    rm.remove_triangles_by_mask(cnt[lab] < 0.01 * cnt.max()); rm.remove_unreferenced_vertices()   # crumbs
+                # The density trim above opens small pits of its own on top of what it just rebuilt - close
+                # those regardless of the --fill-holes flag, since this is cleaning up the rebuild's own
+                # artifact, not inventing surface over a real opening. Kept small (1.5% of bbox diagonal) so
+                # a genuinely open base or a real gap in the scan is left alone.
+                try:
+                    diag = float(np.linalg.norm(np.asarray(rm.get_max_bound()) - np.asarray(rm.get_min_bound())))
+                    tm = o3d.t.geometry.TriangleMesh.from_legacy(rm)
+                    rm = tm.fill_holes(hole_size=diag * 0.015).to_legacy()
+                except Exception as e:
+                    emit("warn", step="rebuild-self-heal", err=str(e)[:200])
+                m = trimesh.Trimesh(np.asarray(rm.vertices), np.asarray(rm.triangles), process=False)
+                emit("rebuilt", depth=int(a.rebuild_surface), faces=len(m.faces))
+            except Exception as e:
+                warnings.append("surface rebuild"); emit("warn", step="rebuild-surface", err=str(e)[:200])
         if a.fill_holes:
+            # Runs AFTER rebuild-surface on purpose: Poisson re-derives the mesh from points and its own
+            # density trim strips away low-confidence bridging (including a fill-holes patch made earlier),
+            # so a real gap can reopen. This pass has the final say on real holes, using the user's size.
             # trimesh.fill_holes() only closes gaps bounded by a few edges (measured: it left ~40k open
             # edges on a real scan untouched). Open3D fills up to a size threshold, so real holes close
             # while an intentionally-open base (much larger than the threshold) stays open. Fall back to
@@ -252,24 +308,6 @@ def main():
                     m.fill_holes(); filled = True
                 except Exception as e:
                     warnings.append("hole fill"); emit("warn", step="fill-holes-fallback", err=str(e)[:200])
-        if a.rebuild_surface > 0:
-            try:
-                import open3d as o3d
-                pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(np.array(m.vertices, dtype=np.float64)))
-                pcd.normals = o3d.utility.Vector3dVector(np.array(m.vertex_normals, dtype=np.float64))
-                rm, dens = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=int(a.rebuild_surface), n_threads=max(1, os.cpu_count() or 1))
-                dens = np.asarray(dens)
-                # Poisson closes every opening with a thin low-density skin; cut the sparsest 4% away so real
-                # openings stay open and the extrapolated bits over gaps in the scan do not survive
-                rm.remove_vertices_by_mask(dens < np.quantile(dens, 0.04))
-                rm.remove_degenerate_triangles(); rm.remove_unreferenced_vertices()
-                lab, cnt, _ = rm.cluster_connected_triangles(); lab = np.asarray(lab); cnt = np.asarray(cnt)
-                if len(cnt):
-                    rm.remove_triangles_by_mask(cnt[lab] < 0.01 * cnt.max()); rm.remove_unreferenced_vertices()   # crumbs
-                m = trimesh.Trimesh(np.asarray(rm.vertices), np.asarray(rm.triangles), process=False)
-                emit("rebuilt", depth=int(a.rebuild_surface), faces=len(m.faces))
-            except Exception as e:
-                warnings.append("surface rebuild"); emit("warn", step="rebuild-surface", err=str(e)[:200])
         if a.smooth_times > 0:
             # Save the pre-smoothing vertices and a length scale, so we can undo the runaways (below).
             V0 = np.asarray(m.vertices, dtype=np.float64).copy()
@@ -278,7 +316,10 @@ def main():
                 el = np.linalg.norm(V0[F0[:, [0, 1, 2]]] - V0[F0[:, [1, 2, 0]]], axis=2)
                 med_edge = float(np.median(el)) if el.size else 0.0
             except Exception: med_edge = 0.0
-            try: trimesh.smoothing.filter_humphrey(m, iterations=int(a.smooth_times))
+            try:
+                if a.smooth_method == "taubin": trimesh.smoothing.filter_taubin(m, iterations=int(a.smooth_times))
+                elif a.smooth_method == "laplacian": trimesh.smoothing.filter_laplacian(m, iterations=int(a.smooth_times))
+                else: trimesh.smoothing.filter_humphrey(m, iterations=int(a.smooth_times))
             except Exception as e:
                 warnings.append("smoothing"); emit("warn", step="smooth", err=str(e)[:200])
             # Humphrey/Laplacian smoothing drags a few percent of vertices far off these open-boundary scan meshes. Pin those runaway vertices back to their pre-smoothing position: topology untouched, no faces removed, the rest keeps its smoothing
