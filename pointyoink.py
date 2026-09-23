@@ -4170,7 +4170,9 @@ class App(LiveMixin, ctk.CTk):
         if node and node!=self._film_sel: self._film_sel=node; self._mark_scan(node)
         # include the version in the cache key: each version's mesh differs, and a node-only key made the
         # scanner and prepared renders collide on one file, so switching back showed the stale one.
-        verkey=(self._proc_current(name, node) or (None,))[0] if node else None
+        cur=self._proc_current(name, node) if node else None
+        verkey=cur[0] if cur else None
+        if cur and cur[2] and not mesh.startswith(PROJECTS): mesh=cur[2]   # the path and the version tag from ONE lookup: the caller's `mesh` may predate a version change
         key=("%s__%s__%s"%(name, node, verkey or "v")) if node else name; mode=self.shade_mode
         out=os.path.join(THUMBS, key+("__shaded.png" if mode=="solid" else "__wire.png"))
         self._shade_key=(key, mode)

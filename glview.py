@@ -5,7 +5,7 @@
 # drag rotates, scroll zooms, right-drag pans, double-click resets; solid or wireframe.
 # If a GL context cannot be created (no GLX, headless, VM), .failed becomes True and the app
 # swaps in the software view instead.
-import threading, time, ctypes, ctypes.util
+import threading, time, ctypes, ctypes.util, os, sys
 import numpy as np
 from pyopengltk import OpenGLFrame
 from OpenGL import GL, GLU, GLX
@@ -162,6 +162,8 @@ class GLView(OpenGLFrame):
         def work():
             try:
                 v, f, tf, nrm = shade.load_oriented_nrm(path, max_faces)   # verts+faces+transform+normals, all cached - the splash warms this exact entry
+                try: sys.stderr.write("glview load gen=%d %s faces=%d\n" % (gen, os.path.basename(path), len(f)))
+                except Exception: pass
                 if gen != self._gen: return                       # a newer load superseded this one: stop early
                 self.tf = tf
                 if gen != self._gen: return
