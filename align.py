@@ -80,6 +80,68 @@ def pair_err(pairs, T):
     B = np.array([p[0] for p in pairs], float); M = np.array([p[1] for p in pairs], float)
     Mh = (M @ T[:3, :3].T) + T[:3, 3]; return float(np.sqrt(((Mh - B) ** 2).sum(1)).mean())
 
+def _registration_metrics(T, M, B, final_corr, max_dist, icp_fitness=None):
+    """Extra quality signals beyond one-sided fitness/RMSE: symmetric overlap, per-correspondence
+    residual percentiles, normal agreement, and transform magnitude."""
+    import open3d as o3d
+    out = {}
+    # Transform magnitude - pure numpy, always available
+    try:
+        out["translation_mm"] = round(float(np.linalg.norm(T[:3, 3])), 2)
+        cos_a = float(np.clip((np.trace(T[:3, :3]) - 1.0) / 2.0, -1.0, 1.0))
+        out["rotation_deg"] = round(float(np.degrees(np.arccos(cos_a))), 2)
+    except Exception:
+        out["translation_mm"] = None; out["rotation_deg"] = None
+    # Symmetric fitness: build a temporary cloud from the transformed M points and evaluate B→T(M)
+    try:
+        mp_arr = np.asarray(M.points, dtype=np.float64)
+        mp_t = (T[:3, :3] @ mp_arr.T).T + T[:3, 3]
+        M_t = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(mp_t))
+        ev = o3d.pipelines.registration.evaluate_registration(B, M_t, max_dist)
+        rev = float(ev.fitness or 0.0)
+        if icp_fitness is not None and (icp_fitness + rev) > 1e-9:
+            out["sym_fitness"] = round(2.0 * icp_fitness * rev / (icp_fitness + rev), 3)
+        else:
+            out["sym_fitness"] = None
+    except Exception:
+        mp_t = None; out["sym_fitness"] = None
+    # Per-correspondence residuals and normal agreement from the final ICP correspondence set
+    if final_corr is None or not len(final_corr):
+        out["median_residual_mm"] = None; out["p95_residual_mm"] = None; out["normal_agreement"] = None
+        return out
+    try:
+        corr = np.asarray(final_corr, dtype=np.int64).reshape(-1, 2)
+        if mp_t is None:
+            mp_arr = np.asarray(M.points, dtype=np.float64)
+            mp_t = (T[:3, :3] @ mp_arr.T).T + T[:3, 3]
+        bp_arr = np.asarray(B.points, dtype=np.float64)
+        vm = (corr[:, 0] >= 0) & (corr[:, 0] < len(mp_t))
+        vb = (corr[:, 1] >= 0) & (corr[:, 1] < len(bp_arr))
+        valid = vm & vb
+        if valid.any():
+            dists = np.linalg.norm(mp_t[corr[valid, 0]] - bp_arr[corr[valid, 1]], axis=1)
+            out["median_residual_mm"] = round(float(np.median(dists)), 3)
+            out["p95_residual_mm"] = round(float(np.percentile(dists, 95)), 3)
+        else:
+            out["median_residual_mm"] = None; out["p95_residual_mm"] = None
+    except Exception:
+        out["median_residual_mm"] = None; out["p95_residual_mm"] = None
+    try:
+        mn_arr = np.asarray(M.normals, dtype=np.float64); bn_arr = np.asarray(B.normals, dtype=np.float64)
+        corr = np.asarray(final_corr, dtype=np.int64).reshape(-1, 2)
+        vm = (corr[:, 0] >= 0) & (corr[:, 0] < len(mn_arr))
+        vb = (corr[:, 1] >= 0) & (corr[:, 1] < len(bn_arr))
+        valid = vm & vb
+        if valid.any() and len(mn_arr) and len(bn_arr):
+            mn_rot = (T[:3, :3] @ mn_arr[corr[valid, 0]].T).T
+            dots = np.clip((mn_rot * bn_arr[corr[valid, 1]]).sum(1), -1.0, 1.0)
+            out["normal_agreement"] = round(float(np.mean(dots)), 3)
+        else:
+            out["normal_agreement"] = None
+    except Exception:
+        out["normal_agreement"] = None
+    return out
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", required=True); ap.add_argument("--moving", required=True); ap.add_argument("--out", required=True)
@@ -121,11 +183,27 @@ def main():
         Bd, Md = B.voxel_down_sample(fv), M.voxel_down_sample(fv)
         fb = o3d.pipelines.registration.compute_fpfh_feature(Bd, o3d.geometry.KDTreeSearchParamHybrid(radius=fv * 5, max_nn=100))
         fm = o3d.pipelines.registration.compute_fpfh_feature(Md, o3d.geometry.KDTreeSearchParamHybrid(radius=fv * 5, max_nn=100))
-        r = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
-            Md, Bd, fm, fb, True, fv * 1.5, o3d.pipelines.registration.TransformationEstimationPointToPoint(False), 3,
-            [o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9), o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(fv * 1.5)],
-            o3d.pipelines.registration.RANSACConvergenceCriteria(400000, 0.999))
-        T0 = np.asarray(r.transformation); emit("auto_done", fitness=round(r.fitness, 3), rmse=round(r.inlier_rmse, 2))
+        # FGR first: deterministic, faster than RANSAC, same FPFH features.
+        # Falls back to RANSAC when FGR produces a weak or geometrically implausible result.
+        global_method = "ransac"
+        try:
+            rfgr = o3d.pipelines.registration.registration_fgr_based_on_feature_matching(
+                Md, Bd, fm, fb,
+                o3d.pipelines.registration.FastGlobalRegistrationOption(maximum_correspondence_distance=fv * 1.5))
+            Tfgr = np.asarray(rfgr.transformation)
+            if (rfgr.fitness > 0.2 and np.isfinite(Tfgr).all()
+                    and np.linalg.norm(Tfgr[:3, 3]) < 5000):
+                T0 = Tfgr; global_method = "fgr"
+                emit("auto_done", method="fgr", fitness=round(rfgr.fitness, 3), rmse=round(rfgr.inlier_rmse, 2))
+        except Exception:
+            pass
+        if global_method == "ransac":
+            r = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
+                Md, Bd, fm, fb, True, fv * 1.5, o3d.pipelines.registration.TransformationEstimationPointToPoint(False), 3,
+                [o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9), o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(fv * 1.5)],
+                o3d.pipelines.registration.RANSACConvergenceCriteria(400000, 0.999))
+            T0 = np.asarray(r.transformation)
+            emit("auto_done", method="ransac", fitness=round(r.fitness, 3), rmse=round(r.inlier_rmse, 2))
     T = T0; fit = rmse = None
     auto_pairs = []
     final_corr = None
@@ -158,9 +236,11 @@ def main():
                         auto_pairs.append([bp0.tolist(), mp0.tolist()])
         except Exception:
             auto_pairs=[]
+    metrics = _registration_metrics(T, M, B, final_corr, max(a.voxel * 1.5, 1.0), icp_fitness=fit)
     out = {"matrix": T.tolist(), "fitness": fit, "rmse": rmse, "auto_pairs": auto_pairs,
            "pair_error_before": pair_err(pairs, np.eye(4)), "pair_error_after": pair_err(pairs, T),
            "units": "mm", "frame_convention": "T_base_moving", "reason_codes": []}
+    out.update(metrics)
     if landmark_metrics:
         final_residuals = landmark_residuals_mm(pairs, T)
         out.update(landmark_metrics)
@@ -171,6 +251,15 @@ def main():
         out["reason_codes"].append("low_overlap")
     if rmse is not None and rmse > 1.5:
         out["reason_codes"].append("high_residual")
+    sym = out.get("sym_fitness")
+    if sym is not None and sym < 0.2:
+        out["reason_codes"].append("low_sym_overlap")
+    na = out.get("normal_agreement")
+    if na is not None and na < 0.0:
+        out["reason_codes"].append("poor_normal_agreement")
+    t_mm = out.get("translation_mm"); r_deg = out.get("rotation_deg")
+    if (t_mm is not None and t_mm > 2000) or (r_deg is not None and r_deg > 170):
+        out["reason_codes"].append("suspect_transform")
     _dump_json(a.out, out); emit("result", fitness=(round(fit, 3) if fit is not None else None), rmse=(round(rmse, 2) if rmse is not None else None), icp=not a.no_icp)
     return 0
 

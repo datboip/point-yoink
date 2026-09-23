@@ -66,7 +66,8 @@ def _smooth_fill_faces(m, old_fcount, iters=120):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("infile"); ap.add_argument("outfile", nargs="?")
-    ap.add_argument("--info", action="store_true", help="print size, counts, pieces and open edges as JSON and exit")
+    ap.add_argument("--info", action="store_true", help="print size, counts, pieces, open edges, non-manifold edges and triangle quality as JSON and exit")
+    ap.add_argument("--fix-nonmanifold", action="store_true", help="remove non-manifold edges (opt-in: destructive, reports faces removed) and write result to outfile")
     ap.add_argument("--decimate", type=int, default=0, help="target face count (0=off)")
     ap.add_argument("--base-remove", action="store_true")
     ap.add_argument("--isolate", action="store_true")
@@ -151,10 +152,65 @@ def main():
         except Exception: pieces = -1
         try: open_edges = int(len(trimesh.grouping.group_rows(m.edges_sorted, require_count=1)))
         except Exception: open_edges = -1
-        emit("info", verts=len(m.vertices), faces=len(m.faces), extent=[round(float(x), 1) for x in ext], pieces=pieces,
-             open_edges=open_edges, watertight=bool(m.is_watertight), mb=round(os.path.getsize(a.infile) / 1048576, 1))
+        nm_edges = -1
+        try:
+            ec = trimesh.grouping.group_rows(m.edges_sorted, require_count=1)
+            # edges shared by 3+ faces: group all half-edges and count those with >2 occurrences
+            all_e = m.edges_sorted.view(np.dtype((np.void, m.edges_sorted.dtype.itemsize * 2))).ravel()
+            _, counts = np.unique(all_e, return_counts=True)
+            nm_edges = int((counts > 2).sum())
+        except Exception: pass
+        q_p5 = q_p50 = q_p95 = None
+        try:
+            V = np.asarray(m.vertices, dtype=np.float64); F = np.asarray(m.faces, dtype=np.int64)
+            if len(F):
+                v0, v1, v2 = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
+                a01 = v1 - v0; a02 = v2 - v0; a12 = v2 - v1
+                l01 = np.linalg.norm(a01, axis=1); l02 = np.linalg.norm(a02, axis=1); l12 = np.linalg.norm(a12, axis=1)
+                eps = 1e-12
+                # minimum angle per face via law of cosines
+                cos0 = np.clip(( a01 *  a02).sum(1) / np.maximum(l01 * l02, eps), -1, 1)
+                cos1 = np.clip((-a01 *  a12).sum(1) / np.maximum(l01 * l12, eps), -1, 1)
+                cos2 = np.clip(( a02 *  a12).sum(1) / np.maximum(l02 * l12, eps), -1, 1)  # noqa: E501 (sign: a02 and a12 share v2)
+                min_angles = np.degrees(np.arccos(np.minimum(np.minimum(cos0, cos1), cos2)))
+                q_p5 = round(float(np.percentile(min_angles, 5)), 1)
+                q_p50 = round(float(np.percentile(min_angles, 50)), 1)
+                q_p95 = round(float(np.percentile(min_angles, 95)), 1)
+        except Exception: pass
+        emit("info", verts=len(m.vertices), faces=len(m.faces), extent=[round(float(x), 1) for x in ext],
+             pieces=pieces, open_edges=open_edges, nm_edges=nm_edges, watertight=bool(m.is_watertight),
+             min_angle_p5=q_p5, min_angle_p50=q_p50, min_angle_p95=q_p95,
+             mb=round(os.path.getsize(a.infile) / 1048576, 1))
         return
     if not a.outfile: print("outfile required unless --info"); sys.exit(2)
+    if a.fix_nonmanifold:
+        try:
+            import open3d as o3d
+            o3d_m = o3d.geometry.TriangleMesh(
+                o3d.utility.Vector3dVector(np.asarray(m.vertices, np.float64)),
+                o3d.utility.Vector3iVector(np.asarray(m.faces, np.int32)))
+            faces_before = len(o3d_m.triangles)
+            o3d_m.remove_non_manifold_edges()
+            o3d_m.remove_unreferenced_vertices()
+            faces_after = len(o3d_m.triangles)
+            removed = faces_before - faces_after
+            m = trimesh.Trimesh(np.asarray(o3d_m.vertices), np.asarray(o3d_m.triangles), process=False)
+            emit("fix_nonmanifold", faces_removed=removed, faces=faces_after)
+        except Exception as e:
+            emit("warn", step="fix-nonmanifold", err=str(e)[:200])
+        tmp = a.outfile + ".tmp.%d.ply" % os.getpid()
+        import open3d as o3d
+        ok = o3d.io.write_triangle_mesh(tmp, o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(np.asarray(m.vertices, np.float64)),
+            o3d.utility.Vector3iVector(np.asarray(m.faces, np.int32))))
+        if ok and os.path.exists(tmp) and os.path.getsize(tmp) > 64:
+            os.replace(tmp, a.outfile)
+            emit("done", out=os.path.basename(a.outfile), faces=len(m.faces), verts=len(m.vertices))
+        else:
+            try: os.remove(tmp)
+            except Exception: pass
+            emit("warn", step="fix-nonmanifold-write", err="could not write output")
+        return
 
     # 1) DECIMATE FIRST - turns the memory-heavy topology ops that follow into cheap ones
     if a.decimate and len(m.faces) > a.decimate:
