@@ -5,6 +5,7 @@ All notable changes to PointYoink. 0.7.0 was the first tagged release; the
 
 ## 1.1.0 (unreleased, on the codex-next branch)
 
+- Prepare can rebuild the surface from the points (Poisson, needs Open3D): torn edges and streaks become one smooth skin, openings stay open. Off by default.
 - Prepare can remove stretched triangles (long slivers streaking off an edge, left by the scanner's fusion or an off combine); on by default at 4x the typical edge, with the gaps closed by Fill small holes.
 - Combine: pitch, roll and yaw turn buttons next to the X/Y/Z nudges, turning the moving scan about its own centre; the overlay no longer flickers where two scans coincide.
 - Remove base has a Preview: the model as it will be after the cut, in the same view, with Back to keep editing.

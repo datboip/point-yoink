@@ -77,6 +77,7 @@ def main():
     ap.add_argument("--fill-holes", action="store_true", help="fill holes (the scanner has this off by default)")
     ap.add_argument("--hole-size", type=float, default=0, help="largest hole to fill, in mm (0 = auto: ~4%% of the bbox diagonal, so real gaps close but an intentionally-open base does not)")
     ap.add_argument("--smooth-times", type=int, default=3, help="smoothing passes (scanner default 3; 0 = off)")
+    ap.add_argument("--rebuild-surface", type=int, default=0, help="rebuild the surface from the points with Poisson reconstruction at this octree depth (0 = off; 9 = normal, 10 = more detail). Turns torn edges and streaks into one continuous skin; the low-density skin Poisson grows over real openings is trimmed off. Needs Open3D")
     ap.add_argument("--slivers", type=float, default=0, help="remove stretched triangles: any face whose longest edge is more than this many times the mesh's median edge (0 = off; 4 is a good default). The small holes this opens are closed by the hole fill when it is on")
     ap.add_argument("--simplify-pct", type=float, default=0, help="keep this %% of faces after cleaning (0 = keep all; the scanner's Simplify uses 40)")
     ap.add_argument("--rebuild-points", action="store_true", help="reconstruct a mesh from a point cloud with ball-pivoting (keeps openings); runs under this process's memory cap")
@@ -251,6 +252,24 @@ def main():
                     m.fill_holes(); filled = True
                 except Exception as e:
                     warnings.append("hole fill"); emit("warn", step="fill-holes-fallback", err=str(e)[:200])
+        if a.rebuild_surface > 0:
+            try:
+                import open3d as o3d
+                pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(np.array(m.vertices, dtype=np.float64)))
+                pcd.normals = o3d.utility.Vector3dVector(np.array(m.vertex_normals, dtype=np.float64))
+                rm, dens = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=int(a.rebuild_surface), n_threads=max(1, os.cpu_count() or 1))
+                dens = np.asarray(dens)
+                # Poisson closes every opening with a thin low-density skin; cut the sparsest 4% away so real
+                # openings stay open and the extrapolated bits over gaps in the scan do not survive
+                rm.remove_vertices_by_mask(dens < np.quantile(dens, 0.04))
+                rm.remove_degenerate_triangles(); rm.remove_unreferenced_vertices()
+                lab, cnt, _ = rm.cluster_connected_triangles(); lab = np.asarray(lab); cnt = np.asarray(cnt)
+                if len(cnt):
+                    rm.remove_triangles_by_mask(cnt[lab] < 0.01 * cnt.max()); rm.remove_unreferenced_vertices()   # crumbs
+                m = trimesh.Trimesh(np.asarray(rm.vertices), np.asarray(rm.triangles), process=False)
+                emit("rebuilt", depth=int(a.rebuild_surface), faces=len(m.faces))
+            except Exception as e:
+                warnings.append("surface rebuild"); emit("warn", step="rebuild-surface", err=str(e)[:200])
         if a.smooth_times > 0:
             # Save the pre-smoothing vertices and a length scale, so we can undo the runaways (below).
             V0 = np.asarray(m.vertices, dtype=np.float64).copy()
