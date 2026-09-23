@@ -77,6 +77,7 @@ def main():
     ap.add_argument("--fill-holes", action="store_true", help="fill holes (the scanner has this off by default)")
     ap.add_argument("--hole-size", type=float, default=0, help="largest hole to fill, in mm (0 = auto: ~4%% of the bbox diagonal, so real gaps close but an intentionally-open base does not)")
     ap.add_argument("--smooth-times", type=int, default=3, help="smoothing passes (scanner default 3; 0 = off)")
+    ap.add_argument("--slivers", type=float, default=0, help="remove stretched triangles: any face whose longest edge is more than this many times the mesh's median edge (0 = off; 4 is a good default). The small holes this opens are closed by the hole fill when it is on")
     ap.add_argument("--simplify-pct", type=float, default=0, help="keep this %% of faces after cleaning (0 = keep all; the scanner's Simplify uses 40)")
     ap.add_argument("--rebuild-points", action="store_true", help="reconstruct a mesh from a point cloud with ball-pivoting (keeps openings); runs under this process's memory cap")
     a = ap.parse_args()
@@ -206,6 +207,21 @@ def main():
 
     warnings = []   # requested steps that silently failed - reported at 'done' so the app never claims a clean run it didn't do
     if a.clean:
+        if a.slivers > 0:
+            # Stretched triangles: the scanner's fusion (or a slightly-off combine) leaves long thin faces
+            # streaking off an edge. A clean scan is uniform, so anything with an edge several times the
+            # median is a sliver, not surface. Dropped before the hole fill so the gaps they leave get closed.
+            try:
+                V = np.asarray(m.vertices, np.float64); F = np.asarray(m.faces)
+                el = np.linalg.norm(V[F[:, [0, 1, 2]]] - V[F[:, [1, 2, 0]]], axis=2)
+                med = float(np.median(el)) if el.size else 0.0
+                if med > 0:
+                    bad = el.max(axis=1) > med * float(a.slivers)
+                    if bad.any():
+                        m.update_faces(~bad); m.remove_unreferenced_vertices()
+                    emit("slivers", removed=int(bad.sum()), median_edge_mm=round(med, 3), faces=len(m.faces))
+            except Exception as e:
+                warnings.append("sliver removal"); emit("warn", step="slivers", err=str(e)[:200])
         if a.fill_holes:
             # trimesh.fill_holes() only closes gaps bounded by a few edges (measured: it left ~40k open
             # edges on a real scan untouched). Open3D fills up to a size threshold, so real holes close

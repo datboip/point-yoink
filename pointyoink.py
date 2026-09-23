@@ -2679,6 +2679,7 @@ class App(LiveMixin, ctk.CTk):
                         clean_isolation=self._num(self.clean_iso,15,0,100), clean_fill_holes=self.clean_holes.get(),
                         clean_smooth_times=int(self._num(self.clean_smooth,3,0,50)), clean_keep_pct=self._num(self.clean_keep,100,1,100),
                         clean_do_iso=self.clean_do_iso.get(), clean_do_smooth=self.clean_do_smooth.get(), clean_do_keep=self.clean_do_keep.get(), clean_do_base=self.clean_do_base.get(),
+                        clean_do_slivers=self.clean_do_slivers.get(), clean_slivers=self._num(self.clean_slivers,4,2,20),
                         scanner_ip=(self.live_ip.get().strip() if getattr(self, "live_ip", None) is not None else self.cfg.get("scanner_ip","")),
                         cleanup=self.cleanup.get(), side=self.cfg.get("side","project"),
                         gl_view=self.cfg.get("gl_view","auto"), fuse_device=self.cfg.get("fuse_device","auto"),
@@ -4574,6 +4575,8 @@ class App(LiveMixin, ctk.CTk):
         self.clean_keep=ctk.StringVar(value=str(self.cfg.get("clean_keep_pct",100)))
         self.clean_do_iso=ctk.BooleanVar(value=bool(self.cfg.get("clean_do_iso",True)))
         self.clean_do_smooth=ctk.BooleanVar(value=bool(self.cfg.get("clean_do_smooth",True)))
+        self.clean_do_slivers=ctk.BooleanVar(value=bool(self.cfg.get("clean_do_slivers",True)))
+        self.clean_slivers=ctk.StringVar(value=str(self.cfg.get("clean_slivers",4)))
         self.clean_do_keep=ctk.BooleanVar(value=bool(self.cfg.get("clean_do_keep",False)))
         self.clean_do_base=ctk.BooleanVar(value=bool(self.cfg.get("clean_do_base",False)))
     def _num(self, var, default, lo, hi):
@@ -4587,6 +4590,7 @@ class App(LiveMixin, ctk.CTk):
             "iso": self._num(self.clean_iso,15,0,100), "holes": bool(self.clean_holes.get()),
             "smooth": int(self._num(self.clean_smooth,3,0,50)), "keep": self._num(self.clean_keep,100,1,100),
             "do_iso": bool(self.clean_do_iso.get()), "do_smooth": bool(self.clean_do_smooth.get()),
+            "do_slivers": bool(self.clean_do_slivers.get()), "slivers": self._num(self.clean_slivers,4,2,20),
             "do_keep": bool(self.clean_do_keep.get()), "do_base": bool(self.clean_do_base.get()),
         }
     def _clean_args_from(self, opts):
@@ -4594,6 +4598,7 @@ class App(LiveMixin, ctk.CTk):
         args=["--clean", "--isolation-rate", "%g" % (opts["iso"] if opts.get("do_iso") else 0),
               "--smooth-times", "%d" % (opts["smooth"] if opts.get("do_smooth") else 0)]
         if opts.get("holes"): args.append("--fill-holes")
+        if opts.get("do_slivers"): args+=["--slivers", "%g" % opts.get("slivers", 4)]
         if opts.get("do_base"): args.append("--base-remove")
         keep=opts.get("keep", 100)
         if opts.get("do_keep") and keep<100: args+=["--simplify-pct", "%g" % keep]
@@ -6285,6 +6290,7 @@ class App(LiveMixin, ctk.CTk):
             s=s or {}; b=[]
             if s.get("do_iso"): b.append("isolate %s%%" % s.get("iso"))
             if s.get("do_base"): b.append("remove base")
+            if s.get("do_slivers"): b.append("slivers >%sx" % s.get("slivers"))
             if s.get("do_smooth"): b.append("smooth %s" % s.get("smooth"))
             if s.get("holes"): b.append("fill holes")
             if s.get("do_keep") and (s.get("keep") or 100)<100: b.append("keep %s%% tris" % s.get("keep"))
@@ -6329,6 +6335,8 @@ class App(LiveMixin, ctk.CTk):
             "Loose bits that are not part of the object. The scanner's Isolation rate; its default is 15%.")
         row(self.clean_do_base, "Remove base", "cuts off the biggest flat surface (table/turntable); skips itself if it would take a big chunk of the part", None, "",
             "Automatic, off by default. For a cut you place by hand, use Remove base on the scan instead.")
+        row(self.clean_do_slivers, "Remove stretched triangles", "longer than", self.clean_slivers, "x the typical edge",
+            "Long thin triangles streaking off an edge, left by the scanner's fusion or a slightly off combine. A clean scan is uniform, so anything several times the typical edge is not surface. Turn on Fill small holes to close the gaps they leave.")
         row(self.clean_do_smooth, "Smooth surface", "", self.clean_smooth, "passes (the scanner uses 3)",
             "Evens out scan ripple. More passes soften small detail.")
         row(self.clean_holes, "Fill small holes", "closes small gaps in the surface. Off on the scanner by default: it can invent surface where the scan missed", None, "",
@@ -6398,7 +6406,7 @@ class App(LiveMixin, ctk.CTk):
             self._proc_set_current(name, node, "clean"); close()
         def discard(): close(); self.set_banner("Discarded. Nothing was changed.", MUT)
         def run():
-            if not (self.clean_do_iso.get() or self.clean_do_smooth.get() or self.clean_holes.get() or self.clean_do_keep.get() or self.clean_do_base.get()):
+            if not (self.clean_do_iso.get() or self.clean_do_smooth.get() or self.clean_holes.get() or self.clean_do_keep.get() or self.clean_do_base.get() or self.clean_do_slivers.get()):
                 status.configure(text="Tick at least one action.", text_color=WARN); return
             clean_opts=self._clean_options(); pstate["opts"]=clean_opts; self._persist(); able(runb, False); able(keepb, False); discb.pack_forget()
             loads[1].configure(text="Working…"); loads[1].grid(); loads[1].lift(); t0=time.time()
