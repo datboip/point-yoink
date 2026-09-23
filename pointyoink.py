@@ -1217,7 +1217,13 @@ def detect_base(path):
     plane_at = float(proj[np.abs((V - best_p) @ best_n) < tol].mean())
     span = float(proj.max() - proj.min()) or 1.0
     at_extreme = min(abs(plane_at - proj.min()), abs(plane_at - proj.max())) < span * 0.12
-    return {"present": bool(frac >= 0.15 and at_extreme), "frac": float(frac)}
+    if frac < 0.15:
+        present = False                    # no sizeable flat mass at all: confidently no table
+    elif at_extreme:
+        present = True                     # sizeable AND sitting at one end, the way a table does: confidently a table
+    else:
+        present = None                     # sizeable but not clearly at an edge: don't know, don't claim "no table"
+    return {"present": present, "frac": float(frac)}
 
 def _desktop_scale():
     """Best guess at the desktop UI scale so the app matches other windows.
@@ -2676,8 +2682,9 @@ class App(LiveMixin, ctk.CTk):
                         auto_open=self.auto_open.get(), geometry=self._safe_geometry(),
                         exp_stl=self.exp_stl.get(), exp_obj=self.exp_obj.get(), exp_glb=self.exp_glb.get(),
                         fuse_voxel=round(float(self.fuse_voxel.get() or 0.4),2),
-                        clean_isolation=self._num(self.clean_iso,15,0,100), clean_fill_holes=self.clean_holes.get(),
+                        clean_isolation=self._num(self.clean_iso,100,0,100), clean_fill_holes=self.clean_holes.get(),
                         clean_smooth_times=int(self._num(self.clean_smooth,3,0,50)), clean_keep_pct=self._num(self.clean_keep,100,1,100),
+                        clean_smooth_method=self.clean_smooth_method.get(),
                         clean_do_iso=self.clean_do_iso.get(), clean_do_smooth=self.clean_do_smooth.get(), clean_do_keep=self.clean_do_keep.get(), clean_do_base=self.clean_do_base.get(),
                         clean_do_slivers=self.clean_do_slivers.get(), clean_slivers=self._num(self.clean_slivers,4,2,20),
                         clean_do_rebuild=self.clean_do_rebuild.get(), clean_rebuild_depth=int(self._num(self.clean_rebuild,9,7,11)),
@@ -3820,6 +3827,9 @@ class App(LiveMixin, ctk.CTk):
                          text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=250).pack(fill="x")
         else:
             ctk.CTkLabel(ts, text="Pick a tool, then drag on the model.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=250).pack(fill="x")
+        if tool:   # left is taken by the selection tool while one is active, so the view still needs both
+            ctk.CTkLabel(ts, text="Right-drag to turn the view, middle-drag to pan, scroll to zoom.",
+                         text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=250).pack(fill="x", pady=(4,0))
     def _set_edit_tool(self, tool, _init=False):
         """Pick a point-selection tool (or click the active one / pass None to go back to orbit)."""
         cur=getattr(self.mv, "edit_tool", None)
@@ -4570,9 +4580,10 @@ class App(LiveMixin, ctk.CTk):
         """Clean-up knobs, named and defaulted like the scanner's Mesh panel.
         The Process page is built before the settings vars, so both sides call this."""
         if "clean_iso" in self.__dict__: return
-        self.clean_iso=ctk.StringVar(value=str(self.cfg.get("clean_isolation",15)))
+        self.clean_iso=ctk.StringVar(value=str(self.cfg.get("clean_isolation",100)))
         self.clean_holes=ctk.BooleanVar(value=bool(self.cfg.get("clean_fill_holes",False)))
         self.clean_smooth=ctk.StringVar(value=str(self.cfg.get("clean_smooth_times",3)))
+        self.clean_smooth_method=ctk.StringVar(value=str(self.cfg.get("clean_smooth_method","humphrey")))
         self.clean_keep=ctk.StringVar(value=str(self.cfg.get("clean_keep_pct",100)))
         self.clean_do_iso=ctk.BooleanVar(value=bool(self.cfg.get("clean_do_iso",True)))
         self.clean_do_smooth=ctk.BooleanVar(value=bool(self.cfg.get("clean_do_smooth",True)))
@@ -4590,8 +4601,9 @@ class App(LiveMixin, ctk.CTk):
         """Snapshot cleanup settings on the Tk thread before workers start."""
         self._ensure_clean_vars()
         return {
-            "iso": self._num(self.clean_iso,15,0,100), "holes": bool(self.clean_holes.get()),
+            "iso": self._num(self.clean_iso,100,0,100), "holes": bool(self.clean_holes.get()),
             "smooth": int(self._num(self.clean_smooth,3,0,50)), "keep": self._num(self.clean_keep,100,1,100),
+            "smooth_method": self.clean_smooth_method.get(),
             "do_iso": bool(self.clean_do_iso.get()), "do_smooth": bool(self.clean_do_smooth.get()),
             "do_slivers": bool(self.clean_do_slivers.get()), "slivers": self._num(self.clean_slivers,4,2,20),
             "do_rebuild": bool(self.clean_do_rebuild.get()), "rebuild": int(self._num(self.clean_rebuild,9,7,11)),
@@ -4600,7 +4612,8 @@ class App(LiveMixin, ctk.CTk):
     def _clean_args_from(self, opts):
         """process.py flags for the clean-up knobs shown on the Process page."""
         args=["--clean", "--isolation-rate", "%g" % (opts["iso"] if opts.get("do_iso") else 0),
-              "--smooth-times", "%d" % (opts["smooth"] if opts.get("do_smooth") else 0)]
+              "--smooth-times", "%d" % (opts["smooth"] if opts.get("do_smooth") else 0),
+              "--smooth-method", opts.get("smooth_method") or "humphrey"]
         if opts.get("holes"): args.append("--fill-holes")
         if opts.get("do_slivers"): args+=["--slivers", "%g" % opts.get("slivers", 4)]
         if opts.get("do_rebuild"): args+=["--rebuild-surface", "%d" % opts.get("rebuild", 9)]
@@ -6080,8 +6093,8 @@ class App(LiveMixin, ctk.CTk):
                         btxt="Table still attached - use Remove base"; bcol=WARN; btip="A large flat plane sits under the part, so the table looks like it's still in the scan."
                     elif present is False:
                         btxt="No obvious table detected"; bcol=MUT; btip="No large flat base plane found, so the scanner most likely trimmed the table already. This is a guess from the geometry, not proof - Remove base is still there if a table is left."
-                    else:      # couldn't tell (tiny model / load failed)
-                        btxt="Couldn't check for a base"; bcol=MUT; btip="Not enough geometry to tell whether a table is attached. Use Remove base if the table is still on the part."
+                    else:      # couldn't tell: tiny model / load failed, or a large flat area was found but not clearly at one edge
+                        btxt="Couldn't check for a base"; bcol=MUT; btip="Not enough geometry, or a large flat area was found but it doesn't clearly sit at one edge of the part, to say for sure whether a table is attached. Use Remove base if the table is still on the part."
                 bl=ctk.CTkLabel(hdr, text=btxt, text_color=bcol, font=ctk.CTkFont(size=11), anchor="w"); bl.pack(fill="x", padx=12)
                 if btip: self._tip(bl, btip)
             ctk.CTkFrame(hdr, fg_color="transparent", height=4).pack()
@@ -6319,9 +6332,9 @@ class App(LiveMixin, ctk.CTk):
         cur=self._proc_current(name, node)
         if not cur: return
         self._ensure_clean_vars()
-        t=self._top("Prepare · %s" % self._scan_label(name, node), 960, 780, key="prepare")
+        t=self._top("Prepare · %s" % self._scan_label(name, node), 1600, 980, key="prepare")
         if t is None: return
-        t.resizable(False, False)     # lock it: long option text / the After render must not make the window jump sizes
+        t.resizable(True, True)       # the 3D views benefit from more room; the option rows and After render don't reflow with size
         src=cur[2]; final=os.path.join(self.dest.get() or DEFAULT_DEST, name, "%s_%s_clean.ply" % (name, node))   # project root: where the version list looks, even for a nested source
         tmp="%s.tmp-%d-%x.ply" % (final[:-4], os.getpid(), id(t))          # unique to this dialog: two open Prepare windows never share a result file
         pstate={"opts": None}     # the settings that produced the current tmp, recorded into history on Save
@@ -6337,16 +6350,25 @@ class App(LiveMixin, ctk.CTk):
             if entry is not None:
                 e=ctk.CTkEntry(r, textvariable=entry, width=46, height=24, corner_radius=6, fg_color="#0d0f14", border_color=STROKE, text_color=TX, justify="center"); e.pack(side="left", padx=6)
                 ctk.CTkLabel(r, text=after, text_color=MUT, font=ctk.CTkFont(size=11)).pack(side="left")
+            return r
         row(self.clean_do_iso, "Remove floating pieces", "drop pieces smaller than", self.clean_iso, "% of the biggest one",
-            "Loose bits that are not part of the object. The scanner's Isolation rate; its default is 15%.")
+            "Loose bits that are not part of the object, usually a stray edge of the turntable a base cut missed. Kept at 100% (only the biggest piece survives) unless you lower it, for a scan you know has more than one real piece.")
         row(self.clean_do_base, "Remove base", "cuts off the biggest flat surface (table/turntable); skips itself if it would take a big chunk of the part", None, "",
             "Automatic, off by default. For a cut you place by hand, use Remove base on the scan instead.")
         row(self.clean_do_slivers, "Remove stretched triangles", "longer than", self.clean_slivers, "x the typical edge",
             "Long thin triangles streaking off an edge, left by the scanner's fusion or a slightly off combine. A clean scan is uniform, so anything several times the typical edge is not surface. Turn on Fill small holes to close the gaps they leave.")
         row(self.clean_do_rebuild, "Rebuild surface", "detail", self.clean_rebuild, "(9 normal, 10 finer; needs Open3D, a few seconds)",
             "Rebuilds the whole surface from the scan's points, so torn edges and streaks become one smooth skin, the way the scanner's own One-tap Edit does. Openings in the part stay open. Off by default: it replaces every triangle, so check the result.")
-        row(self.clean_do_smooth, "Smooth surface", "", self.clean_smooth, "passes (the scanner uses 3)",
+        smooth_row=row(self.clean_do_smooth, "Smooth surface", "", self.clean_smooth, "passes (the scanner uses 3)",
             "Evens out scan ripple. More passes soften small detail.")
+        _SMOOTH_METHODS={"Humphrey (default)":"humphrey", "Taubin (barely shrinks)":"taubin", "Laplacian (strongest)":"laplacian"}
+        _SMOOTH_METHODS_R={v:k for k,v in _SMOOTH_METHODS.items()}
+        sm_menu=ctk.CTkOptionMenu(smooth_row, values=list(_SMOOTH_METHODS.keys()), width=170, height=24, corner_radius=6,
+                                   fg_color="#0d0f14", button_color="#0d0f14", button_hover_color=STROKE, text_color=TX, font=ctk.CTkFont(size=11),
+                                   command=lambda v: self.clean_smooth_method.set(_SMOOTH_METHODS.get(v,"humphrey")))
+        sm_menu.set(_SMOOTH_METHODS_R.get(self.clean_smooth_method.get(), "Humphrey (default)"))
+        sm_menu.pack(side="left", padx=(6,12))
+        self._tip(sm_menu, "Humphrey stays closest to the original shape. Taubin shrinks the least of the three. Laplacian smooths the hardest but can round off real detail.")
         row(self.clean_holes, "Fill small holes", "closes small gaps in the surface. Off on the scanner by default: it can invent surface where the scan missed", None, "",
             "Only small holes are closed. Intentional openings in the part can get filled too, so check the result.")
         row(self.clean_do_keep, "Reduce triangle count", "keep", self.clean_keep, "% of the triangles (smaller file, less detail)",
@@ -6440,7 +6462,7 @@ class App(LiveMixin, ctk.CTk):
                             status.configure(text="Done, but %s didn't run (see Help > Log). %s → %s. Compare, then Save or Discard." % (" and ".join(warn), human(os.path.getsize(src)), human(st or 0)), text_color=WARN)
                         else:
                             status.configure(text="Done: %s → %s. Turn the views to compare, then Save prepared version or Discard." % (human(os.path.getsize(src)), human(st or 0)), text_color=TX)
-                        show(1, tmp, "Loading the result…"); keepb.pack(side="right", padx=6); discb.pack(side="right", padx=6)
+                        show(1, tmp, "Loading the result…"); keepb.pack(side="right", padx=6); discb.pack(side="right", padx=6); able(keepb, True, OK)
                     else: status.configure(text="Could not prepare this scan (see Help > Log).", text_color=WARN); loads[1].configure(text="No result")
                 self.q.put(("call", done))
             threading.Thread(target=work, daemon=True).start()
@@ -6598,7 +6620,7 @@ class App(LiveMixin, ctk.CTk):
         if len(nodes)<2:
             self.set_banner("Combine scans needs at least two scans with a 3D model.", WARN)
             return
-        t=self._top("Combine scans · %s" % self.disp(name), 1180, 1000, key="align")
+        t=self._top("Combine scans · %s" % self.disp(name), 1700, 1040, key="align")
         if t is None: return
         rec=self.records.setdefault(name,{}).setdefault("align",{})
         st={"base": rec.get("_base") if rec.get("_base") in nodes else nodes[0], "moving": None, "pairs": [], "pending": None, "redo": None, "result": None, "busy": False}
@@ -6737,9 +6759,8 @@ class App(LiveMixin, ctk.CTk):
         side_build=side_button("  Build connected scans", lambda: combine(), "combine")
         self._tip(side_build, "Fuse every scan connected to the selected base into one combined model.")
         side=_side_parent
-        matches_box=subsection("Saved matches", "These are the scan-to-scan matches you have saved. Build uses these connections.")
-        side_matches=ctk.CTkFrame(matches_box, fg_color="transparent")
-        side_matches.pack(fill="x", padx=8, pady=(2,8))
+        # right after Actions, before Saved matches / Manual point pairs: the natural next move after a bad
+        # Auto align or a rough manual fit is to nudge it straight, not scroll past two more sections to find how
         nudge_box=subsection("Nudge moving scan", "Base stays locked. These buttons move the moving scan, shown orange, against the base scan, shown grey. It edits only the saved transform.")
         _side_parent=side
         side=nudge_box
@@ -6769,6 +6790,9 @@ class App(LiveMixin, ctk.CTk):
             b.grid(row=i//2, column=i%2, padx=2, pady=2, sticky="ew"); self._tip(b, rot_tips[axis])
         ctk.CTkLabel(side, text="Base is locked. Nudge moves the moving scan, the orange one. Then Save this match.", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w", justify="left", wraplength=190).pack(fill="x", padx=10, pady=(0,8))
         side=_side_parent
+        matches_box=subsection("Saved matches", "These are the scan-to-scan matches you have saved. Build uses these connections.")
+        side_matches=ctk.CTkFrame(matches_box, fg_color="transparent")
+        side_matches.pack(fill="x", padx=8, pady=(2,8))
         def manual_validation_message():
             n=len(st.get("pairs") or [])
             if n<3:
@@ -6823,12 +6847,20 @@ class App(LiveMixin, ctk.CTk):
                     manual_next.configure(text="Next click: start pair %d on either scan" % (len(pairs)+1), text_color=AC)
                 if not pairs and pend is None:
                     ctk.CTkLabel(manual_list, text="No manual pairs yet", text_color=DIM, font=ctk.CTkFont(size=10), anchor="w").pack(fill="x", padx=2, pady=1)
+                res=st.get("result")
+                residuals=(res.get("landmark_residuals_after_mm") if res else None) or []
+                if len(residuals)!=len(pairs): residuals=None   # stale (pairs changed since this result): don't show wrong numbers
                 for idx,pr in enumerate(pairs):
                     row=ctk.CTkFrame(manual_list, fg_color="#0a0c10", corner_radius=7)
                     row.pack(fill="x", pady=2)
                     c=self.PAIR_COLOURS[idx % len(self.PAIR_COLOURS)]
                     dot="#%02x%02x%02x" % tuple(max(0,min(255,int(v*255))) for v in c)
                     ctk.CTkLabel(row, text=str(idx+1), width=20, text_color=dot, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=(5,2), pady=4)
+                    if residuals is not None:
+                        rv=residuals[idx]; rcol=(WARN if rv>15 else (OK if rv<5 else MUT))
+                        rlbl=ctk.CTkLabel(row, text="%.0fmm" % rv, width=42, text_color=rcol, font=ctk.CTkFont(size=10, weight="bold" if rv>15 else "normal"))
+                        rlbl.pack(side="left", padx=(0,2))
+                        self._tip(rlbl, "How far this pair is from the fit that best satisfies all pairs together. A pair much higher than the others is likely mismatched (wrong physical spot) - redo it." if rv>15 else "Close to the shared fit - this pair looks consistent with the others.")
                     ctk.CTkButton(row, text="redo B", width=48, height=22, corner_radius=6, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=10), command=lambda i=idx: redo_pair(i,0)).pack(side="left", padx=1)
                     ctk.CTkButton(row, text="redo M", width=50, height=22, corner_radius=6, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, font=ctk.CTkFont(size=10), command=lambda i=idx: redo_pair(i,1)).pack(side="left", padx=1)
                     ctk.CTkButton(row, text="", image=_icon("close", "muted", 12), width=24, height=22, corner_radius=6, fg_color="transparent", border_width=1, border_color="#5a2a38", hover_color="#3a2530", text_color="#ff9db0", font=ctk.CTkFont(size=11, weight="bold"), command=lambda i=idx: delete_pair(i)).pack(side="right", padx=(1,5))
@@ -7226,6 +7258,7 @@ class App(LiveMixin, ctk.CTk):
                                 status.configure(text="Alignment succeeded, but the orange preview failed to draw. Save still works; see Help > Log.", text_color=WARN)
                         views[2].clear_layers(draw=False); views[2].add_layer(overlay_src, res["matrix"], colour=(1.0,0.36,0.05), on_ready=overlay_ready)
                         caps[2].configure(text="Alignment preview · %s is grey, %s is orange" % (lab(st["base"]), lab(st["moving"])))
+                    refresh_manual_panel()   # shows each pair's residual against this new result, so a mismatched pair stands out
                     able(keepb, True)
                 self.q.put(("call", done))
             threading.Thread(target=work, daemon=True).start()
@@ -7303,7 +7336,7 @@ class App(LiveMixin, ctk.CTk):
             self.set_banner("%s lined up to %s. Saved with the project." % (lab(mv), lab(bs)), OK)
             nxt=next((n for n in nodes if n!=st["base"] and self._align_matrix_to_base(rec, n, st["base"]) is None), None)
             if nxt: choose_pair(st["base"], nxt); status.configure(text="Saved. Now line up moving scan %s, or use Align against / pair buttons if it overlaps a different scan better." % lab(nxt), text_color=MUT)
-            else: status.configure(text="Every scan is connected. Build one model from all of them below.", text_color=OK)
+            else: status.configure(text="Saved. Every scan is connected - build one model from all of them below.", text_color=OK)
         def combine():
             done=[n for n in nodes if n!=st["base"] and self._align_matrix_to_base(rec, n, st["base"]) is not None]
             self._combine(name, st["base"], done, status); able(comb, False, OK); busy_on(None)   # the combine worker writes its own frame counts into the status line

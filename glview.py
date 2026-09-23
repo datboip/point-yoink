@@ -104,8 +104,8 @@ class GLView(OpenGLFrame):
         self._split_req = None                 # (mask, colour_keep, colour_gone) to (re)apply after an upload
         self.plane = None                      # optional translucent quad: (centre_view_xyz, normal_view_xyz, half_size)
         self.bind("<ButtonPress-1>", self._press); self.bind("<B1-Motion>", self._rotate); self.bind("<Motion>", self._motion)
-        self.bind("<ButtonPress-3>", self._press); self.bind("<B3-Motion>", self._pan)
-        self.bind("<ButtonPress-2>", self._press); self.bind("<B2-Motion>", self._pan)
+        self.bind("<ButtonPress-3>", self._press); self.bind("<B3-Motion>", lambda e: self._pan(e, 3))
+        self.bind("<ButtonPress-2>", self._press); self.bind("<B2-Motion>", lambda e: self._pan(e, 2))
         self.bind("<ButtonRelease-1>", self._release); self.bind("<ButtonRelease-3>", self._release); self.bind("<ButtonRelease-2>", self._release)
         self.bind("<MouseWheel>", self._wheel); self.bind("<Button-4>", lambda e: self._wheel(e, 1)); self.bind("<Button-5>", lambda e: self._wheel(e, -1))
         self.bind("<Double-Button-1>", lambda e: self.reset())
@@ -1218,12 +1218,13 @@ class GLView(OpenGLFrame):
         # This must stay free (not a clamped turntable) - the 3-point base-removal tool needs to orient
         # the mesh from any direction to place the cut, and clamping the pitch broke it.
         self.rot = self._axis_rot(dy * 0.5, 1, 0, 0) @ self._axis_rot(dx * 0.5, 0, 1, 0) @ self.rot; self.draw()
-    def _pan(self, e):
+    def _pan(self, e, button=3):
         if not self._drag: return
         w, h = max(64, self.winfo_width()), max(64, self.winfo_height())
         dx, dy = e.x - self._drag[0], e.y - self._drag[1]; self._drag = (e.x, e.y)
-        if self.edit_tool:                 # while a select tool is active, right/middle-drag ORBITS so you can
-            self.rot = self._axis_rot(dy * 0.5, 1, 0, 0) @ self._axis_rot(dx * 0.5, 0, 1, 0) @ self.rot; self.draw(); return   # check coverage from any angle; the red selection persists
+        if self.edit_tool and button == 3:  # while a select tool is active, LEFT is taken by selecting, so
+            self.rot = self._axis_rot(dy * 0.5, 1, 0, 0) @ self._axis_rot(dx * 0.5, 0, 1, 0) @ self.rot; self.draw(); return
+            # right-drag orbits (check selection coverage from any angle) and middle-drag still pans below
         self.pan[0] += dx / (w * 0.9); self.pan[1] -= dy / (h * 0.9); self.draw()   # scale pointer movement to the viewport
     def _wheel(self, e, direction=None):
         d = direction if direction is not None else (1 if e.delta > 0 else -1)
