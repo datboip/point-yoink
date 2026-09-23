@@ -5587,10 +5587,10 @@ class App(LiveMixin, ctk.CTk):
             return ("Build %s" % self._scan_label(name, sel),
                     "This scan is still raw data. Build its 3D model on this PC (a few seconds on a graphics card), or use One-tap Edit on the scanner.",
                     "Build model", lambda n=sel: self._proc_build(name, [n]), 0, None, "build")
-        # base cut is about the scan you're looking at. If that scan's base is already done, don't nag about
-        # another scan's base while you inspect a finished one - move on to the project step (Combine still
-        # flags any uncut bases before it merges).
-        if nobase and not (sel is not None and sel in built and sel not in nobase):
+        # Base cut is a project-wide step before Combine: keep walking through every scan that still needs
+        # one, even if the scan you're currently looking at is already done, so finishing one scan's cut
+        # always advances to the next uncut scan instead of jumping ahead to Combine with others untouched.
+        if nobase:
             n0=sel if sel in nobase else nobase[0]
             def go(n=n0): self._pick_scan_by_node(name, n); self.on_remove_base(n)
             def skip(n=n0): self._skip_base(name, n)
@@ -5610,30 +5610,18 @@ class App(LiveMixin, ctk.CTk):
             return ("Build the 3D model%s" % ("" if len(unbuilt)==1 else "s"),
                     "%d scan%s %s raw data only. Easiest is One-tap Edit on the scanner, then share the project again. Or build here now (seconds on a graphics card) and prepare it yourself." % (len(unbuilt), "" if len(unbuilt)==1 else "s", "has" if len(unbuilt)==1 else "have"),
                     "Build %d model%s here" % (len(unbuilt), "" if len(unbuilt)==1 else "s"), lambda: self._proc_build(name, unbuilt), 0, None, "build")
-        keep_sep=bool(self.records.get(name, {}).get("keep_separate"))
-        # Several built scans and no combined model yet: PointYoink assumes they're sides of one object and
-        # pushes Combine - but they might be separate objects. Offer the choice instead of assuming, and
-        # remember it (reversible below with "Combine them after all").
-        if len(built)>=2 and "combined" not in nodes and not keep_sep:
-            return ("Combine these scans into one model?",
-                    "You have %d scans. If they're sides of one object, line them up into a single model. If they're separate objects, keep them apart and prepare or export each on its own." % len(built),
+        if len(built)>=2 and "combined" not in nodes:
+            return ("Combine these scans into one model",
+                    "You have %d scan%s. Line them up into a single model, then prepare and export." % (len(built), "" if len(built)==1 else "s"),
                     "Combine scans…", lambda: self._align_dialog(name), 2,
-                    ("Keep separate - different objects", lambda: self._keep_separate(name), None), "combine")
-        if keep_sep and "combined" not in nodes and len(built)>=2:
-            # SELECTION-FIRST: Prepare/Export the scan you're actually looking at, not just the first
-            # unprepared one - else viewing Scan 2 could Prepare/Export Scan 1. Only walk to the next
-            # unprepared scan when nothing (or a raw/uncut scan) is selected.
-            unprepared=[n for n in built if not any(k=="clean" for k,_,_ in self._proc_versions(name, n))]
-            target=sel if (sel is not None and sel in built) else (unprepared[0] if unprepared else built[0])
-        else:
-            target="combined" if "combined" in nodes else (built[0] if built else None)
+                    None, "combine")
+        target="combined" if "combined" in nodes else (built[0] if built else None)
         if not target: return ("Nothing to prepare yet", "Share this project over WiFi as Full project to get its raw data, or plug the scanner in.", None, None, 0, None, None)
-        undo=("Combine them after all", lambda: self._unkeep_separate(name), "combine") if (keep_sep and len(built)>=2 and "combined" not in nodes) else None
         vs=self._proc_versions(name, target); lab=self._scan_label(name, target)
         if not any(k=="clean" for k,_,_ in vs):
             return ("Prepare the %s model" % lab.lower() if target=="combined" else "Prepare %s" % lab, "Remove floating pieces, smooth, fill holes. You see before and after and keep or discard.",
-                    "Prepare…", lambda: self._prepare_dialog(name, target), 3, undo, "prepare")
-        return ("Export", "%s is prepared. Save it as STL for a slicer, or OBJ, GLB, PLY." % lab, "Export…", lambda: self._export_dialog(name, target), 4, undo, "export")
+                    "Prepare…", lambda: self._prepare_dialog(name, target), 3, None, "prepare")
+        return ("Export", "%s is prepared. Save it as STL for a slicer, or OBJ, GLB, PLY." % lab, "Export…", lambda: self._export_dialog(name, target), 4, None, "export")
     def _unique_archive(self, vdir, stem):
         """A new file name under .versions/ that cannot collide with anything already there, even two
         saves in the same second: created exclusively, so the caller can write to it straight away."""
@@ -5680,16 +5668,6 @@ class App(LiveMixin, ctk.CTk):
         self.set_banner("Marked %s as no base to cut." % self._scan_label(name, node), MUT)
         if self.selected==name:
             self._panel_refresh()                       # rebuilds the NEXT bar too (with proper nodes/local)
-    def _keep_separate(self, name):
-        """The user says these scans are different objects, not sides of one. Stop pushing Combine on the
-        NEXT bar; each scan is prepared/exported on its own. Reversible ("Combine them after all")."""
-        self.records.setdefault(name, {})["keep_separate"]=True; self._persist()
-        self.set_banner("Keeping these scans separate - prepare or export each on its own. Combine is still one click away if you change your mind.", MUT)
-        if self.selected==name: self._panel_refresh()
-    def _unkeep_separate(self, name):
-        """Undo Keep separate: the NEXT bar offers Combine again."""
-        self.records.setdefault(name, {}).pop("keep_separate", None); self._persist()
-        if self.selected==name: self._panel_refresh()
     def _pick_scan_by_node(self, name, node):
         """Select a scan tile the way a click on the strip would (so Remove base and the preview follow)."""
         if not self._guard_unsaved_edits(): return
@@ -6675,6 +6653,7 @@ class App(LiveMixin, ctk.CTk):
         frames[0].grid(row=2,column=0, sticky="nsew", padx=(14,4), pady=4); frames[1].grid(row=2,column=1, sticky="nsew", padx=(4,14), pady=4)
         frames[2].grid(row=3,column=0, columnspan=2, sticky="nsew", padx=14, pady=4)
         caps=[ctk.CTkLabel(f, text="", text_color=MUT, font=ctk.CTkFont(size=11)) for f in frames]
+        legend=ctk.CTkFrame(frames[2], fg_color="transparent"); legend.place(relx=1.0, rely=0.0, anchor="ne", x=-8, y=4)
         views=[self._new_view(f) for f in frames]
         loads=[ctk.CTkLabel(f, text="Loading the 3D view…", text_color=MUT, font=ctk.CTkFont(size=14), fg_color="#0a0c10") for f in frames]
         for f,c,v,l in zip(frames, caps, views, loads):
@@ -6822,6 +6801,45 @@ class App(LiveMixin, ctk.CTk):
                     views[side_i].draw()
             except Exception as e:
                 log_error("align-redraw-manual-markers", e)
+        def node_colour(n):
+            """A stable colour per scan (not per pair), so the same scan reads the same colour everywhere
+            in this dialog session, whichever pair you're currently lining up."""
+            others=[x for x in nodes if x!=st["base"]]
+            i=others.index(n) if n in others else 0
+            return self.PAIR_COLOURS[i % len(self.PAIR_COLOURS)]
+        def refresh_legend():
+            for w in legend.winfo_children():
+                try: w.destroy()
+                except Exception: pass
+            shown=[n for n in nodes if n!=st["base"] and self._align_matrix_to_base(rec, n, st["base"]) is not None]
+            for n in shown:
+                c=node_colour(n); hexc="#%02x%02x%02x" % tuple(max(0,min(255,int(v*255))) for v in c)
+                row=ctk.CTkFrame(legend, fg_color="#0d1119", corner_radius=6); row.pack(side="left", padx=3)
+                ctk.CTkLabel(row, text="●", text_color=hexc, font=ctk.CTkFont(size=13)).pack(side="left", padx=(6,1), pady=2)
+                ctk.CTkLabel(row, text=lab(n), text_color=MUT, font=ctk.CTkFont(size=10)).pack(side="left", padx=(0,6), pady=2)
+        def refresh_combined_preview(include_current=False):
+            """Show every scan already connected to the current base on the merged view, each its own
+            colour - a whole-assembly check, not just the pair you're actively lining up. That pair stays
+            the familiar orange, drawn last (on top); include_current adds it if it has a SAVED match."""
+            if not hasattr(views[2], "clear_layers") or getattr(views[2], "tf", None) is None: return
+            try:
+                views[2].clear_layers(draw=False)
+                for n in nodes:
+                    if n==st["base"] or n==st["moving"]: continue
+                    M=self._align_matrix_to_base(rec, n, st["base"])
+                    if M is None: continue
+                    p=self._proc_current(name, n)
+                    if not p: continue
+                    views[2].add_layer(p[2], M, colour=node_colour(n))
+                if include_current and st["moving"]:
+                    saved_m=rec.get(st["moving"])
+                    if isinstance(saved_m, dict) and saved_m.get("base")==st["base"] and saved_m.get("matrix"):
+                        p=self._proc_current(name, st["moving"])
+                        if p: views[2].add_layer(p[2], saved_m["matrix"], colour=(1.0,0.36,0.05))
+                views[2].draw()
+                refresh_legend()
+            except Exception as e:
+                log_error("align-refresh-combined-preview", e)
         def delete_pair(idx):
             if st.get("busy"): return
             if 0 <= idx < len(st.get("pairs") or []):
@@ -6910,8 +6928,9 @@ class App(LiveMixin, ctk.CTk):
             if not (mat and st.get("moving") and hasattr(views[2], "add_layer")): return
             try:
                 mov_p=self._proc_current(name, st["moving"])[2]
-                views[2].clear_layers(draw=False); views[2].add_layer(mov_p, mat, colour=(1.0,0.36,0.05))
-                caps[2].configure(text="Alignment · %s (grey) with %s adjusted (orange)" % (lab(st["base"]), lab(st["moving"])))
+                refresh_combined_preview()   # every already-connected scan, colour-coded, underneath
+                views[2].add_layer(mov_p, mat, colour=(1.0,0.36,0.05))
+                caps[2].configure(text="Alignment · %s (grey) with %s adjusted (orange), other connected scans colour-coded" % (lab(st["base"]), lab(st["moving"])))
             except Exception as e: log_error("align-adjust-preview", e)
         def nudge(axis, sign):
             mat, kind=pair_matrix_for_adjust()
@@ -6999,6 +7018,12 @@ class App(LiveMixin, ctk.CTk):
             caps[2].configure(text="Alignment · %s (grey) + %s (orange) as you line them up" % (lab(st["base"]), lab(st["moving"]) if st["moving"] else "…"))
             saved=rec.get(st["moving"]) if st["moving"] else None
             saved=saved if (isinstance(saved, dict) and saved.get("base")==st["base"]) else None
+            # Not a DIRECT saved match to this base, but it may still be connected through other scans (A saved
+            # to B, B saved to this base) - that already counts for Build and shows in the colour-coded preview,
+            # so landing on it here should say so too, instead of looking exactly like a scan never touched.
+            chained=None
+            if not saved and st["moving"]:
+                chained=self._align_matrix_to_base(rec, st["moving"], st["base"])
             if saved: st["pairs"]=[list(pr) for pr in saved.get("pairs", [])]
             def restore(i):
                 """Put a kept alignment back on screen: the pair dots on the two pick views, the orange overlay on the merged view."""
@@ -7008,9 +7033,14 @@ class App(LiveMixin, ctk.CTk):
                     pts=[pr[0] for pr in st["pairs"]] if i==0 else [pr[1] for pr in st["pairs"]]
                     views[i].markers=[(shade.world_to_view(pt, views[i].tf), self.PAIR_COLOURS[k % len(self.PAIR_COLOURS)]) for k,pt in enumerate(pts)]
                     views[i].draw()
-                if i==2 and saved and hasattr(views[2], "add_layer") and st["moving"]:
-                    views[2].clear_layers(draw=False); views[2].add_layer(self._proc_current(name, st["moving"])[2], saved["matrix"], colour=(1.0,0.36,0.05))
-                    caps[2].configure(text="Saved match preview · %s is grey, %s is orange" % (lab(st["base"]), lab(st["moving"])))
+                if i==2 and hasattr(views[2], "add_layer"):
+                    refresh_combined_preview(include_current=bool(saved))
+                    if saved:
+                        caps[2].configure(text="Saved match preview · %s is grey, %s is orange, other connected scans colour-coded" % (lab(st["base"]), lab(st["moving"])))
+                    elif chained is not None:
+                        p=self._proc_current(name, st["moving"])
+                        if p: views[2].add_layer(p[2], chained, colour=(1.0,0.36,0.05))
+                        caps[2].configure(text="Already connected through other scans · %s is grey, %s is orange, other connected scans colour-coded" % (lab(st["base"]), lab(st["moving"])))
             def shown(i):
                 def cb(ok):
                     if not t.winfo_exists(): return
@@ -7124,12 +7154,18 @@ class App(LiveMixin, ctk.CTk):
             return None
         def _align_input_path(node):
             mode=align_source.get()
-            cloud=_cloud_only_for_node(node)
+            cur=self._proc_current(name, node)
+            # The scan's own raw point cloud is fixed at capture time - Cut base and the Points editor never
+            # touch it, only the mesh (a _clean/_edited copy). Once the current version is one of those, the
+            # cloud still contains the table/debris that was cut or edited away, so a match found there would
+            # be a point that no longer exists on the mesh you are looking at - it would draw off in empty
+            # space. Once cut or edited, always match on the current mesh instead, regardless of the source
+            # preference below.
+            cloud=None if (cur and cur[0]!="scanner") else _cloud_only_for_node(node)
             if mode.startswith("Cloud"):
-                return cloud
+                return cloud or (cur[2] if cur else None)
             if mode.startswith("Auto") and cloud:
                 return cloud
-            cur=self._proc_current(name, node)
             return cur[2] if cur else None
         def _float_setting(var, default, lo=None, hi=None):
             try: v=float(var.get())
@@ -7256,8 +7292,9 @@ class App(LiveMixin, ctk.CTk):
                         def overlay_ready(ok):
                             if not ok and t.winfo_exists():
                                 status.configure(text="Alignment succeeded, but the orange preview failed to draw. Save still works; see Help > Log.", text_color=WARN)
-                        views[2].clear_layers(draw=False); views[2].add_layer(overlay_src, res["matrix"], colour=(1.0,0.36,0.05), on_ready=overlay_ready)
-                        caps[2].configure(text="Alignment preview · %s is grey, %s is orange" % (lab(st["base"]), lab(st["moving"])))
+                        refresh_combined_preview()   # every already-connected scan, colour-coded, underneath
+                        views[2].add_layer(overlay_src, res["matrix"], colour=(1.0,0.36,0.05), on_ready=overlay_ready)
+                        caps[2].configure(text="Alignment preview · %s is grey, %s is orange, other connected scans colour-coded" % (lab(st["base"]), lab(st["moving"])))
                     refresh_manual_panel()   # shows each pair's residual against this new result, so a mismatched pair stands out
                     able(keepb, True)
                 self.q.put(("call", done))
@@ -7334,6 +7371,7 @@ class App(LiveMixin, ctk.CTk):
                      "pairs": [list(pr) for pr in r.get("pairs", st["pairs"])], "when": time.strftime("%Y-%m-%d %H:%M")}
             rec["_base"]=st["base"]; self._persist(); refresh_chips(); able(keepb, False); st["result"]=None
             self.set_banner("%s lined up to %s. Saved with the project." % (lab(mv), lab(bs)), OK)
+            refresh_combined_preview(include_current=True)   # the merged view reflects the new connection even if there's no next pair to jump to
             nxt=next((n for n in nodes if n!=st["base"] and self._align_matrix_to_base(rec, n, st["base"]) is None), None)
             if nxt: choose_pair(st["base"], nxt); status.configure(text="Saved. Now line up moving scan %s, or use Align against / pair buttons if it overlaps a different scan better." % lab(nxt), text_color=MUT)
             else: status.configure(text="Saved. Every scan is connected - build one model from all of them below.", text_color=OK)
