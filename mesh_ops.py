@@ -53,6 +53,37 @@ class FaceGraph:
                 o = owner[st:st + int(L)]; pairs.append(np.stack([o[i], o[j]], axis=1))
         pairs = np.concatenate(pairs); pairs = pairs[pairs[:, 0] != pairs[:, 1]]
         self.pairs = np.unique(np.sort(pairs, axis=1), axis=0)
+    @classmethod
+    def from_pairs(cls, n, pairs):
+        g = cls.__new__(cls); g.n = int(n)
+        g.pairs = np.ascontiguousarray(np.asarray(pairs, dtype=np.int64).reshape(-1, 2)); return g
+    def subgraph(self, keep):
+        """The graph after dropping the faces where keep is False (the faces left keep their order), derived
+        from this one in one numpy pass instead of rebuilding it from the faces."""
+        keep = np.asarray(keep, dtype=bool)
+        remap = np.cumsum(keep) - 1
+        a, b = self.pairs[:, 0], self.pairs[:, 1]
+        both = keep[a] & keep[b]
+        return FaceGraph.from_pairs(int(keep.sum()), np.stack([remap[a[both]], remap[b[both]]], axis=1))
+    def component_of(self, seed, allowed):
+        """Faces reachable from `seed` through faces in `allowed` (bool per face), as a bool mask. One
+        connected-components pass over the allowed subgraph (scipy), so a big region costs the same as a
+        small one; without scipy it falls back to a ring-by-ring flood fill."""
+        allowed = np.asarray(allowed, dtype=bool).copy(); seed = int(seed); allowed[seed] = True
+        a, b = self.pairs[:, 0], self.pairs[:, 1]
+        try:
+            from scipy.sparse import coo_matrix
+            from scipy.sparse.csgraph import connected_components
+        except Exception:
+            out = np.zeros(self.n, dtype=bool); out[seed] = True
+            while True:
+                nxt = self.neighbours_of(out) & allowed & ~out
+                if not nxt.any(): return out
+                out |= nxt
+        keep = allowed[a] & allowed[b]
+        m = coo_matrix((np.ones(int(keep.sum()), dtype=np.int8), (a[keep], b[keep])), shape=(self.n, self.n))
+        _, lab = connected_components(m, directed=False)
+        return np.ascontiguousarray((lab == lab[seed]) & allowed)
     def neighbours_of(self, mask):
         """Faces sharing an edge with any face in `mask` (bool per face), as a bool mask."""
         a, b = self.pairs[:, 0], self.pairs[:, 1]

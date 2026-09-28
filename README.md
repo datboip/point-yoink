@@ -98,7 +98,7 @@ You only need this when One-tap Edit on the scanner didn't turn out right, or yo
   <img src="docs/img/v1/remove-base-demo.gif" alt="Removing the table from a scan by clicking spots on it" width="920">
 </p>
 
-The scan comes in with the turntable under it. Say where the table is: the floor grid, auto-detect, or click three or more spots on it and the plane fits through them. Red is what goes. Set the height by dragging or typing an exact number, nudge the tilt in half-degree steps if the table sits slightly off, flip sides, apply. The cut is remembered and used again when scans are combined, and you can undo it.
+The scan comes in with the turntable under it. Say where the table is: the floor grid, auto-detect, or click three or more spots on it and the plane fits through them. Red is what goes. Set the height by dragging or typing an exact number, nudge the tilt in half-degree steps if the table sits slightly off, flip sides, check it with **Preview** (the model as it will be after the cut, with Back to keep editing), apply. The cut is remembered and used again when scans are combined, and you can undo it.
 
 <p align="center">
   <img src="docs/img/v1/rb4-spots-top.png" alt="Seven spots clicked on the turntable, the plane fitted through them" width="450">
@@ -111,13 +111,22 @@ The scan comes in with the turntable under it. Say where the table is: the floor
   <img src="docs/img/v1/combine-demo.gif" alt="Combine: two sides of one part lined up with Auto, then the overlay checked" width="920">
 </p>
 
-Sides you scanned separately. Click matching spots on two scans, or press **Auto**, check the overlay (grey and orange), keep it, repeat for the next side, then build one model from all the frames at once with each scan's table already gone.
+Sides you scanned separately. Click matching spots on two scans, or press **Auto**, check the overlay (gray and orange), keep it, repeat for the next side, then build one model from all the frames at once with each scan's table already gone. If Auto lands a little off, nudge (X/Y/Z) and turn (pitch, roll, yaw) buttons fine-tune the fit, and the point-pair list shows how far each pair sits from it. A scan can be lined up through any other scan it overlaps, not only the first one.
+
+### Edit
+
+<p align="center">
+  <img src="docs/img/v1/edit-selected.png" alt="Edit: a floating bit lassoed, shown in red, with the Edit tools beside the view" width="450">
+  <img src="docs/img/v1/edit-removed.png" alt="The same scan after Delete: the floating bit is gone and Save as new model is ready" width="450">
+</p>
+
+Cut junk off a model by hand. Pick it with Lasso, Box, Brush or Magic (one click takes everything connected), grow or shrink the selection, or take the whole connected piece, then Delete. Visible only takes just the front surface; Through object selects like an X-ray. Undo and redo as often as you like, then Save as new model. The original is always kept.
 
 ### Prepare and Export
 
 <img align="right" width="420" src="docs/img/v1/d4-prepare.png" alt="Prepare: before and after side by side">
 
-**Prepare** removes floating pieces, smooths, fills small holes and reduces triangles, with the scanner's own defaults. Before and after side by side, then Keep or Discard.
+**Prepare** removes floating pieces and stretched triangles, smooths, and can fill small holes, rebuild the surface or reduce triangles. Defaults follow the scanner's own Mesh panel where it has one. Before and after side by side, then Save prepared version or Discard.
 
 **Export** saves STL, OBJ, GLB or PLY, with the model's size in millimetres, triangle count, separate pieces and open edges shown before you save.
 
@@ -179,7 +188,6 @@ Prepare and Remove base keep the version they replace; Build and Combine replace
 ## Roadmap
 
 - Pick a face to lay flat, the way slicers do, as another way to set the base.
-- Fine adjustment of a combined alignment (offset and rotation) after Auto.
 - Confirm the base MIRACO and MIRACO Plus and note any differences from the Pro.
 
 ## Privacy

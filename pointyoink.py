@@ -47,7 +47,7 @@ try:
 except Exception:
     pass   # if a future customtkinter version changes this internal, fail open rather than crash
 
-APP = "PointYoink"; VERSION = "1.1.0-pre"
+APP = "PointYoink"; VERSION = "1.1.0"
 GITHUB = "https://github.com/datboip/point-yoink"
 HOME = os.path.expanduser("~")
 MOUNT = os.path.join(HOME, "revopoint-mtp")
@@ -294,7 +294,20 @@ SEL_FILL="#252b37"; SEL_EDGE="#3d4a63"   # a selected project row: a lifted ligh
 AC="#4aa3ff"; AC_H="#63b3ff"; OK="#3ecf8e"; WARN="#ffb454"; DANGER="#ff6b6b"
 TX="#eef1f5"; MUT="#98a2b3"
 
-CHANGELOG = """1.0.1
+CHANGELOG = """1.1.0
+  - Prepare: Rebuild surface (off by default) makes one smooth skin from the points; holes in the part stay open.
+  - Prepare: Remove stretched triangles (on by default) drops long, needle-thin slivers.
+  - Combine: turn buttons, and nudge/turn follow the bottom view's axes. The overlay no longer flickers.
+  - Combine: a point-pair list with redo and delete per pair; Auto shows its matched points.
+  - Combine: pairs chain through any overlapping scan; controls are locked while a job runs.
+  - Remove base: Preview the cut before applying it.
+  - Editor: full-resolution editing, Grow / Shrink / Connected piece, fast Magic, exact Delete.
+  - Imports recognize fuse_mesh_rgb.ply and fuse_mesh_tex.ply.
+  - Orientation cube and home button in live 3D views.
+  - The window can be made as small as 1024 x 600.
+  - Fixes: Remove base no longer limits the app's memory; no freeze when a job starts; Edit never gets stuck view-only.
+
+1.0.1
   - WiFi dialog warns when a firewall is on and shows the command; the .deb installs a ufw profile (sudo ufw allow point-yoink).
   - WiFi receiver stops cleanly on Cancel; idle socket closes between parts are not errors.
   - Finished-models import keeps point-cloud-only scans; a Replace that copies nothing restores the old project.
@@ -436,6 +449,30 @@ def log_line(msg):
             f.write("[%s] %s\n" % (stamp, msg))
     except Exception:
         pass
+
+# Font.__del__ off the main thread can deadlock the app: destroyed CTk widgets leave reference cycles, the
+# garbage collector may run on a worker thread right as it starts, and tkinter's Font.__del__ then asks the
+# Tcl interpreter (owned by the main thread) to delete the font while the main thread waits in Thread.start()
+# for that very thread. It froze "Save as new model" for good. Off the main thread, queue the delete instead;
+# the App drains the queue on the main thread (_drain_font_deletes).
+import tkinter.font as _tkfont
+_font_del_orig=_tkfont.Font.__del__
+_font_del_pending=[]
+def _font_del_guarded(self):
+    if threading.current_thread() is threading.main_thread():
+        return _font_del_orig(self)
+    try:
+        if getattr(self, "delete_font", False): _font_del_pending.append((self._tk, self.name))
+    except Exception: pass
+_tkfont.Font.__del__=_font_del_guarded
+
+def _stage_msg(raw):
+    """The plain message from a worker's 'STAGE error {json}' line (falls back to the raw text)."""
+    try:
+        m=json.loads(raw).get("msg")
+        if m: return str(m)
+    except Exception: pass
+    return str(raw).strip()
 
 def log_error(kind, exc):
     log_line("%s: %s\n%s" % (kind, exc, "".join(_tb.format_exception(type(exc), exc, exc.__traceback__)).rstrip()))
@@ -1277,6 +1314,7 @@ class App(LiveMixin, ctk.CTk):
         super().__init__()
         try: self.tk.call("tk", "useinputmethods", "0")   # belt and braces with the XMODIFIERS override at the top of the file
         except Exception: pass
+        self.after(500, self._drain_font_deletes)
         self.cfg = load_cfg()
         # per-project records keyed by ORIGINAL id: {label, imported_to, imported_at}
         self.records = self.cfg.get("records", {})
@@ -1296,19 +1334,24 @@ class App(LiveMixin, ctk.CTk):
         except Exception as e:
             self._ui_scale=1.0; log_error("ui-scale", e)
         # window size: default, but never bigger than the screen (keeps it usable on small/scaled displays)
+        # (sizes here are in CustomTkinter's scaled units: it multiplies them by the UI scale, the screen is in pixels)
         try:
             sw=self.winfo_screenwidth(); sh=self.winfo_screenheight()
-            dw=min(1600, int(sw*0.96)); dh=min(1070, int(sh*0.90))   # wide enough for the project tools without cramped wrapping
+            sc=max(0.5, float(getattr(self, "_ui_scale", 1.0) or 1.0))
+            maxw, maxh=int(sw/sc), int(sh/sc)
+            dw=min(1600, int(maxw*0.96)); dh=min(1070, int(maxh*0.90))   # wide enough for the project tools without cramped wrapping
         except Exception:
-            dw,dh=1600,1070
+            dw,dh=1600,1070; maxw,maxh=100000,100000
         self.title(("%s  %s" % (APP, VERSION)) if RELEASE else ("%s  %s (%s)" % (APP, VERSION, BUILD)))
-        mw,mh=min(1500,dw), min(820,dh)
+        mw,mh=min(1024,dw), min(600,dh)            # small enough to tile the window to half of a 1920 screen
         geom=self.cfg.get("geometry") or "%dx%d"%(dw,dh)
         m=re.match(r"^(\d+)x(\d+)((?:[+-]\d+){2})?$", str(geom))
         if m:
-            geom="%dx%d%s" % (max(int(m.group(1)), mw), max(int(m.group(2)), mh), m.group(3) or "")
+            # keep the saved size; only shrink one that no longer fits this screen (the minimum size covers the rest)
+            geom="%dx%d%s" % (min(int(m.group(1)), maxw), min(int(m.group(2)), maxh), m.group(3) or "")
         else:
             geom="%dx%d"%(dw,dh)
+        self._init_w=int((m.group(1) if m else dw) or dw)
         self.geometry(geom)
         self.minsize(mw, mh)
         self.configure(fg_color=BG)
@@ -1355,6 +1398,14 @@ class App(LiveMixin, ctk.CTk):
         self._job_seq=getattr(self, "_job_seq", 0)+1
         return "%s:%d" % (prefix, self._job_seq)
 
+    def _drain_font_deletes(self):
+        """Main thread: delete the fonts that were garbage-collected on worker threads (see _font_del_guarded)."""
+        while _font_del_pending:
+            tkapp, fname=_font_del_pending.pop()
+            try: tkapp.call("font", "delete", fname)
+            except Exception: pass
+        try: self.after(500, self._drain_font_deletes)
+        except Exception: pass
     def _start_thread(self, target, *args, name=None, **kwargs):
         label=name or getattr(target, "__name__", "worker")
         def run():
@@ -1433,12 +1484,16 @@ class App(LiveMixin, ctk.CTk):
             if proc.poll() is None: self._terminate_proc(proc, kill=True)
 
     def _run_child(self, cmd, timeout=None, **kwargs):
+        on_proc=kwargs.pop("on_proc", None)   # optional: gets the Popen, so a dialog can stop its child on Close
         kwargs.setdefault("stdout", subprocess.PIPE)
         kwargs.setdefault("stderr", subprocess.PIPE)
         kwargs.setdefault("text", True)
         proc=self._popen(cmd, **kwargs)
         if proc is None:   # refused because the app is closing (see _popen)
             return subprocess.CompletedProcess(cmd, 1, "", "app is closing")
+        if on_proc:
+            try: on_proc(proc)
+            except Exception as e: log_error("run-child on_proc", e)
         try:
             out,err=proc.communicate(timeout=timeout)
             return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
@@ -1521,7 +1576,8 @@ class App(LiveMixin, ctk.CTk):
                 gw,gh,gx,gy=map(int, m.groups()); cx,cy=gx+gw//2, gy+gh//2
             else:
                 cx,cy=mx+mw//2, my+mh//2
-                self.geometry("+%d+%d" % (mx+(mw-self.winfo_reqwidth())//2, my+40))      # first run: the app opens on this monitor too
+                iw=int(getattr(self, "_init_w", 0) or self.winfo_reqwidth())   # the width it will open at (reqwidth is still Tk's 200 here)
+                self.geometry("+%d+%d" % (mx+max(0, (mw-iw)//2), my+40))      # first run: the app opens on this monitor too
             sp.geometry("%dx%d+%d+%d"%(W,H, cx-W//2, cy-H//2))
             try: sp.attributes("-alpha",1.0); sp.attributes("-topmost",True)
             except Exception: pass
@@ -3444,7 +3500,15 @@ class App(LiveMixin, ctk.CTk):
         view (same camera, same object) and just turns on the point tools, so editing feels like the same
         thing you were looking at, not a separate place."""
         if name=="Edit":
-            if getattr(self, "_in_edit_mode", False): return   # already editing: re-clicking Edit must NOT re-enter (that reloads the model and drops unsaved edits)
+            if getattr(self, "_in_edit_mode", False):
+                # already editing: re-clicking Edit must NOT re-enter (that reloads the model and drops unsaved edits),
+                # unless the view lost its editable model (nothing to edit, nothing loading): then re-enter
+                mv=self.mv
+                stuck=(not getattr(self, "_mv_loading", False) and not getattr(self, "_edit_saving", False)
+                       and getattr(mv, "edit_session", None) is None and getattr(mv, "_medit_faces", None) is None
+                       and not getattr(mv, "_pts_n", 0))
+                if not stuck: return
+                self._enter_edit_mode(); return
             try: self._edit_tab.grid_remove(); self._preview_tab.grid()   # hide the empty Edit frame, keep the live view
             except Exception: pass
             self._enter_edit_mode(); return
@@ -3492,6 +3556,7 @@ class App(LiveMixin, ctk.CTk):
                 except Exception: pass
                 return
         self._in_edit_mode=True
+        self._cancel_mv_start()                                        # a pending live-preview load must not replace the edit model
         self._editmode_chrome(True)                                    # hide the view switches: this is the editing workspace
         try: self.edit_target_sw.set(tgt)
         except Exception: pass
@@ -3863,7 +3928,9 @@ class App(LiveMixin, ctk.CTk):
         except Exception as e:
             from edit_session import HistoryLimitError
             if isinstance(e, HistoryLimitError): self.set_banner(str(e)+" Nothing was deleted.", WARN)
-            else: log_error("edit-delete", e)
+            else:
+                log_error("edit-delete", e)
+                self.set_banner("Delete failed. The details are in pointyoink.log.", WARN)
     def _edit_undo(self):
         if getattr(self, "_edit_saving", False): return
         try:
@@ -3886,7 +3953,9 @@ class App(LiveMixin, ctk.CTk):
             if not changed: self.set_banner("%s did not change the current selection." % label, MUT)
             faces=getattr(self.mv, "_medit_faces", None)
             self._edit_points_changed(len(faces) if faces is not None else getattr(self, "_edit_cur_n", 0))
-        except Exception as e: log_error("edit-"+method, e)
+        except Exception as e:
+            log_error("edit-"+method, e)
+            self.set_banner("%s failed. The details are in pointyoink.log." % label, WARN)
     def _edit_grow_selection(self):
         self._edit_mesh_select_op("mesh_grow_selection", "Grow selection")
     def _edit_shrink_selection(self):
@@ -3907,11 +3976,13 @@ class App(LiveMixin, ctk.CTk):
             except Exception: pass
         except Exception: pass
     def _edit_del_faces(self):
-        """How many the current Delete would remove: faces (all 3 verts selected) in Mesh mode, else points."""
+        """How many the current Delete would remove: the selected faces in Mesh mode, else points."""
         try:
             sel=getattr(self.mv, "_pts_sel", None)
             if sel is None or not sel.any(): return 0
             if getattr(self.mv, "edit_target", "points")=="mesh" and getattr(self.mv, "_medit_faces", None) is not None:
+                fs=getattr(self.mv, "_mesh_face_sel", None)
+                if fs is not None and len(fs)==len(self.mv._medit_faces): return int(fs.sum())   # Delete drops exactly these
                 return int(sel[self.mv._medit_faces].all(axis=1).sum())
             return int(sel.sum())
         except Exception: return 0
@@ -3938,6 +4009,13 @@ class App(LiveMixin, ctk.CTk):
             parts=["%s %s" % (_kfmt(n), unit), "%s selected" % _kfmt(deln)]
             if removed: parts.append("%s removed" % _kfmt(removed))
             self.edit_count.configure(text="  ·  ".join(parts))
+        except Exception: pass
+        # Magic hit an error inside the view: it kept only the clicked face. Say so instead of failing quietly.
+        try:
+            me=getattr(self.mv, "_magic_error", None)
+            if me is not None:
+                self.mv._magic_error=None; log_error("edit-magic", me)
+                self.set_banner("Magic failed and selected only the face you clicked. The details are in pointyoink.log.", WARN)
         except Exception: pass
         # Visible only needs a depth read; when that fails the selection is abandoned - say so once.
         try:
@@ -4371,6 +4449,7 @@ class App(LiveMixin, ctk.CTk):
             self.big.configure(image=self.imgs["big_dim"], text="")
         except Exception: pass
     def _show_shaded(self, out):
+        if getattr(self, "_in_edit_mode", False): return            # a late still must not touch the editor's view or hint
         self._set_big_image(out); self._preview_idle()
         # The mesh is cached now (parse+simplify+normals warmed on the splash), so the interactive 3D view
         # loads in a fraction of a second and looks better than the flat still - so auto-load it by default
@@ -4382,7 +4461,7 @@ class App(LiveMixin, ctk.CTk):
             self.big_hint.configure(text="Loading the interactive 3D view…")
             self._schedule_mv_start(key, 300)   # open the cached 3D view once the still image is up
         else:
-            self.big_hint.configure(text="Still image · click to open the interactive 3D view (or pick a view above)")
+            self.big_hint.configure(text="Still image · click to open the interactive 3D view")
     def _make_mv(self, software=False):
         w=None
         if not software and os.environ.get("POINTYOINK_NO_GL")!="1" and self.cfg.get("gl_view","auto")!="software":
@@ -4406,11 +4485,15 @@ class App(LiveMixin, ctk.CTk):
             log_error("map-mv-under-still", e)
     def _mv_start(self):
         """Load the interactive view for the current scan (mesh prep runs in a thread) and swap it in."""
+        if getattr(self, "_in_edit_mode", False): return            # the editor owns the view: never swap the preview in under it
         want=self._mv_want
         if not want or not os.path.exists(want[1]): return
         # already showing this exact key? only if the widget's last upload really was it: a bookkeeping
         # mismatch (a load superseded mid-way) must never leave the previous scan on screen
-        if self._mv_key==want[0] and getattr(self.mv, "_loaded_key", None)==want[0]: return
+        if self._mv_key==want[0] and getattr(self.mv, "_loaded_key", None)==want[0]:
+            try: self.big_hint.configure(text="Drag to rotate · scroll to zoom · right-drag to pan · double-click to reset")
+            except Exception: pass
+            return
         key,path=want; self._mv_key=key; self.mv.wire=(self.shade_mode=="wire")
         try: import shade; self._mv_c0=(dict(shade.CACHE_STATS), time.time())   # snapshot to log mesh-cache reuse for THIS open
         except Exception: self._mv_c0=None
@@ -4540,12 +4623,12 @@ class App(LiveMixin, ctk.CTk):
             if not os.path.isdir(nd): continue
             node=os.path.basename(nd)
             mesh=_scanner_mesh_in(nd)
-            if not mesh:
-                continue   # finished-models: skip a scan with no built mesh entirely - don't leave a stray preview-only "scan" that shows blue and can't be built (its raw data wasn't imported)
-            for fn,outn,kind in (((os.path.basename(mesh)),"%s_%s.ply"%(name,node),"mesh"),
-                                 ("fuse.ply","%s_%s_cloud.ply"%(name,node),"cloud"),
+            if not mesh and not os.path.exists(os.path.join(nd, "fuse.ply")):
+                continue   # no finished geometry at all (no model, no fused cloud): leave raw-only scans to the Full project path
+            rows=[((os.path.basename(mesh)),"%s_%s.ply"%(name,node),"mesh")] if mesh else []   # a cloud-only scan still comes in
+            for fn,outn,kind in rows+[("fuse.ply","%s_%s_cloud.ply"%(name,node),"cloud"),
                                  ("preview.png","%s_%s.png"%(name,node),"prev"),
-                                 ("property.rvproj","%s_%s.rvproj"%(name,node),"meta")):   # scan metadata (counts + modes) so it shows offline
+                                 ("property.rvproj","%s_%s.rvproj"%(name,node),"meta")]:   # scan metadata (counts + modes) so it shows offline
                 sp=os.path.join(nd,fn)
                 if os.path.exists(sp):
                     try: total_bytes+=os.path.getsize(sp)
@@ -4623,13 +4706,13 @@ class App(LiveMixin, ctk.CTk):
         return args
     def _clean_args(self):
         return self._clean_args_from(self._clean_options())
-    def _clean_subprocess(self, src, out, clean_opts=None):
+    def _clean_subprocess(self, src, out, clean_opts=None, on_proc=None):
         """Run process.py --clean in a memory-capped child so a huge mesh cannot take the app down."""
         try:
             env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "10")
             opts=clean_opts if clean_opts is not None else self._clean_options()
             r=self._run_child([_sys.executable, os.path.join(HERE, "process.py"), src, out]+self._clean_args_from(opts),
-                              timeout=1800, env=env)
+                              timeout=1800, env=env, on_proc=on_proc)
             self._last_clean_warnings=[]
             try:
                 for ln in (r.stdout or "").splitlines():
@@ -4974,7 +5057,7 @@ class App(LiveMixin, ctk.CTk):
             st["n"]=n; st["H"]=H; st["Hmin"]=lo; st["Hmax"]=float(H.max())
             st["cut"]=float(start) if start is not None else min(st["Hmax"], h_tab+0.02*(st["Hmax"]-st["Hmin"]))
             if base: st["keep_above"]=True; st["n_base"]=n.copy(); st["anchor"]=None; _tilt_zero()
-            self._btn_idle(applyb)                             # a plane exists: Apply is live
+            self._btn_idle(applyb); self._btn_idle(previewb)   # a plane exists: Apply and Preview are live
             slider.set(1000.0*(st["cut"]-st["Hmin"])/max(1e-6, st["Hmax"]-st["Hmin"])); paint()
         def _blank_cut():
             """No cut shown: model all grey, no plane, readouts cleared. Spots are left alone."""
@@ -4984,7 +5067,7 @@ class App(LiveMixin, ctk.CTk):
             except Exception: pass
             view.plane=None; view.draw()
             slider.set(0); val.configure(text=""); cutvar.set(0.0); _tilt_zero()
-            self._btn_busy(applyb, "Apply cut")          # nothing to apply yet
+            self._btn_busy(applyb, "Apply cut"); self._btn_busy(previewb, "Preview")   # nothing to apply or preview yet
         def _fit_spots():
             """Re-fit the cut plane from the clicked spots (3+); with fewer, show no cut at all."""
             k=len(st["picks"])
@@ -5134,7 +5217,11 @@ class App(LiveMixin, ctk.CTk):
             if st["busy"]: return
             if st.get("preview"):                       # Back: the editable view returns
                 st["preview"]=False; view.restore_geometry(); view.on_pick=st.pop("preview_pick", None)
-                previewb.configure(text="Preview", image=_icon("visible-only", "default", 16)); _palette_state(True); paint(); return
+                if view.on_pick is not None:            # clicking spots: the dots come back, in step with the picks
+                    import shade
+                    view.markers=[(shade.world_to_view(w, view.tf), self.PAIR_COLOURS[i % len(self.PAIR_COLOURS)]) for i,w in enumerate(st["picks"])]
+                previewb.configure(text="Preview", image=_icon("visible-only", "default", 16)); _palette_state(True); paint()
+                status.configure(text="Back to the cut. Gray stays, red goes. Preview again or Apply cut.", text_color=MUT); return
             if st["H"] is None: return
             st["busy"]=True; self._btn_busy(previewb, "Slicing…"); status.configure(text="Slicing the view copy at the plane…")
             v_view, f = view._src; n=st["n"]; cut=float(st["cut"]); keep_above=st["keep_above"]
@@ -5164,7 +5251,8 @@ class App(LiveMixin, ctk.CTk):
                     st["preview"]=True; st["preview_pick"]=view.on_pick; view.on_pick=None
                     view.markers=[]; view.swap_geometry(vv, ff, nn2)
                     previewb.configure(text="Back", image=_icon("back", "default", 16)); _palette_state(False)
-                    status.configure(text="This is the model after the cut: %s faces. Turn it to check, then Apply cut or Back." % format(len(ff), ","), text_color=TX)
+                    kept=100.0*len(ff)/max(1, len(f))
+                    status.configure(text="This is the model after the cut (about %d%% of it kept). Turn it to check, then Apply cut or Back." % round(min(100.0, kept)), text_color=TX)
                 self.q.put(("call", done))
             threading.Thread(target=work, daemon=True).start()
         previewb.configure(command=preview)
@@ -5335,6 +5423,16 @@ class App(LiveMixin, ctk.CTk):
             except Exception: pass
             if self.page=="projects": self._schedule_panel_refresh(50)   # move the check / rebuild the version chips (deferred: don't destroy the clicked button mid-callback)
         self.after(0, lambda: self._proc_render(name))          # rebuild the cards page too, deferred for the same reason
+        self.after(60, lambda: self._refresh_film(name))        # and the scan strip: its thumbnail is per version (a cut or prepared
+                                                                # scan kept showing the old picture until the project was reopened)
+    def _refresh_film(self, name):
+        """Redraw the scan strip of the open project from its cached scan list, or re-read the list if it was dropped."""
+        if self.selected!=name: return
+        try:
+            if name in self.gallery_cache: self.render_gallery(name, self.gallery_cache[name]); return
+            local=os.path.join(self.dest.get() or DEFAULT_DEST, name); rc=self._auto_mesh_preview()
+            threading.Thread(target=lambda n=name, l=local, rc=rc: self.q.put(("gallery", n, gather_gallery(n, l, render_combined=rc))), daemon=True).start()
+        except Exception as e: log_error("refresh film", e)
     def _trash(self, path, tdir=None):
         """Move a file or folder to the desktop trash (gio), else into <dest>/.trash. Can be slow
         for a big folder (the gio call is timeout-bounded, but its own fallback move is a real
@@ -5897,11 +5995,16 @@ class App(LiveMixin, ctk.CTk):
         nb=[None]; primary=[None]; secondary=[None]
         def relayout(e):
             """Wide keeps the step trail. Compact keeps the action inside the card."""
-            wide=e.width>=860
-            trail_ok=e.width>=720
-            compact=e.width<430
-            btnw=320 if wide else min(250, max(210, e.width-280))
-            wrap=max(150, e.width-(360 if btxt else 120)); tl.configure(wraplength=wrap)
+            # widths in the widgets' own (scaled) units: on a high-DPI desktop e.width is in screen pixels, and the old
+            # thresholds let the step trail and a 320-wide button squeeze the title and drop "Export" off the end
+            try: sc=float(ctk.ScalingTracker.get_widget_scaling(ns)) or 1.0
+            except Exception: sc=1.0
+            w=e.width/sc
+            wide=w>=1000                 # "How this works" + the five-step trail + a 320 button all fit
+            trail_ok=w>=880              # the trail with a 240 button; below this the one-line "Step 2 of 5" instead
+            compact=w<430
+            btnw=320 if wide else min(240, max(200, w-300))
+            wrap=max(150, w-btnw-(170 if trail_ok else 110) if btxt else w-120); tl.configure(wraplength=wrap)
             for b in (primary[0], secondary[0]):
                 if b is not None:
                     try: b.configure(width=btnw)
@@ -6334,8 +6437,8 @@ class App(LiveMixin, ctk.CTk):
         row(self.clean_do_base, "Remove base", "cuts off the biggest flat surface (table/turntable); skips itself if it would take a big chunk of the part", None, "",
             "Automatic, off by default. For a cut you place by hand, use Remove base on the scan instead.")
         row(self.clean_do_slivers, "Remove stretched triangles", "longer than", self.clean_slivers, "x the typical edge",
-            "Long thin triangles streaking off an edge, left by the scanner's fusion or a slightly off combine. A clean scan is uniform, so anything several times the typical edge is not surface. Turn on Fill small holes to close the gaps they leave.")
-        row(self.clean_do_rebuild, "Rebuild surface", "detail", self.clean_rebuild, "(9 normal, 10 finer; needs Open3D, a few seconds)",
+            "Long thin triangles streaking off an edge, left by the scanner's fusion or a slightly off combine. A clean scan is uniform, so a needle-thin triangle several times the typical edge is not surface. Turn on Fill small holes to close the gaps they leave.")
+        row(self.clean_do_rebuild, "Rebuild surface", "detail", self.clean_rebuild, "(9 normal, 10 finer; needs Open3D; up to a minute on a big scan)",
             "Rebuilds the whole surface from the scan's points, so torn edges and streaks become one smooth skin, the way the scanner's own One-tap Edit does. Openings in the part stay open. Off by default: it replaces every triangle, so check the result.")
         smooth_row=row(self.clean_do_smooth, "Smooth surface", "", self.clean_smooth, "passes (the scanner uses 3)",
             "Evens out scan ripple. More passes soften small detail.")
@@ -6385,6 +6488,13 @@ class App(LiveMixin, ctk.CTk):
             b.configure(state=("normal" if on else "disabled"), fg_color=(fill if on else CARD2), text_color=("#04121f" if on else DIM), text_color_disabled=DIM)
         def close():
             pstate["closed"]=True
+            proc=pstate.get("proc")
+            if proc is not None and proc.poll() is None:          # a Preview still running: stop it, don't let it run to the timeout
+                self._terminate_proc(proc, kill=False)
+                def reap(p=proc):
+                    if p.poll() is None: self._terminate_proc(p, kill=True)
+                try: self.after(3000, reap)
+                except Exception: pass
             try:
                 if os.path.exists(tmp): os.remove(tmp)
             except Exception: pass
@@ -6424,7 +6534,8 @@ class App(LiveMixin, ctk.CTk):
                 if t.winfo_exists() and runb.cget("state")=="disabled": status.configure(text="Working on a copy… %ds (a big model takes a minute)" % int(time.time()-t0)); t.after(1000, tick)
             t.after(1000, tick)
             def work():
-                ok=self._clean_subprocess(src, tmp, clean_opts)
+                ok=self._clean_subprocess(src, tmp, clean_opts, on_proc=lambda p: pstate.__setitem__("proc", p))
+                pstate["proc"]=None
                 if pstate.get("closed"):                         # dialog closed while we ran: drop the orphaned result
                     try: os.remove(tmp)
                     except Exception: pass
@@ -6620,22 +6731,25 @@ class App(LiveMixin, ctk.CTk):
         bmenu=ctk.CTkOptionMenu(bar, values=[dlab(n) for n in nodes], variable=bsel, width=130, command=lambda _: pick_base(), **menu); bmenu.pack(side="left", padx=(8,18))
         ctk.CTkLabel(bar, text="Moving scan", text_color=MUT, font=ctk.CTkFont(size=12)).pack(side="left")
         mmenu=ctk.CTkOptionMenu(bar, values=[dlab(n) for n in nodes if n!=st["base"]], variable=msel, width=130, command=lambda _: pick_moving(), **menu); mmenu.pack(side="left", padx=(8,10))
-        prev_b=ctk.CTkButton(bar, text="pair", image=_icon("back", "default", 12), compound="left", width=64, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: step_pair(-1)).pack(side="left", padx=(0,4))
-        next_b=ctk.CTkButton(bar, text="pair", image=_icon("chevron-right", "default", 12), compound="right", width=64, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: step_pair(1)).pack(side="left", padx=(0,10))
-        need_b=ctk.CTkButton(bar, text="Next needed", width=96, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: next_needed()).pack(side="left", padx=(0,14))
+        prev_b=ctk.CTkButton(bar, text="pair", image=_icon("back", "default", 12), compound="left", width=64, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: step_pair(-1)); prev_b.pack(side="left", padx=(0,4))
+        next_b=ctk.CTkButton(bar, text="pair", image=_icon("chevron-right", "default", 12), compound="right", width=64, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: step_pair(1)); next_b.pack(side="left", padx=(0,10))
+        need_b=ctk.CTkButton(bar, text="Next needed", width=96, height=28, corner_radius=8, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda: next_needed()); need_b.pack(side="left", padx=(0,14))
         chips=ctk.CTkLabel(bar, text="", text_color=OK, font=ctk.CTkFont(size=12)); chips.pack(side="left", padx=6)
         hint=ctk.CTkLabel(card, text="", text_color=MUT, font=ctk.CTkFont(size=12), justify="left", wraplength=850, anchor="w"); hint.grid(row=1,column=0, columnspan=2, sticky="ew", padx=16, pady=(0,6))
         def choose_pair(base, moving):
+            if st["busy"]: return                                     # not while a fit runs: its result belongs to this pair
             if base not in nodes or moving not in nodes or base==moving: return
             st["base"]=base; st["moving"]=moving; rec["_base"]=base; self._persist()
             bsel.set(dlab(base)); msel.set(dlab(moving)); mmenu.configure(values=[dlab(n) for n in nodes if n!=base])
             load_views(); refresh_chips()
         def step_pair(delta):
+            if st["busy"]: return
             pairs=[(b,m) for b in nodes for m in nodes if m!=b]
             cur=(st["base"], st["moving"])
             i=pairs.index(cur) if cur in pairs else 0
             choose_pair(*pairs[(i+delta) % len(pairs)])
         def next_needed():
+            if st["busy"]: return False
             for b in nodes:
                 for m in nodes:
                     if m!=b and self._align_matrix_to_base(rec, m, b) is None:
@@ -6644,6 +6758,7 @@ class App(LiveMixin, ctk.CTk):
         def save_or_next_needed():
             # Fast path for the real workflow: Auto this pair, then press Next.
             # If there is an unsaved orange preview, keep it before advancing.
+            if st["busy"]: return
             if st.get("result"):
                 keep(); return
             if not next_needed():
@@ -6751,7 +6866,7 @@ class App(LiveMixin, ctk.CTk):
         self._tip(nopt, "How far each nudge click moves the moving scan. Use small values for final cleanup.")
         nudge_mm=ctk.StringVar(value="1.0")
         grid=ctk.CTkFrame(side, fg_color="transparent"); grid.pack(fill="x", padx=8, pady=(2,8))
-        axis_tips={0:"X nudges left/right in model space.",1:"Y nudges forward/back in model space.",2:"Z nudges up/down in model space."}
+        axis_tips={0:"X nudges left/right, along the bottom view's X axis.",1:"Y nudges forward/back, along the bottom view's Y axis.",2:"Z nudges up/down, along the bottom view's up axis."}
         for i,(label, axis, sign) in enumerate((("X -",0,-1),("X +",0,1),("Y -",1,-1),("Y +",1,1),("Z -",2,-1),("Z +",2,1))):
             b=ctk.CTkButton(grid, text=label, width=58, height=25, corner_radius=7, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda a=axis,s=sign: nudge(a,s))
             b.grid(row=i//2, column=i%2, padx=2, pady=2, sticky="ew"); self._tip(b, axis_tips[axis])
@@ -6763,7 +6878,7 @@ class App(LiveMixin, ctk.CTk):
         ropt=ctk.CTkOptionMenu(rrow, values=list(_rot_vals.keys()), variable=rot_preset, width=104, height=24, **smenu); ropt.pack(side="right")
         self._tip(ropt, "How far each turn click rotates the moving scan, about its own centre.")
         rgrid=ctk.CTkFrame(side, fg_color="transparent"); rgrid.pack(fill="x", padx=8, pady=(2,8))
-        rot_tips={0:"Pitch: tip the moving scan forward or back (about X).",1:"Roll: lean it left or right (about Y).",2:"Yaw: spin it about the vertical (about Z)."}
+        rot_tips={0:"Pitch: tip the moving scan forward or back (about the bottom view's X axis).",1:"Roll: lean it left or right (about the bottom view's Y axis).",2:"Yaw: spin it about the bottom view's up axis."}
         for i,(label, axis, sign) in enumerate((("Pitch -",0,-1),("Pitch +",0,1),("Roll -",1,-1),("Roll +",1,1),("Yaw -",2,-1),("Yaw +",2,1))):
             b=ctk.CTkButton(rgrid, text=label, width=58, height=25, corner_radius=7, fg_color="transparent", border_width=1, border_color=STROKE, hover_color=CARD2, text_color=TX, command=lambda a=axis, sg=sign: turn(a, sg))
             b.grid(row=i//2, column=i%2, padx=2, pady=2, sticky="ew"); self._tip(b, rot_tips[axis])
@@ -6902,6 +7017,7 @@ class App(LiveMixin, ctk.CTk):
             r=rec.get(st.get("moving")) if st.get("moving") else None
             return r if isinstance(r, dict) and r.get("base")==st.get("base") and r.get("matrix") else None
         def clear_current_match():
+            if st.get("busy"): return
             if st.get("result"):
                 st["result"]=None; st["pairs"]=[]; st["pending"]=None
                 load_views(); refresh_chips()
@@ -6932,14 +7048,31 @@ class App(LiveMixin, ctk.CTk):
                 views[2].add_layer(mov_p, mat, colour=(1.0,0.36,0.05))
                 caps[2].configure(text="Alignment · %s (grey) with %s adjusted (orange), other connected scans colour-coded" % (lab(st["base"]), lab(st["moving"])))
             except Exception as e: log_error("align-adjust-preview", e)
+        def view_axes():
+            """Rows: the base-scan directions the merged (bottom) view draws as its X, Y and Z (Z = up on screen
+            at the home view, the same axes as the orientation cube). The scanner's own axes are tilted
+            40-70 degrees from that, so nudge and turn work in these instead."""
+            try:
+                tf=getattr(views[2], "tf", None)
+                if tf is None:                                    # software view: same orientation, from the mesh cache
+                    if st.get("base_tf_for")!=st["base"]:
+                        import shade
+                        st["base_tf"]=shade.load_oriented_nrm(self._proc_current(name, st["base"])[2], 600000)[2]; st["base_tf_for"]=st["base"]
+                    tf=st.get("base_tf")
+                if tf is not None:
+                    R=np.asarray(tf["R"], dtype=float).reshape(3,3)
+                    if np.isfinite(R).all() and abs(abs(np.linalg.det(R))-1.0)<1e-3: return R
+            except Exception as e: log_line("combine view axes: %s" % e)
+            return np.eye(3)
         def nudge(axis, sign):
+            if st.get("busy"): return
             mat, kind=pair_matrix_for_adjust()
             if mat is None:
                 status.configure(text="Align or choose a saved match first, then nudge it.", text_color=WARN); return
             try:
                 step=float(_nudge_vals.get(nudge_preset.get(), 1.0)) * sign
                 import numpy as np
-                m=np.array(mat, dtype=float).reshape(4,4); m[axis,3]+=step
+                m=np.array(mat, dtype=float).reshape(4,4); m[:3,3]+=view_axes()[axis]*step
                 out=m.tolist()
                 if kind=="result": st["result"]["matrix"]=out
                 else:
@@ -6950,6 +7083,7 @@ class App(LiveMixin, ctk.CTk):
             except Exception as e:
                 log_error("align-nudge", e); status.configure(text="Could not nudge this match (see Help > Log).", text_color=WARN)
         def turn(axis, sign):
+            if st.get("busy"): return
             mat, kind=pair_matrix_for_adjust()
             if mat is None:
                 status.configure(text="Align or choose a saved match first, then turn it.", text_color=WARN); return
@@ -6957,16 +7091,22 @@ class App(LiveMixin, ctk.CTk):
                 deg=float(_rot_vals.get(rot_preset.get(), 0.5)) * sign; a=np.radians(deg)
                 m=np.array(mat, dtype=float).reshape(4,4)
                 c, sn=np.cos(a), np.sin(a)
-                R=np.eye(4)
-                if axis==0: R[1:3,1:3]=[[c,-sn],[sn,c]]
-                elif axis==1: R[0,0]=c; R[0,2]=sn; R[2,0]=-sn; R[2,2]=c
-                else: R[0:2,0:2]=[[c,-sn],[sn,c]]
-                # pivot: where the moving scan's centre currently sits in base space (its own centre, moved by the fit)
-                piv=st.get("mov_centre")
+                Rv=np.eye(3)
+                if axis==0: Rv[1:3,1:3]=[[c,-sn],[sn,c]]
+                elif axis==1: Rv[0,0]=c; Rv[0,2]=sn; Rv[2,0]=-sn; Rv[2,2]=c
+                else: Rv[0:2,0:2]=[[c,-sn],[sn,c]]
+                VA=view_axes(); R=np.eye(4); R[:3,:3]=VA.T @ Rv @ VA      # the turn about the merged view's axis, in base coordinates
+                # pivot: where the moving scan's center currently sits in base space (its own center, moved by the fit).
+                # Cached per mesh file, so changing the pair never turns a scan about the previous scan's center.
+                mp=None
+                try: mp=self._proc_current(name, st["moving"])[2]
+                except Exception: pass
+                cached=st.get("mov_centre")
+                piv=cached[1] if (isinstance(cached, tuple) and mp and cached[0]==mp) else None
                 if piv is None:
                     try:
                         import trimesh
-                        mp=self._proc_current(name, st["moving"])[2]; piv=np.asarray(trimesh.load(mp, process=False).vertices, float).mean(0); st["mov_centre"]=piv
+                        piv=np.asarray(trimesh.load(mp, process=False).vertices, float).mean(0); st["mov_centre"]=(mp, piv)
                     except Exception: piv=np.zeros(3)
                 p_base=(m @ np.append(piv, 1.0))[:3]
                 T1=np.eye(4); T1[:3,3]=-p_base; T2=np.eye(4); T2[:3,3]=p_base
@@ -7107,6 +7247,7 @@ class App(LiveMixin, ctk.CTk):
         if can_pick:
             views[0].on_pick=lambda w,v: on_pick(0, w, v); views[1].on_pick=lambda w,v: on_pick(1, w, v)
         def start_over():
+            if st.get("busy"): return
             st["pairs"]=[]; st["pending"]=None; st["redo"]=None; st["result"]=None
             for v in views:
                 if hasattr(v, "markers"): v.markers=[]
@@ -7116,6 +7257,7 @@ class App(LiveMixin, ctk.CTk):
             caps[2].configure(text="Alignment · %s (grey) + %s (orange) as you line them up" % (lab(st["base"]), lab(st["moving"]) if st["moving"] else "…"))
             update_manual_controls(); able(keepb, False); status.configure(text="Cleared manual points. Click new points, or use Auto on the side.", text_color=MUT)
         def undo():
+            if st.get("busy"): return
             pend=st["pending"]
             if pend is not None: st["pending"]=None; views[pend[0]].markers.pop(); views[pend[0]].draw()
             elif st["pairs"]: st["pairs"].pop(); views[0].markers.pop(); views[1].markers.pop(); views[0].draw(); views[1].draw()
@@ -7133,7 +7275,7 @@ class App(LiveMixin, ctk.CTk):
             # snapshot, and a click here while it runs would be silently undone when the job lands
             for w in (bmenu, mmenu, prev_b, next_b, need_b, side_auto, side_save, side_clear, side_next, side_build):
                 try: w.configure(state="disabled")
-                except Exception: pass
+                except Exception as e: log_line("combine busy_on: %s" % e)
             busy["job"]=t.after(10, busy_tick)
         def busy_off():
             if busy["job"]:
@@ -7144,7 +7286,7 @@ class App(LiveMixin, ctk.CTk):
                 bar.stop(); bar.set(0); bar.configure(progress_color="#0d0f14"); update_manual_controls(); able(autob, True); able(keepb, bool(st.get("result"))); refresh_chips()
                 for w in (bmenu, mmenu, prev_b, next_b, need_b, side_auto, side_save, side_clear, side_next, side_build):
                     try: w.configure(state="normal")
-                    except Exception: pass
+                    except Exception as e: log_line("combine busy_off: %s" % e)
         def _cloud_only_for_node(node):
             local=os.path.join(self.dest.get() or DEFAULT_DEST, name)
             for c in (os.path.join(local, "%s_%s_cloud.ply" % (name, node)), os.path.join(local, "data", node, "fuse.ply"), os.path.join(local, "data", node, "fuse_cloud.ply")):
@@ -7192,13 +7334,13 @@ class App(LiveMixin, ctk.CTk):
                 json.dump({"pairs": pairs}, open(pj, "w"))
                 env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "8")
                 cmd=[_sys.executable, os.path.join(HERE, "align.py"), "--base", base_p, "--moving", mov_p, "--out", oj, "--voxel", str(vox), "--max-dist", str(md), "--samples", str(sam), "--auto-pairs", str(_auto_point_vals.get(align_auto_points.get(), 12))]
-                if pairs: cmd += ["--pairs", pj]
+                if pairs and (len(pairs)>=3 or not auto): cmd += ["--pairs", pj]   # Auto ignores 1-2 points
                 if auto: cmd.append("--auto")
                 proc=self._popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env); tail=[]; err=""
                 touch=self._stall_guard(proc, 900, "align")
                 for ln in proc.stdout:
                     touch(); ln=ln.strip(); tail=(tail+[ln])[-6:]
-                    if ln.startswith("STAGE error "): err=ln[12:]
+                    if ln.startswith("STAGE error "): err=_stage_msg(ln[12:])
                     elif ln.startswith("STAGE "):
                         try: msg=json.loads(ln.split(" ",2)[2]).get("msg")
                         except Exception: msg=None
@@ -7243,13 +7385,13 @@ class App(LiveMixin, ctk.CTk):
                 try:
                     env=dict(os.environ); env.setdefault("POINTYOINK_MEM_CAP_GB", "8")
                     cmd=[_sys.executable, os.path.join(HERE, "align.py"), "--base", base_p, "--moving", mov_p, "--out", oj, "--voxel", str(vox), "--max-dist", str(md), "--samples", str(sam), "--auto-pairs", str(_auto_point_vals.get(align_auto_points.get(), 12))]
-                    if st["pairs"]: cmd+=["--pairs", pj]
+                    if job["pairs"] and (len(job["pairs"])>=3 or not auto): cmd+=["--pairs", pj]   # Auto ignores 1-2 points
                     if auto: cmd.append("--auto")
                     proc=self._popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env); tail=[]
                     touch=self._stall_guard(proc, 900, "align")
                     for ln in proc.stdout:
                         touch(); ln=ln.strip(); tail=(tail+[ln])[-6:]
-                        if ln.startswith("STAGE error "): err=ln[12:]
+                        if ln.startswith("STAGE error "): err=_stage_msg(ln[12:])
                         elif ln.startswith("STAGE "):
                             try: msg=json.loads(ln.split(" ",2)[2]).get("msg")
                             except Exception: msg=None
@@ -7266,26 +7408,33 @@ class App(LiveMixin, ctk.CTk):
                     nonlocal res
                     st["busy"]=False; busy_off()
                     if not t.winfo_exists(): return
-                    if (st["base"], st["moving"])!=(job["base"], job["moving"]): return   # the dialog moved on: this result is for other scans
+                    if (st["base"], st["moving"])!=(job["base"], job["moving"]):   # the dialog moved on: this result is for other scans
+                        log_line("align result for %s -> %s dropped: the pair changed while it ran" % (job["moving"], job["base"]))
+                        status.configure(text="That alignment finished after the pair changed, so it was not applied. Run it again for this pair.", text_color=WARN); return
                     if res: res=dict(res, base=job["base"], moving=job["moving"], pairs=job["pairs"])
                     if not res: status.configure(text="Could not line these up%s. Try more spread-out points, or pick a scan with more overlap." % ((": "+err) if err else ""), text_color=WARN); return
                     st["result"]=res; fit=res.get("fitness"); rmse=res.get("rmse"); pe=res.get("pair_error_after")
                     auto_pairs=res.get("auto_pairs") or []
-                    if auto_pairs and not st.get("pairs"):
-                        st["pairs"]=[list(pr) for pr in auto_pairs]
+                    adopted=False
+                    if auto and auto_pairs and not st.get("pairs"):
+                        st["pairs"]=[list(pr) for pr in auto_pairs]; adopted=True
                         redraw_manual_markers()
                         update_manual_controls()
                     srcword="cloud" if (_cloud_only_for_node(st["base"])==base_p and _cloud_only_for_node(st["moving"])==mov_p) else "mesh"
-                    verdict_ok=(fit is None or (fit>=0.50 and (rmse or 0)<1.5))
+                    codes=set(res.get("reason_codes") or [])
+                    pairs_off="inconsistent_landmarks" in codes
+                    verdict_ok=(fit is None or (fit>=0.50 and (rmse or 0)<1.5)) and not pairs_off
                     if fit is not None:
                         words="Fit %.0f%% · gap %.2f mm · %s" % (fit*100, rmse or 0, srcword)
                     else:
                         words="Point fit · no Auto score"
                     if pe is not None: words+=" · points %.1f mm" % pe
-                    action="Looks good: Save / next pair" if verdict_ok else "Weak fit: inspect or nudge before saving"
-                    if auto_pairs:
-                        action += " Auto points shown; redo/delete any bad ones, then Align via points."
-                    status.configure(text="%s. %s." % (words, action), text_color=(TX if verdict_ok else WARN))
+                    if pairs_off: action="Some point pairs do not agree with this fit: redo or delete the ones marked in orange, then Align via points"
+                    elif verdict_ok: action="Looks good: Save / next pair"
+                    else: action="Weak fit: inspect or nudge before saving"
+                    sentences=[words, action]
+                    if adopted: sentences.append("Auto points shown: redo or delete any bad ones, then Align via points")
+                    status.configure(text=". ".join(sentences)+".", text_color=(TX if verdict_ok else WARN))
                     self._tip(status, "%s aligned to %s. %s" % (lab(st["moving"]), lab(st["base"]), words))
                     if hasattr(views[2], "add_layer"):
                         overlay_src=self._proc_current(name, st["moving"])[2]

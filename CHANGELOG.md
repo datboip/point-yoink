@@ -3,26 +3,53 @@
 All notable changes to PointYoink. 0.7.0 was the first tagged release; the
 0.9.x line was development builds on the way to 1.0.0.
 
-## 1.1.0 (unreleased, on the codex-next branch)
+## 1.1.0 (2026-09-27)
 
-- Prepare can rebuild the surface from the points (Poisson, needs Open3D): torn edges and streaks become one smooth skin, openings stay open. Off by default.
-- Prepare can remove stretched triangles (long slivers streaking off an edge, left by the scanner's fusion or an off combine); on by default at 4x the typical edge, with the gaps closed by Fill small holes.
-- Combine: pitch, roll and yaw turn buttons next to the X/Y/Z nudges, turning the moving scan about its own centre; the overlay no longer flickers where two scans coincide.
-- Remove base has a Preview: the model as it will be after the cut, in the same view, with Back to keep editing.
-- Editor topology tools (Grow, Shrink, Connected piece, Magic) no longer freeze on large scans; the face graph is built once per mesh.
-- Combine controls that change the current pair are disabled while a job runs.
-- Editing now uses full-resolution native geometry with revision-based dirty state, bounded undo and redo, validated transactional saves, and support for combined models.
-- Mesh editing adds topology selection actions to grow, shrink or select a connected piece from the current selection.
-- Full-project imports now recognise scanner meshes saved as `fuse_mesh_rgb.ply` or `fuse_mesh_tex.ply`, so scanner-built models no longer appear raw-only.
-- Combine can line up scan pairs through any overlapping scan and resolve the alignment chain into one shared base before building the combined model.
-- Added measured alignment foundations: landmark validation now rejects nonfinite, duplicate/coincident and collinear manual pairs before solving.
-- Alignment results now record millimetre units, `T_base_moving` frame convention and reason codes for low overlap, high residual or inconsistent landmarks.
-- Added reusable registration metrics for bidirectional coverage, inlier residuals, unmatched surface fraction and point-to-plane weak-direction checks.
-- Added a fixture profile/transform contract for the saved-base workflow, including content fingerprints and tested scan-to-fixture / scan-to-scan composition.
-- Combine manual alignment now has an explicit right-palette point-pair list with next-click guidance, per-pair delete, redo base point, redo moving point, and the clearer `Align via points` action.
-- Auto alignment now returns a small set of real final correspondences and displays them as editable point markers for review before saving.
-- Checkpoint build after 3D preview navigation cleanup: live views use the new orientation cube/home control, while static/preloaded PNG previews are model-only.
-- Reduced project-switch preview churn by avoiding recursive project reselection from background warmers.
+Prepare
+- Rebuild surface (off by default, needs Open3D): rebuilds the whole surface from the scan's points, so torn edges and streaks become one smooth skin. The skin it grows over real openings is trimmed away by its distance from the scan, so holes in the part stay open. It uses the app's thread limit and takes up to a minute on a big scan. Closing Prepare stops a Preview that is still running.
+- Remove stretched triangles (on by default, 4x the typical edge): drops long, needle-thin triangles streaking off an edge. Big, well-shaped triangles stay, and the floating-pieces filter runs again afterwards, so no loose crumbs are left. The small gaps it opens stay open unless you turn on Fill small holes (off by default).
+- Remove floating pieces now defaults to 100% (only the biggest piece survives). A setting saved by an older version is kept.
+- Smooth surface has a method choice: Humphrey (default), Taubin or Laplacian.
+- Fill small holes runs after Rebuild surface, so it has the final say on holes.
+
+Combine
+- Turn buttons (pitch, roll, yaw) next to the X/Y/Z nudges. Nudge and turn follow the axes of the bottom view (Z is up on screen at the home view), not the scanner's own tilted axes, and a turn always pivots on the current moving scan's center.
+- The overlay no longer flickers where two scans overlap.
+- The pair buttons, nudge, turn and point edits are disabled while an alignment runs. A result that finishes after the pair changed is not applied, and the status line says so.
+- Pairs can be chained through any overlapping scan to one shared base before the combined model is built.
+- A point-pair list in the side panel: what to click next, delete a pair, redo its base or moving point, then Align via points. Each pair shows how far it is from the fit.
+- Auto shows a set of its matched points as editable markers. They are taken from the final fit, so each one is a real match.
+- Auto with only 1 or 2 points placed ignores them and aligns on its own, as 1.0.1 did. Alignment errors show as plain text.
+- The status line warns when point pairs do not agree with the fit.
+- Point pairs that are invalid, duplicated or all in one line are refused before solving.
+
+Remove base
+- Preview shows the model as it will be after the cut, in the same view, with Back to keep editing. Preview is only available when there is a cut to show, and the clicked spots come back after Back.
+- Opening Remove base no longer puts a memory limit on the whole app. Before, the app could crash on the third open. This bug is also in 1.0.1.
+
+Editor
+- Edits use the full-resolution model, with Save and Discard following your edits, bounded undo and redo, and saves that never leave a half-written file. Combined models can be edited too.
+- New selection actions: Grow, Shrink and Connected piece. Magic selects a whole region in one fast pass.
+- Delete removes exactly the faces shown in red, and Undo brings back exactly that selection.
+- Clicking Edit right after Save as new model, or while the preview is still loading, no longer leaves the editor stuck in view-only mode. This bug is also in 1.0.1.
+
+Import
+- Full-project and Finished models imports recognize scanner models saved as `fuse_mesh_rgb.ply` or `fuse_mesh_tex.ply`.
+
+App
+- Live 3D views have an orientation cube and a home button. Still images show only the model.
+- Fewer preview re-renders when switching projects.
+- The main window opens 1600 px wide by default (was 1440) and can be made as small as 1024 x 600. A saved window size is kept.
+- The side panel is wider (330 px).
+- Deleting a whole project asks you to type DELETE.
+- When base detection can't decide, the NEXT card says "Couldn't check for a base" (1.0.1 said "No table detected").
+- The NEXT card no longer cuts off the scan name or the last step on narrower windows and high-DPI screens; it switches to a one-line "Step 2 of 5" when the step trail doesn't fit.
+- After Remove base or Prepare, the scan strip's thumbnail updates right away (it used to show the old model until the project was reopened).
+- Fixed a rare freeze when a background job starts (a font clean-up on the wrong thread could hang Save as new model). This bug is also in 1.0.1.
+
+For developers
+- Alignment results record units (mm), the `T_base_moving` convention and reason codes. New modules for registration metrics and a fixture profile; the app does not use them yet.
+- Unit tests live in `tests/`: `python3 -m unittest discover -s tests`.
 
 ## 1.0.1 (2026-09-22)
 

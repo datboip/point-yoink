@@ -7,9 +7,12 @@
 # Output: {"matrix": 4x4 moving->base (mm), "fitness": overlap share 0..1, "rmse": mm, "pair_error_before", "pair_error_after"}
 import sys, os, argparse, json, resource
 MEM_CAP_GB = float(os.environ.get("POINTYOINK_MEM_CAP_GB", "8"))
-try:
-    cap = int(MEM_CAP_GB * 1024**3); resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
-except Exception: pass
+def _cap_memory():
+    """Cap this worker's address space. Called from main() only, so importing this module (tests, the app)
+    never caps the importing process."""
+    try:
+        cap = int(MEM_CAP_GB * 1024**3); resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+    except Exception: pass
 import numpy as np
 from registration_metrics import (
     validate_landmark_pairs,
@@ -143,6 +146,7 @@ def _registration_metrics(T, M, B, final_corr, max_dist, icp_fitness=None):
     return out
 
 def main():
+    _cap_memory()
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", required=True); ap.add_argument("--moving", required=True); ap.add_argument("--out", required=True)
     ap.add_argument("--pairs"); ap.add_argument("--auto", action="store_true"); ap.add_argument("--no-icp", action="store_true")
@@ -154,6 +158,10 @@ def main():
     pairs = json.load(open(a.pairs))["pairs"] if a.pairs else []
     T0 = np.eye(4)
     landmark_metrics = None
+    if pairs and a.auto and len(pairs) < 3:
+        # Auto with 1 or 2 points placed: too few to use, so Auto ignores them (like 1.0.1) instead of failing
+        emit("pairs", n=len(pairs), msg="fewer than 3 point pairs: Auto ignores them")
+        pairs = []
     if pairs:
         try:
             pairs = validate_landmark_pairs(pairs)
@@ -221,6 +229,15 @@ def main():
         if res2.fitness > 0.2:
             T = np.asarray(res2.transformation); fit, rmse = float(res2.fitness), float(res2.inlier_rmse)
             final_corr = getattr(res2, "correspondence_set", None)
+    fine_dist = max(a.voxel * 1.5, 1.0)
+    if not a.no_icp:
+        # The correspondences must belong to the final T and index the full clouds M and B. When the fine pass is
+        # rejected, the coarse pass's set indexes its downsampled clouds, so looking those up in M/B joins
+        # unrelated points. Recompute them on the final transform instead.
+        try:
+            final_corr = o3d.pipelines.registration.evaluate_registration(M, B, fine_dist, T).correspondence_set
+        except Exception:
+            final_corr = None
     # Keep a small, deterministic sample of the final source/target correspondences
     # so the UI can show what Auto actually used without bloating the result file.
     if final_corr is not None and len(final_corr):
@@ -233,10 +250,12 @@ def main():
                 if 0 <= mi < len(M.points) and 0 <= bi < len(B.points):
                     mp0=np.asarray(M.points[mi], dtype=float); bp0=np.asarray(B.points[bi], dtype=float)
                     if np.isfinite(mp0).all() and np.isfinite(bp0).all():
-                        auto_pairs.append([bp0.tolist(), mp0.tolist()])
+                        gap=float(np.linalg.norm(T[:3, :3] @ mp0 + T[:3, 3] - bp0))
+                        if gap <= a.max_dist:                 # never hand back a "match" that is not one
+                            auto_pairs.append([bp0.tolist(), mp0.tolist()])
         except Exception:
             auto_pairs=[]
-    metrics = _registration_metrics(T, M, B, final_corr, max(a.voxel * 1.5, 1.0), icp_fitness=fit)
+    metrics = _registration_metrics(T, M, B, final_corr, fine_dist, icp_fitness=fit)
     out = {"matrix": T.tolist(), "fitness": fit, "rmse": rmse, "auto_pairs": auto_pairs,
            "pair_error_before": pair_err(pairs, np.eye(4)), "pair_error_after": pair_err(pairs, T),
            "units": "mm", "frame_convention": "T_base_moving", "reason_codes": []}

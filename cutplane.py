@@ -7,11 +7,14 @@
 import sys, os, resource, json
 
 MEM_CAP_GB = float(os.environ.get("POINTYOINK_MEM_CAP_GB", "10"))
-try:
-    cap = int(MEM_CAP_GB * 1024**3)
-    resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
-except Exception:
-    pass
+def _cap_memory():
+    """Cap this worker's address space. Only from main(): the app imports this module (ransac_normal) in its
+    own process, and a cap set at import time used to limit the whole app for the rest of the session."""
+    try:
+        cap = int(MEM_CAP_GB * 1024**3)
+        resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+    except Exception:
+        pass
 
 def ransac_normal(V, rng, return_points=False):
     diag = float(__import__("numpy").linalg.norm(V.max(0) - V.min(0)))
@@ -48,6 +51,7 @@ def ransac_normal(V, rng, return_points=False):
     return normal
 
 def main():
+    _cap_memory()
     if len(sys.argv) < 3:
         print("CUT_ERROR usage: cutplane.py <in> <out>", flush=True); return 2
     infile, outfile = sys.argv[1], sys.argv[2]

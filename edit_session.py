@@ -113,6 +113,7 @@ class _DeleteCommand:
     after_geometry_revision: int
     before_topology_revision: int
     after_topology_revision: int
+    face_selection: bool = False      # mesh delete driven by a face mask: undo restores exactly those faces as the selection
 
     @property
     def byte_size(self):
@@ -172,6 +173,7 @@ class EditSession:
         self.vertex_colors = None if vertex_colors is None else np.ascontiguousarray(vertex_colors.copy())
         self.face_colors = None if face_colors is None else np.ascontiguousarray(face_colors.copy())
         self.selection = np.zeros(len(self.vertices), dtype=bool)
+        self.face_selection = None     # set by undo of a face delete: the exact faces to show selected again
         self.geometry_revision = 0
         self.topology_revision = 0
         self.saved_geometry_revision = 0
@@ -371,8 +373,50 @@ class EditSession:
 
         if self.kind == "mesh":
             self.selection[:] = False
+            self.face_selection = None
         self.geometry_revision = after_geometry
         self.topology_revision = after_topology
+        return True
+
+    def delete_faces(self, face_mask):
+        """Mesh only: drop exactly the faces in face_mask (bool per face). Undo brings back those faces and
+        selects exactly them again (a vertex mask would widen the selection to every face whose three corners
+        happen to be selected)."""
+        if self.kind != "mesh":
+            raise EditSessionError("delete_faces needs a mesh edit")
+        face_mask = np.asarray(face_mask, dtype=bool)
+        if len(face_mask) != len(self.faces):
+            raise EditSessionError("face selection does not match the current faces")
+        drop = np.flatnonzero(face_mask).astype(np.int64)
+        if not len(drop):
+            return False
+        before_geometry = self.geometry_revision
+        before_topology = self.topology_revision
+        command = _DeleteCommand(
+            "mesh",
+            drop,
+            None,
+            self.faces[drop].copy(),
+            None,
+            None if self.face_colors is None else self.face_colors[drop].copy(),
+            drop,
+            before_geometry,
+            self._revision_sequence + 1,
+            before_topology,
+            self._topology_sequence + 1,
+            True,
+        )
+        self._append(command)
+        self._revision_sequence += 1; self._topology_sequence += 1
+        keep = np.ones(len(self.faces), dtype=bool)
+        keep[drop] = False
+        self.faces = np.ascontiguousarray(self.faces[keep])
+        if self.face_colors is not None:
+            self.face_colors = np.ascontiguousarray(self.face_colors[keep])
+        self.selection[:] = False
+        self.face_selection = None
+        self.geometry_revision = command.after_geometry_revision
+        self.topology_revision = command.after_topology_revision
         return True
 
     def replace_vertices(self, vertices):
@@ -426,7 +470,13 @@ class EditSession:
                 current = self.face_colors
                 self.face_colors = self._restore_rows(current, command.removed_face_colors, command.indices)
             self.selection[:] = False
-            self.selection[command.selected_indices] = True
+            if command.face_selection:
+                fs = np.zeros(len(self.faces), dtype=bool); fs[command.indices] = True
+                self.face_selection = fs
+                self.selection[np.unique(self.faces[command.indices])] = True
+            else:
+                self.face_selection = None
+                self.selection[command.selected_indices] = True
         else:
             self.vertices = self._restore_rows(self.vertices, command.removed_vertices, command.indices)
             if command.removed_vertex_colors is not None:
@@ -456,6 +506,7 @@ class EditSession:
             if self.face_colors is not None:
                 self.face_colors = np.ascontiguousarray(self.face_colors[keep])
             self.selection[:] = False
+            self.face_selection = None
         else:
             self.vertices = np.ascontiguousarray(self.vertices[keep])
             if self.vertex_colors is not None:

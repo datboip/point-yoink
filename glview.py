@@ -11,6 +11,7 @@ from pyopengltk import OpenGLFrame
 from OpenGL import GL, GLU, GLX
 import shade
 import viewnav
+import mesh_ops
 
 MAX_FACES = 3_000_000                 # bound VRAM and load time; above this we decimate
 
@@ -198,7 +199,9 @@ class GLView(OpenGLFrame):
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[0]); GL.glBufferData(GL.GL_ARRAY_BUFFER, v.nbytes, v, GL.GL_STATIC_DRAW)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._vbo[1]); GL.glBufferData(GL.GL_ARRAY_BUFFER, n.nbytes, n, GL.GL_STATIC_DRAW)
             GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._vbo[2]); GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, f.nbytes, f, GL.GL_STATIC_DRAW)
-            self._n = int(f.size); self._nw = 0; self._zmax = float(v[:, 2].max()); self._src = (v, f); self._wire_gen = None; self._nrm_last = n
+            self._n = int(f.size); self._nw = 0; self._src = (v, f); self._wire_gen = None; self._nrm_last = n
+            if getattr(self, "_swap_orig", None) is None or not hasattr(self, "_zmax"):
+                self._zmax = float(v[:, 2].max())    # the camera centers on this: a preview swap keeps it, so the scene does not jump
             self._pts_n = 0                                              # leaving points mode: don't draw stale points over the mesh
             self.edit_target = "points"; self._medit_faces = None; self._sel_face_n = 0   # a freshly loaded mesh is view-only until begin_mesh_edit()
             self._depth_valid = False                                   # new geometry: the visible-only depth cache is stale
@@ -549,7 +552,6 @@ class GLView(OpenGLFrame):
             pr = self._mesh_project_faces()
             if pr is None: return 0
             (cscr, cfront, cwinz), _vpr = pr
-            import mesh_ops
             vis = self._visible_mask(cscr, cfront, cwinz) if front_only else None
             face_hit = mesh_ops.face_center_selection(cscr, poly, vis)
             return self._mesh_apply_face_hit(face_hit, mode)
@@ -571,17 +573,30 @@ class GLView(OpenGLFrame):
         if self.edit_target == "mesh" and self._mesh_face_sel is not None:
             self._mesh_face_sel = ~self._mesh_face_sel; self._mesh_recolor(); self._display(); return
         if self._pts_sel is not None: self._pts_sel = ~self._pts_sel; self._pts_recolor(); self._display()
+    def _fgraph_key(self):
+        doc = getattr(self, "edit_session", None)
+        if doc is None or getattr(doc, "kind", None) != "mesh": return None
+        return (id(doc), getattr(doc, "source_path", None), int(doc.topology_revision))
     def _face_graph(self):
-        """The mesh's face adjacency, built once per faces array (about a second for a million faces) and reused
-        by every Grow / Shrink / Connected / Magic click until the faces change."""
+        """The mesh's face adjacency, built once per mesh (about a second for a million faces) and reused by every
+        Grow / Shrink / Connected / Magic click. Keyed by the edit document's topology revision, so a Delete
+        derives the new graph from the old one and Undo / Redo find theirs cached, with no rebuild."""
         f = self._medit_faces
-        g = getattr(self, "_fgraph", None)
-        if g is None or g[0] is not f:
-            g = (f, mesh_ops.FaceGraph(f)); self._fgraph = g
-        return g[1]
+        key = self._fgraph_key()
+        cache = getattr(self, "_fgraphs", None) or []
+        for i, (k, ff, g) in enumerate(cache):
+            if g.n == len(f) and ((key is not None and k == key) or ff is f):
+                if i: cache.insert(0, cache.pop(i))
+                cache[0] = (k, f, g); self._fgraphs = cache
+                return g
+        g = mesh_ops.FaceGraph(f)
+        self._remember_graph(key, f, g)
+        return g
+    def _remember_graph(self, key, faces, g):
+        cache = [e for e in (getattr(self, "_fgraphs", None) or []) if e[0] != key or key is None]
+        self._fgraphs = [(key, faces, g)] + cache[:1]           # current + one step back: Undo/Redo stay instant
     def mesh_grow_selection(self):
         if self.edit_target != "mesh" or self._medit_faces is None or self._mesh_face_sel is None: return False
-        import mesh_ops
         changed = mesh_ops.grow_face_selection(self._medit_faces, self._mesh_face_sel, graph=self._face_graph())
         if np.array_equal(changed, self._mesh_face_sel): return False
         self._mesh_face_sel = changed
@@ -589,7 +604,6 @@ class GLView(OpenGLFrame):
         return True
     def mesh_shrink_selection(self):
         if self.edit_target != "mesh" or self._medit_faces is None or self._mesh_face_sel is None: return False
-        import mesh_ops
         changed = mesh_ops.shrink_face_selection(self._medit_faces, self._mesh_face_sel, graph=self._face_graph())
         if np.array_equal(changed, self._mesh_face_sel):
             changed = self._shrink_closed_face_selection()
@@ -617,7 +631,6 @@ class GLView(OpenGLFrame):
         return np.ascontiguousarray(out)
     def mesh_connected_selection(self):
         if self.edit_target != "mesh" or self._medit_faces is None or self._mesh_face_sel is None: return False
-        import mesh_ops
         changed = mesh_ops.connected_face_selection(self._medit_faces, self._mesh_face_sel, graph=self._face_graph())
         if np.array_equal(changed, self._mesh_face_sel): return False
         self._mesh_face_sel = changed
@@ -627,6 +640,21 @@ class GLView(OpenGLFrame):
         """Remove selected points (points mode) or the covered faces (mesh mode). Pushes undo first."""
         if self._pts_sel is None or not self._pts_sel.any(): return
         if self.edit_session is not None:
+            if self.edit_target == "mesh" and getattr(self.edit_session, "kind", None) == "mesh":
+                self._mesh_recolor()
+                fsel = self._mesh_face_sel
+                if fsel is None or len(fsel) != len(self._medit_faces) or not fsel.any(): return False
+                fsel = fsel.copy()
+                old_key = self._fgraph_key()
+                old_g = next((g for k, _f, g in (getattr(self, "_fgraphs", None) or []) if k == old_key and old_key is not None), None)
+                changed = self.edit_session.delete_faces(fsel)      # exactly the faces the red overlay shows
+                if changed:
+                    self._mesh_face_sel = None
+                    self._sync_edit_session()
+                    if old_g is not None and old_g.n == len(fsel):
+                        try: self._remember_graph(self._fgraph_key(), self._medit_faces, old_g.subgraph(~fsel))
+                        except Exception: pass
+                return changed
             if self.edit_target == "mesh": self._mesh_recolor()
             changed=self.edit_session.delete_selected(self._pts_sel)
             if changed: self._sync_edit_session()
@@ -635,7 +663,11 @@ class GLView(OpenGLFrame):
             if self._medit_faces is None: return
             self._medit_undo.append(self._medit_faces.copy())
             if len(self._medit_undo) > 12: self._medit_undo.pop(0)
-            drop = self._pts_sel[self._medit_faces].all(axis=1)      # a face goes only when all 3 of its verts are selected: clean cuts
+            if self._mesh_face_sel is not None and len(self._mesh_face_sel) == len(self._medit_faces):
+                drop = self._mesh_face_sel.copy()                     # exactly the faces the overlay shows
+            else:
+                drop = self._pts_sel[self._medit_faces].all(axis=1)
+            self._mesh_face_sel = None
             self._medit_faces = np.ascontiguousarray(self._medit_faces[~drop], dtype=np.uint32)
             self._pts_sel[:] = False; self._reupload_mesh_faces()
             return
@@ -681,7 +713,11 @@ class GLView(OpenGLFrame):
         if doc.kind=="mesh":
             self._medit_faces=np.ascontiguousarray(doc.faces, dtype=np.uint32)
             self._pts_sel=doc.selection.copy()
-            self._mesh_face_sel = self._pts_sel[self._medit_faces].all(axis=1) if len(self._medit_faces) else np.zeros(0, dtype=bool)
+            fs = getattr(doc, "face_selection", None)
+            if fs is not None and len(fs) == len(self._medit_faces):
+                self._mesh_face_sel = np.ascontiguousarray(fs, dtype=bool).copy()   # undo of a face delete: exactly those faces
+            else:
+                self._mesh_face_sel = self._pts_sel[self._medit_faces].all(axis=1) if len(self._medit_faces) else np.zeros(0, dtype=bool)
             self._reupload_mesh_faces()
         else:
             self._pts_v=np.ascontiguousarray(shade.world_to_view(doc.vertices, self.tf), dtype=np.float32)
@@ -728,7 +764,6 @@ class GLView(OpenGLFrame):
             pr = self._mesh_project_faces()
             if pr is None: return
             (cscr, cfront, cwinz), _vpr = pr
-            import mesh_ops
             vis = self._visible_mask(cscr, cfront, cwinz)
             hit = mesh_ops.face_radius_selection(cscr, x, y, self.brush_px, vis)
             self._mesh_apply_face_hit(hit, "subtract" if mode == "subtract" else "add")
@@ -776,8 +811,8 @@ class GLView(OpenGLFrame):
         else: self._pts_sel[grown] = True
         self._pts_recolor(); self._display()
     def _mesh_magic_region(self, seed, visible):
+        self._magic_error = None
         try:
-            import mesh_ops
             faces = np.asarray(self._medit_faces, dtype=np.int64)
             pts = np.asarray(self._pts_v, dtype=np.float64)
             tri = pts[faces]
@@ -789,16 +824,11 @@ class GLView(OpenGLFrame):
             angle = min(80.0, max(20.0, 25.0 + float(getattr(self, "magic_k", 3.0)) * 8.0))
             allowed = good & (normals @ seed_n >= np.cos(np.deg2rad(angle)))
             if self.visible_only: allowed &= visible
-            # flood fill over the allowed faces only: the seed's component in the graph restricted to `allowed`,
-            # grown one hop at a time in numpy instead of a Python stack walk over a million faces
-            if not allowed[int(seed)]: allowed[int(seed)] = True
-            g = self._face_graph(); out = np.zeros(len(faces), dtype=bool); out[int(seed)] = True
-            while True:
-                nxt = g.neighbours_of(out) & allowed & ~out
-                if not nxt.any(): break
-                out |= nxt
-            return np.ascontiguousarray(out)
-        except Exception:
+            # the seed's connected component in the face graph restricted to `allowed`, in one pass
+            return self._face_graph().component_of(int(seed), allowed)
+        except Exception as e:
+            # keep the click useful (the seed face) but tell the app, which shows a banner and logs it
+            self._magic_error = e
             out = np.zeros(len(self._medit_faces), dtype=bool); out[int(seed)] = True; return out
     def _region_grow(self, seed):
         """Connected points near the growing set, from a seed. The step size ADAPTS to the cloud's own point
